@@ -1,376 +1,2259 @@
-/*
- * Copyright (C) 2016 Bastian Bloessl <bloessl@ccs-labs.org>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-#include "equalizer/base.h"
-#include "equalizer/comb.h"
-#include "equalizer/lms.h"
-#include "equalizer/ls.h"
-#include "equalizer/sta.h"
 #include "frame_equalizer_impl.h"
-#include "utils.h"
+
 #include <gnuradio/io_signature.h>
+#include <gnuradio/digital/constellation.h>
+#include <pmt/pmt.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <complex>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <set>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <cstdlib>
 
 namespace gr {
 namespace ieee802_11 {
 
+namespace {
+
+// ============================================================
+// mixed-mode relative symbol positions seen by frame_equalizer
+// ============================================================
+//
+// 结合你当前链路日志，frame_equalizer 看到的 mixed-mode 位置应为：
+//
+// rel=1,2 : L-LTF
+// rel=3   : L-SIG
+// rel=4,5 : HT-SIG
+// rel=6,7 : HT training
+// rel=8.. : HT DATA
+//
+static constexpr int kLltf0Rel      = 0;
+static constexpr int kLltf1Rel      = 1;
+static constexpr int kLSigRel       = 2;
+static constexpr int kHtSig0Rel     = 3;
+static constexpr int kHtSig1Rel     = 4;
+static constexpr int kHtTrain0Rel   = 5;
+static constexpr int kHtTrain1Rel   = 6;
+static constexpr int kDataStartRel  = 7;
+
+static constexpr int kMaxFrameRel = 128;
+
+static inline int sc_to_fft_bin(int sc)
+{
+    const int idx = sc + 32;
+    return idx;
+}
+
+static inline int ones8_local(int n)
+{
+    int s = 0;
+    for (int i = 0; i < 8; i++) {
+        if (n & (1 << i)) {
+            s++;
+        }
+    }
+    return s;
+}
+
+static inline uint8_t hard_bit_from_complex(const gr_complex& x)
+{
+    // BPSK映射：符号+1 -> 比特1，符号-1 -> 比特0
+    // 发送端使用 digital.chunks_to_symbols_bc([-1, 1], 1)
+    // 即：比特0 -> -1，比特1 -> +1
+    // 所以接收端：正实数(+1) -> 比特1，负实数(-1) -> 比特0
+    return (x.real() >= 0.0f) ? 1 : 0;
+}
+
+static inline gr_complex safe_div(const gr_complex& a, const gr_complex& b)
+{
+    const float d = std::norm(b);
+    if (d < 1e-12f || !std::isfinite(d)) {
+        return gr_complex(0.0f, 0.0f);
+    }
+    return a * std::conj(b) / d;
+}
+
+static std::string bits_to_string(const uint8_t* bits, int n)
+{
+    std::string s;
+    s.reserve((size_t)n);
+    for (int i = 0; i < n; i++) {
+        s.push_back(bits[i] ? '1' : '0');
+    }
+    return s;
+}
+
+// ============================================================
+// HT tables
+// ============================================================
+
+static inline int ht_n_bpsc_from_mcs(int mcs)
+{
+    switch (mcs) {
+    case 0: return 1;
+    case 1: return 2;
+    case 2: return 2;
+    case 3: return 4;
+    case 4: return 4;
+    case 5: return 6;
+    case 6: return 6;
+    case 7: return 6;
+    default: return 1;
+    }
+}
+
+static inline int ht_n_cbps_from_mcs(int mcs)
+{
+    switch (mcs) {
+    case 0: return 52;
+    case 1: return 104;
+    case 2: return 104;
+    case 3: return 208;
+    case 4: return 208;
+    case 5: return 312;
+    case 6: return 312;
+    case 7: return 312;
+    default: return 52;
+    }
+}
+
+static inline int ht_n_dbps_from_mcs(int mcs)
+{
+    switch (mcs) {
+    case 0: return 26;
+    case 1: return 52;
+    case 2: return 78;
+    case 3: return 104;
+    case 4: return 156;
+    case 5: return 208;
+    case 6: return 234;
+    case 7: return 260;
+    default: return 26;
+    }
+}
+
+static std::shared_ptr<gr::digital::constellation> make_bpsk_constellation()
+{
+    return gr::digital::constellation_bpsk::make();
+}
+
+static std::shared_ptr<gr::digital::constellation> make_qpsk_constellation()
+{
+    return gr::digital::constellation_qpsk::make();
+}
+
+static std::shared_ptr<gr::digital::constellation> make_16qam_constellation()
+{
+    return gr::digital::constellation_16qam::make();
+}
+
+// ============================================================
+// Fixed 52-data order helpers (ID / TX mapper order)
+// ============================================================
+//
+// 52 HT data subcarriers, excluding pilots, in TX mapper order
+//
+static constexpr int kTxOrder52[52] = {
+    -28,-27,-26,-25,-24,-23,-22,
+    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+    -6,-5,-4,-3,-2,-1,
+     1, 2, 3, 4, 5, 6,
+     8, 9,10,11,12,13,14,15,16,17,18,19,20,
+    22,23,24,25,26,27,28
+};
+
+static constexpr int kCandA52[52] = {
+     1, 2, 3, 4, 5, 6,
+     8, 9,10,11,12,13,14,15,16,17,18,19,20,
+    22,23,24,25,26,27,28,
+    -28,-27,-26,-25,-24,-23,-22,
+    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+    -6,-5,-4,-3,-2,-1
+};
+
+static constexpr int kCandB52[52] = {
+    -1,-2,-3,-4,-5,-6,-8,-9,-10,-11,-12,-13,-14,-15,-16,-17,-18,-19,-20,
+    -22,-23,-24,-25,-26,-27,-28,
+     1, 2, 3, 4, 5, 6,
+     8, 9,10,11,12,13,14,15,16,17,18,19,20,
+    22,23,24,25,26,27,28
+};
+
+static constexpr int kCandC52[52] = {
+     1, 2, 3, 4, 5, 6,
+     8, 9,10,11,12,13,14,15,16,17,18,19,20,
+    22,23,24,25,26,27,28,
+    -28,-27,-26,-25,-24,-23,-22,
+    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+    -6,-5,-4,-3,-2,-1
+};
+
+
+static constexpr int kPilot4Sc[4] = { -21, -7, 7, 21 };
+
+static constexpr int kHtPilotPolarity127[127] = {
+    1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, -1, 1, 1, -1, 1, -1, -1, 1, 1,
+    -1, 1, 1, -1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, -1, -1, 1, 1, 1,
+    -1, 1, -1, -1, -1, 1, -1, 1, -1, -1, 1, -1, -1, 1, 1, 1, 1, 1, -1, -1,
+    1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, -1, -1, -1, -1, 1,
+    -1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, -1, 1, -1, -1, -1, -1, -1, 1,
+    -1, 1, 1, -1, 1, -1, 1, 1, 1, -1, -1, 1, -1, -1, -1, 1, 1, 1, -1, -1,
+    -1, -1, -1, -1, -1
+};
+
+static inline gr_complex ht_expected_pilot(int data_sym_idx, int pilot_idx)
+{
+    const int p = kHtPilotPolarity127[data_sym_idx % 127];
+    const int sign = (pilot_idx == 3) ? -p : p;
+    return gr_complex((float)sign, 0.0f);
+}
+
+static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64, int data_sym_idx)
+{
+    gr_complex acc(0.0f, 0.0f);
+    for (int i = 0; i < 4; i++) {
+        const gr_complex rx = sym64[sc_to_fft_bin(kPilot4Sc[i])];
+        acc += rx * std::conj(ht_expected_pilot(data_sym_idx, i));
+    }
+    if (std::abs(acc) < 1e-9f) {
+        return 0.0f;
+    }
+    return std::arg(acc);
+}
+
+static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
+                                              int data_sym_idx,
+                                              gr_complex* out52)
+{
+    const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx);
+    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
+
+    for (int i = 0; i < 52; i++) {
+        out52[i] = sym64[sc_to_fft_bin(kTxOrder52[i])] * rot;
+    }
+}
+
+static bool read_tx_ref_bits52(uint8_t* out52, std::string& used_path)
+{
+    const char* env_path = std::getenv("WIFI_TX_DATA0_BITS52_FILE");
+    used_path = (env_path && *env_path) ? env_path : "/tmp/wifi_tx_data0_bits52.txt";
+
+    std::ifstream ifs(used_path.c_str());
+    if (!ifs.good()) {
+        return false;
+    }
+
+    std::string raw, s;
+    std::getline(ifs, raw);
+
+    for (char c : raw) {
+        if (c == '0' || c == '1') {
+            s.push_back(c);
+        }
+    }
+
+    if ((int)s.size() != 52) {
+        return false;
+    }
+
+    for (int i = 0; i < 52; i++) {
+        out52[i] = (s[i] == '1') ? 1 : 0;
+    }
+
+    return true;
+}
+
+static bool reorder_from_candidate_bits(const int* src_order,
+                                        const uint8_t* src_bits,
+                                        uint8_t* dst_bits)
+{
+    for (int dst = 0; dst < 52; dst++) {
+        const int want_sc = kTxOrder52[dst];
+        bool found = false;
+
+        for (int src = 0; src < 52; src++) {
+            if (src_order[src] == want_sc) {
+                dst_bits[dst] = src_bits[src];
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool reorder_from_candidate_eq(const int* src_order,
+                                      const gr_complex* src_eq,
+                                      gr_complex* dst_eq)
+{
+    for (int dst = 0; dst < 52; dst++) {
+        const int want_sc = kTxOrder52[dst];
+        bool found = false;
+
+        for (int src = 0; src < 52; src++) {
+            if (src_order[src] == want_sc) {
+                dst_eq[dst] = src_eq[src];
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool reorder_bits_52_mode(const uint8_t* src_bits,
+                                 uint8_t* dst_bits,
+                                 int /*reorder_mode*/)
+{
+    // ID has been verified as the correct HT 52-carrier order.
+    std::memcpy(dst_bits, src_bits, 52);
+    return true;
+}
+
+static bool reorder_eq_52_mode(const gr_complex* src_eq,
+                               gr_complex* dst_eq,
+                               int /*reorder_mode*/)
+{
+    // ID has been verified as the correct HT 52-carrier order.
+    std::memcpy(dst_eq, src_eq, 52 * sizeof(gr_complex));
+    return true;
+}
+
+// ============================================================
+// Header subcarrier orders
+// ============================================================
+//
+// 对 L-SIG / HT-SIG，明确只取 48 个 data subcarrier：
+//   -26..-1, +1..+26，跳过 pilots {-21,-7,+7,+21}
+// 并单独缓存 4 个 pilots
+//
+static constexpr int kHeader48Sc[48] = {
+    -26,-25,-24,-23,-22,
+    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+    -6,-5,-4,-3,-2,-1,
+     1, 2, 3, 4, 5, 6,
+     8, 9,10,11,12,13,14,15,16,17,18,19,20,
+    22,23,24,25,26
+};
+
+// legacy L-LTF known signs on the 48 data carriers above
+static constexpr int kLltf48Sign[48] = {
+     1, 1,-1,-1, 1,
+    -1, 1,-1, 1, 1, 1, 1, 1, 1,-1,-1, 1, 1,
+     1,-1, 1, 1, 1, 1,
+     1,-1,-1, 1, 1,-1,
+    -1, 1,-1,-1,-1,-1,-1, 1, 1,-1,-1, 1,-1,
+    -1, 1, 1, 1, 1
+};
+
+// L-LTF pilot signs {-21,-7,+7,+21}
+static constexpr int kLltfPilotSign[4] = {
+    1, -1, 1, 1
+};
+
+// SIGNAL / HT-SIG pilot values after channel equalization
+static constexpr int kHeaderPilotBase[4] = {
+    1, 1, 1, -1
+};
+
+// ============================================================
+// Header direct extraction from raw 64 FFT bins
+// ============================================================
+//
+// d_early_eqsym[rel] 里缓存的布局固定为：
+//   [0..47]  = 48 个 header data carriers（按 kHeader48Sc 顺序）
+//   [48..51] = 4 个 pilots（按 kPilot4Sc 顺序）
+//
+static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out52)
+{
+    // 调试：打印前几个子载波索引和值
+    static int call_count = 0;
+    if (call_count < 10) {
+        std::fprintf(stderr, "[EXTRACT] called, first 5 subcarriers:\n");
+        for (int i = 0; i < 5 && i < 48; i++) {
+            int fft_bin = sc_to_fft_bin(kHeader48Sc[i]);
+            gr_complex val = sym64[fft_bin];
+            std::fprintf(stderr, "  i=%d, sc=%d, bin=%d, val=%.3f+%.3fi\n",
+                        i, kHeader48Sc[i], fft_bin,
+                        val.real(), val.imag());
+        }
+        call_count++;
+        std::fflush(stderr);
+    }
+
+    for (int i = 0; i < 48; i++) {
+        out52[i] = sym64[sc_to_fft_bin(kHeader48Sc[i])];
+    }
+    for (int i = 0; i < 4; i++) {
+        out52[48 + i] = sym64[sc_to_fft_bin(kPilot4Sc[i])];
+    }
+}
+
+static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint8_t* out48)
+{
+    for (int i = 0; i < 48; i++) {
+        out48[i] = hard_bit_from_complex(hdr52[i]);
+    }
+}
+
+static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
+                                                const gr_complex* lltf1_52,
+                                                gr_complex* H52)
+{
+    // 调试：L-LTF符号质量分析
+    float lltf0_mag_sum = 0.0f, lltf1_mag_sum = 0.0f;
+    for (int i = 0; i < 52; i++) {
+        lltf0_mag_sum += std::abs(lltf0_52[i]);
+        lltf1_mag_sum += std::abs(lltf1_52[i]);
+    }
+    std::fprintf(stderr, "[CHAN_EST][DEBUG] L-LTF0 average magnitude: %.4f\n", lltf0_mag_sum / 52.0f);
+    std::fprintf(stderr, "[CHAN_EST][DEBUG] L-LTF1 average magnitude: %.4f\n", lltf1_mag_sum / 52.0f);
+
+    // 调试：比较接收到的L-LTF符号与期望符号
+    std::fprintf(stderr, "[CHAN_EST][LLTF_COMPARE] First 20 data subcarriers:\n");
+    for (int i = 0; i < 20 && i < 48; i++) {
+        const gr_complex avg = 0.5f * (lltf0_52[i] + lltf1_52[i]);
+        float avg_real = avg.real();
+        float avg_imag = avg.imag();
+        float avg_mag = std::abs(avg);
+        float avg_phase = std::arg(avg);
+        int expected_sign = kLltf48Sign[i];
+        std::fprintf(stderr, "  i=%d sc=%d: expected=%d, avg=%.3f+%.3fi (mag=%.3f, phase=%.3f), received0=%.3f+%.3fi received1=%.3f+%.3fi\n",
+                    i, kHeader48Sc[i], expected_sign,
+                    avg_real, avg_imag, avg_mag, avg_phase,
+                    lltf0_52[i].real(), lltf0_52[i].imag(),
+                    lltf1_52[i].real(), lltf1_52[i].imag());
+    }
+    std::fflush(stderr);
+
+    int opposite_sign_count = 0;
+    for (int i = 0; i < 48; i++) {
+        // 总是使用L-LTF0进行信道估计，忽略L-LTF1（因为观察到符号相反问题）
+        const gr_complex lltf0 = lltf0_52[i];
+        const gr_complex lltf1 = lltf1_52[i];
+        const float dot_product = lltf0.real() * lltf1.real() + lltf0.imag() * lltf1.imag();
+
+        gr_complex avg;
+        if (dot_product < 0) {
+            // 符号相反，使用L-LTF0单独估计
+            opposite_sign_count++;
+            avg = lltf0;
+            std::fprintf(stderr, "[CHAN_EST][WARNING] Opposite signs at SC%d (idx=%d): lltf0=%.3f+%.3fi, lltf1=%.3f+%.3fi, dot=%.3f\n",
+                        kHeader48Sc[i], i, lltf0.real(), lltf0.imag(), lltf1.real(), lltf1.imag(), dot_product);
+        } else {
+            // 符号一致，也使用L-LTF0（简化逻辑，避免平均引入误差）
+            avg = lltf0;
+        }
+        H52[i] = (float)kLltf48Sign[i] * avg;
+    }
+    for (int i = 0; i < 4; i++) {
+        const gr_complex lltf0 = lltf0_52[48 + i];
+        const gr_complex lltf1 = lltf1_52[48 + i];
+        const float dot_product = lltf0.real() * lltf1.real() + lltf0.imag() * lltf1.imag();
+
+        gr_complex avg;
+        if (dot_product < 0) {
+            opposite_sign_count++;
+            avg = lltf0;
+            std::fprintf(stderr, "[CHAN_EST][WARNING] Opposite signs at pilot SC%d (idx=%d)\n",
+                        kPilot4Sc[i], 48 + i);
+        } else {
+            // 符号一致，也使用L-LTF0
+            avg = lltf0;
+        }
+        H52[48 + i] = (float)kLltfPilotSign[i] * avg;
+    }
+
+    if (opposite_sign_count > 0) {
+        std::fprintf(stderr, "[CHAN_EST][WARNING] Total %d/%d subcarriers with opposite L-LTF signs\n",
+                    opposite_sign_count, 52);
+    }
+
+    // 调试：计算信道幅度和相位分布
+    float mag_sum = 0.0f;
+    float mag_min = 1e9f, mag_max = 0.0f;
+    float phase_min = 3.14f, phase_max = -3.14f;
+    int zero_count = 0;
+    for (int i = 0; i < 52; i++) {
+        float mag = std::abs(H52[i]);
+        float phase = std::arg(H52[i]);
+        mag_sum += mag;
+        if (mag < mag_min) mag_min = mag;
+        if (mag > mag_max) mag_max = mag;
+        if (phase < phase_min) phase_min = phase;
+        if (phase > phase_max) phase_max = phase;
+        if (mag < 0.001f) zero_count++;
+    }
+    std::fprintf(stderr, "[CHAN_EST] Average channel magnitude: %.4f\n", mag_sum / 52.0f);
+    std::fprintf(stderr, "[CHAN_EST] Channel magnitude range: [%.4f, %.4f]\n", mag_min, mag_max);
+    std::fprintf(stderr, "[CHAN_EST] Channel phase range: [%.3f, %.3f] rad\n", phase_min, phase_max);
+    std::fprintf(stderr, "[CHAN_EST] Zero magnitude subcarriers: %d/52\n", zero_count);
+
+    // 调试：打印前10个子载波的信道估计
+    for (int i = 0; i < 10 && i < 52; i++) {
+        std::fprintf(stderr, "[CHAN_EST][SC%d] H=%.3f+%.3fi, mag=%.3f, phase=%.3f\n",
+                    i, H52[i].real(), H52[i].imag(), std::abs(H52[i]), std::arg(H52[i]));
+    }
+
+    std::fflush(stderr);
+}
+
+static float estimate_header_cpe_rad(const gr_complex* rx52,
+                                     const gr_complex* H52)
+{
+    gr_complex acc(0.0f, 0.0f);
+
+    for (int i = 0; i < 4; i++) {
+        const gr_complex eqp = safe_div(rx52[48 + i], H52[48 + i]);
+        const gr_complex expect = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+        acc += eqp * std::conj(expect);
+    }
+
+    if (std::abs(acc) < 1e-9f) {
+        return 0.0f;
+    }
+
+    return std::arg(acc);
+}
+
+static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
+                                               const gr_complex* H52,
+                                               gr_complex* out_eq48,
+                                               uint8_t* out_bits48)
+{
+    const float cpe = estimate_header_cpe_rad(rx52, H52);
+    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
+
+    std::fprintf(stderr, "[EQ_HEADER] CPE estimate: %.3f rad, rot=%.3f+%.3fi\n",
+                cpe, rot.real(), rot.imag());
+
+    int zero_H_count = 0;
+    float rx_mag_sum = 0.0f, eq_mag_sum = 0.0f;
+
+    for (int i = 0; i < 48; i++) {
+        float h_mag = std::abs(H52[i]);
+        if (h_mag < 1e-6f) zero_H_count++;
+        rx_mag_sum += std::abs(rx52[i]);
+
+        gr_complex eq;
+        if (h_mag < 0.1f) {
+            // 信道增益太弱，跳过均衡，设置默认值
+            eq = gr_complex(0.0f, 0.0f);
+            std::fprintf(stderr, "[EQ_HEADER][WARNING] Weak channel at SC%d (idx=%d): H_mag=%.4f, skipping\n",
+                        kHeader48Sc[i], i, h_mag);
+        } else {
+            eq = safe_div(rx52[i], H52[i]) * rot;
+        }
+        out_eq48[i] = eq;
+        eq_mag_sum += std::abs(eq);
+        out_bits48[i] = hard_bit_from_complex(eq);
+    }
+
+    std::fprintf(stderr, "[EQ_HEADER] Zero-magnitude H subcarriers: %d/48\n", zero_H_count);
+    std::fprintf(stderr, "[EQ_HEADER] Average RX magnitude: %.4f\n", rx_mag_sum / 48.0f);
+    std::fprintf(stderr, "[EQ_HEADER] Average EQ magnitude: %.4f\n", eq_mag_sum / 48.0f);
+
+    // 调试：打印前10个均衡后比特
+    std::fprintf(stderr, "[EQ_HEADER] First 10 bits: ");
+    for (int i = 0; i < 10 && i < 48; i++) {
+        std::fprintf(stderr, "%d", out_bits48[i]);
+    }
+    std::fprintf(stderr, "\n");
+
+    // 调试：打印前5个均衡后符号
+    for (int i = 0; i < 5 && i < 48; i++) {
+        std::fprintf(stderr, "[EQ_HEADER][SC%d] rx=%.3f+%.3fi, eq=%.3f+%.3fi, bit=%d\n",
+                    i, rx52[i].real(), rx52[i].imag(),
+                    out_eq48[i].real(), out_eq48[i].imag(), out_bits48[i]);
+    }
+
+    std::fflush(stderr);
+}
+
+static void equalize_header52_to_bits48(const gr_complex* rx52,
+                                        const gr_complex* H52,
+                                        uint8_t* out_bits48,
+                                        gr_complex* out_eq48 = nullptr)
+{
+    gr_complex tmp_eq48[48];
+    equalize_header52_to_eq48_and_bits(rx52, H52, tmp_eq48, out_bits48);
+    if (out_eq48) {
+        std::memcpy(out_eq48, tmp_eq48, 48 * sizeof(gr_complex));
+    }
+}
+
+// ============================================================
+// BPSK deinterleaver / Viterbi / CRC
+// ============================================================
+
+// TX interleave:
+//   out[k] = in[i], i = 3*(k mod 16) + floor(k/16)
+//
+// RX inverse:
+//   out[i] = in[k]
+static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
+{
+    std::memset(out48, 0, 48);
+
+    for (int k = 0; k < 48; k++) {
+        const int i = 3 * (k % 16) + (k / 16);
+        out48[i] = in48[k] & 0x1;
+    }
+}
+
+static bool viterbi_decode_133_171(const uint8_t* rx_bits,
+                                   int n_encoded_bits,
+                                   std::vector<uint8_t>& decoded_bits)
+{
+    if (n_encoded_bits <= 0 || (n_encoded_bits & 0x1)) {
+        return false;
+    }
+
+    const int n_steps = n_encoded_bits / 2;
+    const int INF = std::numeric_limits<int>::max() / 4;
+
+    std::array<int, 64> metric_prev;
+    std::array<int, 64> metric_curr;
+    metric_prev.fill(INF);
+    metric_prev[0] = 0;
+
+    std::vector<std::array<int, 64>> prev_state(n_steps + 1);
+    std::vector<std::array<uint8_t, 64>> prev_bit(n_steps + 1);
+
+    for (int t = 0; t <= n_steps; t++) {
+        prev_state[t].fill(-1);
+        prev_bit[t].fill(0);
+    }
+
+    for (int t = 0; t < n_steps; t++) {
+        metric_curr.fill(INF);
+
+        const uint8_t r0 = rx_bits[2 * t] & 0x1;
+        const uint8_t r1 = rx_bits[2 * t + 1] & 0x1;
+
+        for (int s = 0; s < 64; s++) {
+            const int mp = metric_prev[s];
+            if (mp >= INF) {
+                continue;
+            }
+
+            for (int b = 0; b <= 1; b++) {
+                const int reg = ((s << 1) | b) & 0x7f;
+                const uint8_t o0 = ones8_local(reg & 0155) & 0x1;
+                const uint8_t o1 = ones8_local(reg & 0117) & 0x1;
+                const int ns = reg & 0x3f;
+
+                const int bm = ((o0 != r0) ? 1 : 0) + ((o1 != r1) ? 1 : 0);
+                const int mc = mp + bm;
+
+                if (mc < metric_curr[ns]) {
+                    metric_curr[ns] = mc;
+                    prev_state[t + 1][ns] = s;
+                    prev_bit[t + 1][ns] = (uint8_t)b;
+                }
+            }
+        }
+
+        metric_prev = metric_curr;
+    }
+
+    int best_state = 0;
+    if (metric_prev[best_state] >= INF) {
+        int best_metric = INF;
+        for (int s = 0; s < 64; s++) {
+            if (metric_prev[s] < best_metric) {
+                best_metric = metric_prev[s];
+                best_state = s;
+            }
+        }
+        if (best_metric >= INF) {
+            return false;
+        }
+    }
+
+    decoded_bits.assign(n_steps, 0);
+
+    for (int t = n_steps; t >= 1; t--) {
+        decoded_bits[t - 1] = prev_bit[t][best_state];
+        best_state = prev_state[t][best_state];
+        if (best_state < 0 && t > 1) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// HT-SIG CRC8:
+// init all ones, polynomial x^8 + x^2 + x + 1, final invert
+// input bits[0..33], LSB-first
+static uint8_t ht_sig_crc8_calc(const uint8_t* bits0_33)
+{
+    int c[8];
+    for (int i = 0; i < 8; i++) {
+        c[i] = 1;
+    }
+
+    for (int i = 0; i < 34; i++) {
+        const int m = bits0_33[i] ? 1 : 0;
+
+        const int c0 = c[0];
+        const int c1 = c[1];
+        const int c2 = c[2];
+        const int c3 = c[3];
+        const int c4 = c[4];
+        const int c5 = c[5];
+        const int c6 = c[6];
+        const int c7 = c[7];
+
+        const int new7 = c6;
+        const int new6 = c5;
+        const int new5 = c4;
+        const int new4 = c3;
+        const int new3 = c2;
+        const int new2 = c1 ^ c7 ^ m;
+        const int new1 = c0 ^ c7 ^ m;
+        const int new0 = c7 ^ m;
+
+        c[0] = new0;
+        c[1] = new1;
+        c[2] = new2;
+        c[3] = new3;
+        c[4] = new4;
+        c[5] = new5;
+        c[6] = new6;
+        c[7] = new7;
+    }
+
+    uint8_t crc = 0;
+    for (int j = 0; j < 8; j++) {
+        const int bit = (c[j] ^ 1) & 0x1;
+        crc |= (uint8_t)(bit << j);
+    }
+    return crc;
+}
+
+// ============================================================
+// 52-bit helper path (kept for compatibility with header methods)
+// ============================================================
+
+static void extract_header48_from_52_bits(const uint8_t* in52, uint8_t* out48)
+{
+    for (int i = 0; i < 48; i++) {
+        out48[i] = in52[i + 2] & 0x1;
+    }
+}
+
+static void extract_header48_from_52_eqsym(const gr_complex* in52, gr_complex* out48)
+{
+    for (int i = 0; i < 48; i++) {
+        out48[i] = in52[i + 2];
+    }
+}
+
+static bool decode_lsig_candidate(const uint8_t* raw_bits52,
+                                  int reorder_mode,
+                                  bool inverted,
+                                  int& out_encoding,
+                                  int& out_len_bytes)
+{
+    uint8_t bits52[52];
+    uint8_t sig48[48];
+    uint8_t deintl48[48];
+
+    if (!reorder_bits_52_mode(raw_bits52, bits52, reorder_mode)) {
+        return false;
+    }
+
+    extract_header48_from_52_bits(bits52, sig48);
+
+    if (inverted) {
+        for (int i = 0; i < 48; i++) {
+            sig48[i] ^= 0x1;
+        }
+    }
+
+    deinterleave_bpsk_48(sig48, deintl48);
+
+    std::vector<uint8_t> dec24;
+    if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
+        return false;
+    }
+    if ((int)dec24.size() != 24) {
+        return false;
+    }
+
+    const uint8_t* decoded_bits = dec24.data();
+
+    const int rate_field =
+        ((decoded_bits[0] & 1) << 3) |
+        ((decoded_bits[1] & 1) << 2) |
+        ((decoded_bits[2] & 1) << 1) |
+        ((decoded_bits[3] & 1) << 0);
+
+    int psdu_length = 0;
+    for (int i = 0; i < 12; i++) {
+        psdu_length |= ((decoded_bits[5 + i] & 1) << i);
+    }
+
+    int parity_sum = 0;
+    for (int i = 0; i < 18; i++) {
+        parity_sum ^= (decoded_bits[i] & 1);
+    }
+    if (parity_sum != 0) {
+        return false;
+    }
+
+    for (int i = 18; i < 24; i++) {
+        if (decoded_bits[i] != 0) {
+            return false;
+        }
+    }
+
+    int encoding = -1;
+    switch (rate_field) {
+    case 0x0D: encoding = 0; break; // BPSK 1/2
+    case 0x0F: encoding = 1; break; // BPSK 3/4
+    case 0x05: encoding = 2; break; // QPSK 1/2
+    case 0x07: encoding = 3; break; // QPSK 3/4
+    case 0x09: encoding = 4; break; // 16QAM 1/2
+    case 0x0B: encoding = 5; break; // 16QAM 3/4
+    case 0x01: encoding = 6; break; // 64QAM 2/3
+    case 0x03: encoding = 7; break; // 64QAM 3/4
+    default:
+        return false;
+    }
+
+    out_encoding = encoding;
+    out_len_bytes = psdu_length;
+    return true;
+}
+
+static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
+                                   const uint8_t* raw_bits52_b,
+                                   int reorder_mode,
+                                   bool inverted_a,
+                                   bool inverted_b,
+                                   int& out_len_bytes,
+                                   int& out_mcs,
+                                   bool& out_sgi,
+                                   bool& out_agg)
+{
+    uint8_t bits52_a[52];
+    uint8_t bits52_b[52];
+    uint8_t sig48_a[48];
+    uint8_t sig48_b[48];
+    uint8_t deintl48_a[48];
+    uint8_t deintl48_b[48];
+    uint8_t enc96[96];
+
+    if (!reorder_bits_52_mode(raw_bits52_a, bits52_a, reorder_mode)) {
+        return false;
+    }
+    if (!reorder_bits_52_mode(raw_bits52_b, bits52_b, reorder_mode)) {
+        return false;
+    }
+
+    extract_header48_from_52_bits(bits52_a, sig48_a);
+    extract_header48_from_52_bits(bits52_b, sig48_b);
+
+    if (inverted_a) {
+        for (int i = 0; i < 48; i++) {
+            sig48_a[i] ^= 0x1;
+        }
+    }
+    if (inverted_b) {
+        for (int i = 0; i < 48; i++) {
+            sig48_b[i] ^= 0x1;
+        }
+    }
+
+    deinterleave_bpsk_48(sig48_a, deintl48_a);
+    deinterleave_bpsk_48(sig48_b, deintl48_b);
+
+    for (int i = 0; i < 48; i++) {
+        enc96[i]      = deintl48_a[i];
+        enc96[48 + i] = deintl48_b[i];
+    }
+
+    std::vector<uint8_t> dec48;
+    if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+        return false;
+    }
+    if ((int)dec48.size() != 48) {
+        return false;
+    }
+
+    const uint8_t* decoded_bits = dec48.data();
+
+    int mcs = 0;
+    int psdu_length = 0;
+    bool aggregation = false;
+    bool short_gi = false;
+
+    for (int i = 0; i < 7; i++) {
+        mcs |= ((decoded_bits[i] & 1) << i);
+    }
+
+    const int bw40 = decoded_bits[7] & 1;
+
+    for (int i = 0; i < 16; i++) {
+        psdu_length |= ((decoded_bits[8 + i] & 1) << i);
+    }
+
+    const int rsv0 = decoded_bits[24] & 1;
+    const int rsv1 = decoded_bits[25] & 1;
+    const int rsv2 = decoded_bits[26] & 1;
+
+    aggregation = ((decoded_bits[27] & 1) != 0);
+
+    const int stbc =
+        ((decoded_bits[28] & 1) << 0) |
+        ((decoded_bits[29] & 1) << 1);
+
+    const int adv_coding = decoded_bits[30] & 1;
+    short_gi = ((decoded_bits[31] & 1) != 0);
+
+    const int num_ht_ltf =
+        ((decoded_bits[32] & 1) << 0) |
+        ((decoded_bits[33] & 1) << 1);
+
+    uint8_t crc_rx = 0;
+    for (int i = 0; i < 8; i++) {
+        crc_rx |= ((decoded_bits[34 + i] & 1) << i);
+    }
+
+    const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
+
+    for (int i = 42; i < 48; i++) {
+        if (decoded_bits[i] != 0) {
+            std::fprintf(stderr, "[PARSE_HT_SIG] Tail bit %d not zero: %d\n", i, decoded_bits[i] & 1);
+            return false;
+        }
+    }
+
+    if (crc_rx != crc_calc) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] CRC mismatch\n");
+        return false;
+    }
+
+    if (bw40 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] BW40 flag set (should be 0 for 20MHz)\n");
+        return false;
+    }
+    if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Reserved bits not zero: rsv0=%d, rsv1=%d, rsv2=%d\n", rsv0, rsv1, rsv2);
+        return false;
+    }
+    if (adv_coding != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Advanced coding flag set (should be 0)\n");
+        return false;
+    }
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] Parsed values: mcs=%d, len=%d, agg=%d, sgi=%d, stbc=%d, nltf=%d\n",
+                mcs, psdu_length, aggregation ? 1 : 0, short_gi ? 1 : 0, stbc, num_ht_ltf);
+
+    (void)stbc;
+    (void)num_ht_ltf;
+
+    if (mcs < 0 || mcs > 7) {
+        return false;
+    }
+    if (psdu_length <= 0) {
+        return false;
+    }
+
+    out_len_bytes = psdu_length;
+    out_mcs = mcs;
+    out_sgi = short_gi;
+    out_agg = aggregation;
+    return true;
+}
+
+// ============================================================
+// Direct header decode from raw sym64-derived cached header52
+// ============================================================
+
+static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
+                                             const gr_complex* H52,
+                                             bool invert_bits,
+                                             int& out_encoding,
+                                             int& out_len_bytes,
+                                             uint8_t* dbg_eqbits48 = nullptr,
+                                             uint8_t* dbg_deintl48 = nullptr)
+{
+    uint8_t eqbits48[48];
+    uint8_t deintl48[48];
+
+    equalize_header52_to_bits48(rx52, H52, eqbits48, nullptr);
+
+    if (invert_bits) {
+        for (int i = 0; i < 48; i++) {
+            eqbits48[i] ^= 0x1;
+        }
+    }
+
+    if (dbg_eqbits48) {
+        std::memcpy(dbg_eqbits48, eqbits48, 48);
+    }
+
+    deinterleave_bpsk_48(eqbits48, deintl48);
+
+    if (dbg_deintl48) {
+        std::memcpy(dbg_deintl48, deintl48, 48);
+    }
+
+    std::vector<uint8_t> dec24;
+    if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
+        return false;
+    }
+    if ((int)dec24.size() != 24) {
+        return false;
+    }
+
+    const uint8_t* decoded_bits = dec24.data();
+
+    const int rate_field =
+        ((decoded_bits[0] & 1) << 3) |
+        ((decoded_bits[1] & 1) << 2) |
+        ((decoded_bits[2] & 1) << 1) |
+        ((decoded_bits[3] & 1) << 0);
+
+    int psdu_length = 0;
+    for (int i = 0; i < 12; i++) {
+        psdu_length |= ((decoded_bits[5 + i] & 1) << i);
+    }
+
+    int parity_sum = 0;
+    for (int i = 0; i < 18; i++) {
+        parity_sum ^= (decoded_bits[i] & 1);
+    }
+    if (parity_sum != 0) {
+        return false;
+    }
+
+    for (int i = 18; i < 24; i++) {
+        if (decoded_bits[i] != 0) {
+            return false;
+        }
+    }
+
+    int encoding = -1;
+    switch (rate_field) {
+    case 0x0D: encoding = 0; break;
+    case 0x0F: encoding = 1; break;
+    case 0x05: encoding = 2; break;
+    case 0x07: encoding = 3; break;
+    case 0x09: encoding = 4; break;
+    case 0x0B: encoding = 5; break;
+    case 0x01: encoding = 6; break;
+    case 0x03: encoding = 7; break;
+    default:
+        return false;
+    }
+
+    out_encoding = encoding;
+    out_len_bytes = psdu_length;
+    return true;
+}
+
+static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
+                                              const gr_complex* rx52_b,
+                                              const gr_complex* H52,
+                                              bool invert_a,
+                                              bool invert_b,
+                                              int& out_len_bytes,
+                                              int& out_mcs,
+                                              bool& out_sgi,
+                                              bool& out_agg,
+                                              uint8_t* dbg_eqbits48_a = nullptr,
+                                              uint8_t* dbg_eqbits48_b = nullptr,
+                                              uint8_t* dbg_deintl48_a = nullptr,
+                                              uint8_t* dbg_deintl48_b = nullptr)
+{
+    uint8_t eqbits48_a[48];
+    uint8_t eqbits48_b[48];
+    uint8_t deintl48_a[48];
+    uint8_t deintl48_b[48];
+    uint8_t enc96[96];
+
+    equalize_header52_to_bits48(rx52_a, H52, eqbits48_a, nullptr);
+    equalize_header52_to_bits48(rx52_b, H52, eqbits48_b, nullptr);
+
+    if (invert_a) {
+        for (int i = 0; i < 48; i++) {
+            eqbits48_a[i] ^= 0x1;
+        }
+    }
+    if (invert_b) {
+        for (int i = 0; i < 48; i++) {
+            eqbits48_b[i] ^= 0x1;
+        }
+    }
+
+    if (dbg_eqbits48_a) {
+        std::memcpy(dbg_eqbits48_a, eqbits48_a, 48);
+    }
+    if (dbg_eqbits48_b) {
+        std::memcpy(dbg_eqbits48_b, eqbits48_b, 48);
+    }
+
+    deinterleave_bpsk_48(eqbits48_a, deintl48_a);
+    deinterleave_bpsk_48(eqbits48_b, deintl48_b);
+
+    if (dbg_deintl48_a) {
+        std::memcpy(dbg_deintl48_a, deintl48_a, 48);
+    }
+    if (dbg_deintl48_b) {
+        std::memcpy(dbg_deintl48_b, deintl48_b, 48);
+    }
+
+    for (int i = 0; i < 48; i++) {
+        enc96[i]      = deintl48_a[i];
+        enc96[48 + i] = deintl48_b[i];
+    }
+
+    std::vector<uint8_t> dec48;
+    if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+        return false;
+    }
+    if ((int)dec48.size() != 48) {
+        return false;
+    }
+
+    const uint8_t* decoded_bits = dec48.data();
+
+    int mcs = 0;
+    int psdu_length = 0;
+    bool aggregation = false;
+    bool short_gi = false;
+
+    for (int i = 0; i < 7; i++) {
+        mcs |= ((decoded_bits[i] & 1) << i);
+    }
+
+    const int bw40 = decoded_bits[7] & 1;
+
+    for (int i = 0; i < 16; i++) {
+        psdu_length |= ((decoded_bits[8 + i] & 1) << i);
+    }
+
+    const int rsv0 = decoded_bits[24] & 1;
+    const int rsv1 = decoded_bits[25] & 1;
+    const int rsv2 = decoded_bits[26] & 1;
+
+    aggregation = ((decoded_bits[27] & 1) != 0);
+
+    const int stbc =
+        ((decoded_bits[28] & 1) << 0) |
+        ((decoded_bits[29] & 1) << 1);
+
+    const int adv_coding = decoded_bits[30] & 1;
+    short_gi = ((decoded_bits[31] & 1) != 0);
+
+    const int num_ht_ltf =
+        ((decoded_bits[32] & 1) << 0) |
+        ((decoded_bits[33] & 1) << 1);
+
+    uint8_t crc_rx = 0;
+    for (int i = 0; i < 8; i++) {
+        crc_rx |= ((decoded_bits[34 + i] & 1) << i);
+    }
+
+    const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
+
+    for (int i = 42; i < 48; i++) {
+        if (decoded_bits[i] != 0) {
+            std::fprintf(stderr, "[PARSE_HT_SIG] Tail bit %d not zero: %d\n", i, decoded_bits[i] & 1);
+            return false;
+        }
+    }
+
+    if (crc_rx != crc_calc) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] CRC mismatch\n");
+        return false;
+    }
+
+    if (bw40 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] BW40 flag set (should be 0 for 20MHz)\n");
+        return false;
+    }
+    if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Reserved bits not zero: rsv0=%d, rsv1=%d, rsv2=%d\n", rsv0, rsv1, rsv2);
+        return false;
+    }
+    if (adv_coding != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Advanced coding flag set (should be 0)\n");
+        return false;
+    }
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] Parsed values: mcs=%d, len=%d, agg=%d, sgi=%d, stbc=%d, nltf=%d\n",
+                mcs, psdu_length, aggregation ? 1 : 0, short_gi ? 1 : 0, stbc, num_ht_ltf);
+
+    (void)stbc;
+    (void)num_ht_ltf;
+
+    if (mcs < 0 || mcs > 7) {
+        return false;
+    }
+    if (psdu_length <= 0) {
+        return false;
+    }
+
+    out_len_bytes = psdu_length;
+    out_mcs = mcs;
+    out_sgi = short_gi;
+    out_agg = aggregation;
+    return true;
+}
+
+} // anonymous namespace
+
+// ======================================================================
+
 frame_equalizer::sptr
 frame_equalizer::make(Equalizer algo, double freq, double bw, bool log, bool debug)
 {
-    return gnuradio::get_initial_sptr(
+    return frame_equalizer::sptr(
         new frame_equalizer_impl(algo, freq, bw, log, debug));
 }
 
-
-frame_equalizer_impl::frame_equalizer_impl(
-    Equalizer algo, double freq, double bw, bool log, bool debug)
+frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
+                                           double freq,
+                                           double bw,
+                                           bool log,
+                                           bool debug)
     : gr::block("frame_equalizer",
-                gr::io_signature::make(1, 1, 64 * sizeof(gr_complex)),
-                gr::io_signature::make(1, 1, 48)),
+                gr::io_signature::make(1, 1, sizeof(gr_complex) * 64),
+                gr::io_signature::make(1, 1, sizeof(gr_complex))),
       d_current_symbol(0),
-      d_log(log),
+      d_copied(0),
       d_debug(debug),
-      d_equalizer(NULL),
-      d_freq(freq),
-      d_bw(bw),
+      d_log(log),
+      d_freq_offset_from_synclong(freq),
+      d_bw((int)bw),
+      d_chan_est_mode(0),
+      d_enable_soft_output(false),
       d_frame_bytes(0),
+      d_frame_encoding(0),
       d_frame_symbols(0),
-      d_freq_offset_from_synclong(0.0)
+      d_frame_mod(1),
+      d_frame_n_bpsc(1),
+      d_frame_n_cbps(52),
+      d_frame_n_dbps(26),
+      d_have_header(false),
+      d_have_ht_header(false),
+      d_is_ht(false),
+      d_sym_idx(0),
+      d_first_valid_symbol(-1),
+      d_in_frame(false),
+      d_have_lsig(false),
+      d_lsig_rel(-1),
+      d_hdr_reorder_mode(0),
+      d_hdr_inverted(false),
+      d_htsig0_rel(-1),
+      d_htsig1_rel(-1),
+      d_data_start_rel(kDataStartRel)
 {
+    d_bpsk = make_bpsk_constellation();
+    d_qpsk = make_qpsk_constellation();
+    d_16qam = make_16qam_constellation();
 
+    set_tag_propagation_policy(TPP_DONT);
     message_port_register_out(pmt::mp("symbols"));
+    std::fprintf(stderr, "[EQDBG] frame_equalizer symbols build loaded\n");
+    std::fflush(stderr);
+    std::memset(d_early_bits, 0, sizeof(d_early_bits));
+    std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
+    std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
+    std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
 
-    d_bpsk = constellation_bpsk::make();
-    d_qpsk = constellation_qpsk::make();
-    d_16qam = constellation_16qam::make();
-    d_64qam = constellation_64qam::make();
-
-    d_frame_mod = d_bpsk;
-
-    set_tag_propagation_policy(block::TPP_DONT);
     set_algorithm(algo);
+    reset_frame_state();
+    std::fprintf(stderr, "[EQDBG][NEW] Constructor modified with new debug\n");
+    std::fflush(stderr);
 }
 
 frame_equalizer_impl::~frame_equalizer_impl() {}
 
-
 void frame_equalizer_impl::set_algorithm(Equalizer algo)
 {
-    gr::thread::scoped_lock lock(d_mutex);
-    delete d_equalizer;
-
     switch (algo) {
-
     case COMB:
-        dout << "Comb" << std::endl;
-        d_equalizer = new equalizer::comb();
+        d_equalizer = std::make_shared<equalizer::comb>();
         break;
     case LS:
-        dout << "LS" << std::endl;
-        d_equalizer = new equalizer::ls();
+        d_equalizer = std::make_shared<equalizer::ls>();
         break;
     case LMS:
-        dout << "LMS" << std::endl;
-        d_equalizer = new equalizer::lms();
+        d_equalizer = std::make_shared<equalizer::lms>();
         break;
     case STA:
-        dout << "STA" << std::endl;
-        d_equalizer = new equalizer::sta();
+        d_equalizer = std::make_shared<equalizer::sta>();
         break;
     default:
-        throw std::runtime_error("Algorithm not implemented");
+        d_equalizer = std::make_shared<equalizer::ls>();
+        break;
     }
 }
 
-void frame_equalizer_impl::set_bandwidth(double bw)
-{
-    gr::thread::scoped_lock lock(d_mutex);
-    d_bw = bw;
-}
-
-void frame_equalizer_impl::set_frequency(double freq)
-{
-    gr::thread::scoped_lock lock(d_mutex);
-    d_freq = freq;
-}
+void frame_equalizer_impl::set_bandwidth(double bw) { d_bw = (int)bw; }
+void frame_equalizer_impl::set_frequency(double freq) { d_freq_offset_from_synclong = freq; }
+void frame_equalizer_impl::set_extra_header_symbols(int) {}
 
 void frame_equalizer_impl::forecast(int noutput_items,
                                     gr_vector_int& ninput_items_required)
 {
-    ninput_items_required[0] = noutput_items;
+    ninput_items_required[0] = std::max(1, (noutput_items + 51) / 52);
 }
+
+void frame_equalizer_impl::reset_frame_state(void)
+{
+    d_frame_bytes = 0;
+    d_frame_encoding = 0;
+    d_frame_symbols = 0;
+    d_frame_mod = 1;
+    d_frame_n_bpsc = 1;
+    d_frame_n_cbps = 52;
+    d_frame_n_dbps = 26;
+
+    d_have_header = false;
+    d_have_ht_header = false;
+    d_is_ht = false;
+    d_sym_idx = 0;
+    d_first_valid_symbol = -1;
+
+    d_chan_est_mode = 0;
+    d_have_lsig = false;
+    d_lsig_rel = -1;
+    d_hdr_reorder_mode = 0;
+    d_hdr_inverted = false;
+    d_htsig0_rel = -1;
+    d_htsig1_rel = -1;
+    d_data_start_rel = kDataStartRel;
+
+    std::memset(d_early_bits, 0, sizeof(d_early_bits));
+    std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
+    std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
+    std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
+}
+
+bool frame_equalizer_impl::parse_signal(const uint8_t* decoded_bits,
+                                        int& encoding,
+                                        int& psdu_length)
+{
+    const int rate_field =
+        ((decoded_bits[0] & 1) << 3) |
+        ((decoded_bits[1] & 1) << 2) |
+        ((decoded_bits[2] & 1) << 1) |
+        ((decoded_bits[3] & 1) << 0);
+
+    psdu_length = 0;
+    for (int i = 0; i < 12; i++) {
+        psdu_length |= ((decoded_bits[5 + i] & 1) << i);
+    }
+
+    int parity_sum = 0;
+    for (int i = 0; i < 18; i++) {
+        parity_sum ^= (decoded_bits[i] & 1);
+    }
+    if (parity_sum != 0) {
+        return false;
+    }
+
+    for (int i = 18; i < 24; i++) {
+        if (decoded_bits[i] != 0) {
+            return false;
+        }
+    }
+
+    switch (rate_field) {
+    case 0x0D: encoding = 0; break;
+    case 0x0F: encoding = 1; break;
+    case 0x05: encoding = 2; break;
+    case 0x07: encoding = 3; break;
+    case 0x09: encoding = 4; break;
+    case 0x0B: encoding = 5; break;
+    case 0x01: encoding = 6; break;
+    case 0x03: encoding = 7; break;
+    default:
+        return false;
+    }
+
+    return true;
+}
+
+bool frame_equalizer_impl::parse_signal_ht(const uint8_t* decoded_bits,
+                                           int& mcs,
+                                           int& psdu_length,
+                                           bool& aggregation,
+                                           bool& short_gi)
+{
+    mcs = 0;
+    psdu_length = 0;
+    aggregation = false;
+    short_gi = false;
+
+    // 调试：打印接收到的HT-SIG比特
+    std::fprintf(stderr, "[PARSE_HT_SIG] Received bits (0-47): ");
+    for (int i = 0; i < 48; i++) {
+        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    }
+    std::fprintf(stderr, "\n");
+
+    for (int i = 0; i < 7; i++) {
+        mcs |= ((decoded_bits[i] & 1) << i);
+    }
+
+    const int bw40 = decoded_bits[7] & 1;
+
+    for (int i = 0; i < 16; i++) {
+        psdu_length |= ((decoded_bits[8 + i] & 1) << i);
+    }
+
+    const int rsv0 = decoded_bits[24] & 1;
+    const int rsv1 = decoded_bits[25] & 1;
+    const int rsv2 = decoded_bits[26] & 1;
+
+    aggregation = ((decoded_bits[27] & 1) != 0);
+
+    const int stbc =
+        ((decoded_bits[28] & 1) << 0) |
+        ((decoded_bits[29] & 1) << 1);
+
+    const int adv_coding = decoded_bits[30] & 1;
+    short_gi = ((decoded_bits[31] & 1) != 0);
+
+    const int num_ht_ltf =
+        ((decoded_bits[32] & 1) << 0) |
+        ((decoded_bits[33] & 1) << 1);
+
+    uint8_t crc_rx = 0;
+    for (int i = 0; i < 8; i++) {
+        crc_rx |= ((decoded_bits[34 + i] & 1) << i);
+    }
+
+    const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
+
+    for (int i = 42; i < 48; i++) {
+        if (decoded_bits[i] != 0) {
+            std::fprintf(stderr, "[PARSE_HT_SIG] Tail bit %d not zero: %d\n", i, decoded_bits[i] & 1);
+            return false;
+        }
+    }
+
+    if (crc_rx != crc_calc) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] CRC mismatch\n");
+        return false;
+    }
+
+    if (bw40 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] BW40 flag set (should be 0 for 20MHz)\n");
+        return false;
+    }
+    if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Reserved bits not zero: rsv0=%d, rsv1=%d, rsv2=%d\n", rsv0, rsv1, rsv2);
+        return false;
+    }
+    if (adv_coding != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Advanced coding flag set (should be 0)\n");
+        return false;
+    }
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] Parsed values: mcs=%d, len=%d, agg=%d, sgi=%d, stbc=%d, nltf=%d\n",
+                mcs, psdu_length, aggregation ? 1 : 0, short_gi ? 1 : 0, stbc, num_ht_ltf);
+
+    (void)stbc;
+    (void)num_ht_ltf;
+
+    if (mcs < 0 || mcs > 7) {
+        return false;
+    }
+    if (psdu_length <= 0) {
+        return false;
+    }
+
+    return true;
+}
+
+void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_bytes)
+{
+    d_is_ht = true;
+    d_have_ht_header = true;
+    d_have_header = true;
+
+    d_frame_encoding = mcs;
+    d_frame_bytes = len_bytes;
+
+    d_frame_n_bpsc = ht_n_bpsc_from_mcs(mcs);
+    d_frame_n_cbps = ht_n_cbps_from_mcs(mcs);
+    d_frame_n_dbps = ht_n_dbps_from_mcs(mcs);
+
+    d_frame_symbols =
+        (16 + 8 * len_bytes + 6 + d_frame_n_dbps - 1) / d_frame_n_dbps;
+}
+
+// ============================================================
+// Member wrappers required by header
+// ============================================================
+
+bool frame_equalizer_impl::decode_lsig_from_bits52(const uint8_t* bits52,
+                                                   int reorder_mode,
+                                                   bool invert_bits,
+                                                   int& encoding,
+                                                   int& psdu_length)
+{
+    return decode_lsig_candidate(bits52,
+                                 reorder_mode,
+                                 invert_bits,
+                                 encoding,
+                                 psdu_length);
+}
+
+bool frame_equalizer_impl::decode_htsig_from_bits52(const uint8_t* bits_a,
+                                                    const uint8_t* bits_b,
+                                                    int reorder_mode,
+                                                    bool swap_symbols,
+                                                    bool invert_bits,
+                                                    int& out_len_bytes,
+                                                    int& out_mcs,
+                                                    bool& out_sgi,
+                                                    bool& out_agg)
+{
+    const uint8_t* a = swap_symbols ? bits_b : bits_a;
+    const uint8_t* b = swap_symbols ? bits_a : bits_b;
+
+    return decode_htsig_candidate(a, b,
+                                  reorder_mode,
+                                  invert_bits,
+                                  invert_bits,
+                                  out_len_bytes,
+                                  out_mcs,
+                                  out_sgi,
+                                  out_agg);
+}
+
+bool frame_equalizer_impl::decode_htsig_from_eqsym52(const gr_complex* sym_a,
+                                                     const gr_complex* sym_b,
+                                                     int reorder_mode,
+                                                     bool swap_symbols,
+                                                     bool invert_bits,
+                                                     int& out_len_bytes,
+                                                     int& out_mcs,
+                                                     bool& out_sgi,
+                                                     bool& out_agg)
+{
+    uint8_t bits_a[52];
+    uint8_t bits_b[52];
+
+    for (int i = 0; i < 52; i++) {
+        bits_a[i] = hard_bit_from_complex(sym_a[i]);
+        bits_b[i] = hard_bit_from_complex(sym_b[i]);
+    }
+
+    return decode_htsig_from_bits52(bits_a, bits_b,
+                                    reorder_mode,
+                                    swap_symbols,
+                                    invert_bits,
+                                    out_len_bytes,
+                                    out_mcs,
+                                    out_sgi,
+                                    out_agg);
+}
+
+// ============================================================
+// general_work
+// ============================================================
 
 int frame_equalizer_impl::general_work(int noutput_items,
                                        gr_vector_int& ninput_items,
                                        gr_vector_const_void_star& input_items,
                                        gr_vector_void_star& output_items)
 {
-
-    gr::thread::scoped_lock lock(d_mutex);
-
     const gr_complex* in = (const gr_complex*)input_items[0];
-    uint8_t* out = (uint8_t*)output_items[0];
+    gr_complex* out = (gr_complex*)output_items[0];
 
-    int i = 0;
-    int o = 0;
-    gr_complex symbols[48];
-    gr_complex current_symbol[64];
+    const int n_in = ninput_items[0];
 
-    dout << "FRAME EQUALIZER: input " << ninput_items[0] << "  output " << noutput_items
-         << std::endl;
+    // 最早期调试：确认函数是否被调用
+    std::fprintf(stderr, "[EQ][ENTER] general_work called nin=%d nout=%d\n",
+                 n_in, noutput_items);
+    std::fflush(stderr);
 
-    while ((i < ninput_items[0]) && (o < noutput_items)) {
+    // 更早一级的调试：先确认 scheduler 是否真的把输入喂进来了
+    static int dbg_call_count = 0;
+    if (dbg_call_count < 20) {
+        std::fprintf(stderr,
+                     "[EQ][CALL] nin=%d nout=%d in_frame=%d sym_idx=%d freq_offset=%f\n",
+                     n_in,
+                     noutput_items,
+                     d_in_frame ? 1 : 0,
+                     d_sym_idx,
+                     d_freq_offset_from_synclong);
+        std::fflush(stderr);
+        dbg_call_count++;
+    }
 
-        get_tags_in_window(tags, 0, i, i + 1, pmt::string_to_symbol("wifi_start"));
+    if (n_in <= 0 || noutput_items <= 0) {
+        return 0;
+    }
 
-        // new frame
-        if (tags.size()) {
-            d_current_symbol = 0;
-            d_frame_symbols = 0;
-            d_frame_mod = d_bpsk;
+    int produced = 0;
+    int consumed = 0;
 
-            d_freq_offset_from_synclong =
-                pmt::to_double(tags.front().value) * d_bw / (2 * M_PI);
-            d_epsilon0 = pmt::to_double(tags.front().value) * d_bw / (2 * M_PI * d_freq);
-            d_er = 0;
+    const uint64_t abs_in_start = this->nitems_read(0);
+    const uint64_t abs_in_end = abs_in_start + n_in;
 
-            dout << "epsilon: " << d_epsilon0 << std::endl;
-        }
+    std::vector<tag_t> wifi_tags;
+    get_tags_in_range(
+        wifi_tags,
+        0,
+        abs_in_start,
+        abs_in_end,
+        pmt::intern("wifi_start"));
 
-        // not interesting -> skip
-        if (d_current_symbol > (d_frame_symbols + 2)) {
-            i++;
-            continue;
-        }
-
-        std::memcpy(current_symbol, in + i * 64, 64 * sizeof(gr_complex));
-
-        // compensate sampling offset
-        for (int i = 0; i < 64; i++) {
-            current_symbol[i] *= exp(gr_complex(0,
-                                                2 * M_PI * d_current_symbol * 80 *
-                                                    (d_epsilon0 + d_er) * (i - 32) / 64));
-        }
-
-        gr_complex p = equalizer::base::POLARITY[(d_current_symbol - 2) % 127];
-
-        double beta;
-        if (d_current_symbol < 2) {
-            beta = arg(current_symbol[11] - current_symbol[25] + current_symbol[39] +
-                       current_symbol[53]);
-
+    std::set<uint64_t> wifi_offsets;
+    std::map<uint64_t, double> wifi_freq_offsets;
+    for (const auto& t : wifi_tags) {
+        wifi_offsets.insert((uint64_t)t.offset);
+        if (pmt::is_real(t.value)) {
+            double freq_offset = pmt::to_double(t.value);
+            wifi_freq_offsets[(uint64_t)t.offset] = freq_offset;
+            std::printf("[EQ][TAG] wifi_start at offset=%llu freq_offset=%f\n",
+                        (unsigned long long)t.offset, freq_offset);
         } else {
-            beta = arg((current_symbol[11] * p) + (current_symbol[39] * p) +
-                       (current_symbol[25] * p) + (current_symbol[53] * -p));
+            std::printf("[EQ][TAG] wifi_start at offset=%llu value type unexpected\n",
+                        (unsigned long long)t.offset);
+        }
+    }
+    std::fflush(stdout);
+
+    std::fprintf(stderr, "[EQ][WHILE_ENTER] consumed=%d, n_in=%d\n", consumed, n_in);
+    std::fflush(stderr);
+    while (consumed < n_in) {
+        std::fprintf(stderr, "[EQ][WHILE_LOOP] iter consumed=%d, d_sym_idx=%d\n", consumed, d_sym_idx);
+        std::fflush(stderr);
+        if (d_have_ht_header && d_sym_idx >= d_data_start_rel &&
+            (produced + 52) > noutput_items) {
+            break;
         }
 
-        double er = arg((conj(d_prev_pilots[0]) * current_symbol[11] * p) +
-                        (conj(d_prev_pilots[1]) * current_symbol[25] * p) +
-                        (conj(d_prev_pilots[2]) * current_symbol[39] * p) +
-                        (conj(d_prev_pilots[3]) * current_symbol[53] * -p));
+        const gr_complex* sym64 = in + consumed * 64;
+        const uint64_t abs_in_off = abs_in_start + consumed;
 
-        er *= d_bw / (2 * M_PI * d_freq * 80);
+        const bool wifi_start = (wifi_offsets.count(abs_in_off) != 0);
 
-        if (d_current_symbol < 2) {
-            d_prev_pilots[0] = current_symbol[11];
-            d_prev_pilots[1] = -current_symbol[25];
-            d_prev_pilots[2] = current_symbol[39];
-            d_prev_pilots[3] = current_symbol[53];
-        } else {
-            d_prev_pilots[0] = current_symbol[11] * p;
-            d_prev_pilots[1] = current_symbol[25] * p;
-            d_prev_pilots[2] = current_symbol[39] * p;
-            d_prev_pilots[3] = current_symbol[53] * -p;
+        if (consumed < 12 || wifi_start) {
+            std::printf("[EQ][FLOW] abs=%llu wifi_start=%d in_frame=%d sym_idx=%d consumed=%d produced=%d\n",
+                        (unsigned long long)abs_in_off,
+                        wifi_start ? 1 : 0,
+                        d_in_frame ? 1 : 0,
+                        d_sym_idx,
+                        consumed,
+                        produced);
+            std::fflush(stdout);
         }
 
-        // compensate residual frequency offset
-        for (int i = 0; i < 64; i++) {
-            current_symbol[i] *= exp(gr_complex(0, -beta));
-        }
+        if (!d_in_frame) {
+            if (!wifi_start) {
+                consumed++;
+                d_current_symbol++;
+                continue;
+            }
 
-        // update estimate of residual frequency offset
-        if (d_current_symbol >= 2) {
+            d_in_frame = true;
+            reset_frame_state();
 
-            double alpha = 0.1;
-            d_er = (1 - alpha) * d_er + alpha * er;
-        }
+            std::printf("[EQ][FLOW] enter-frame abs=%llu\n",
+                        (unsigned long long)abs_in_off);
+            std::fflush(stdout);
 
-        // do equalization
-        d_equalizer->equalize(
-            current_symbol, d_current_symbol, symbols, out + o * 48, d_frame_mod);
+        } else if (wifi_start) {
+            bool allow_takeover = false;
 
-        // signal field
-        if (d_current_symbol == 2) {
-
-            if (decode_signal_field(out + o * 48)) {
-
-                pmt::pmt_t dict = pmt::make_dict();
-                dict = pmt::dict_add(
-                    dict, pmt::mp("frame bytes"), pmt::from_uint64(d_frame_bytes));
-                dict = pmt::dict_add(
-                    dict, pmt::mp("encoding"), pmt::from_uint64(d_frame_encoding));
-                dict = pmt::dict_add(
-                    dict, pmt::mp("snr"), pmt::from_double(d_equalizer->get_snr()));
-                dict = pmt::dict_add(
-                    dict, pmt::mp("nominal frequency"), pmt::from_double(d_freq));
-                dict = pmt::dict_add(dict,
-                                     pmt::mp("frequency offset"),
-                                     pmt::from_double(d_freq_offset_from_synclong));
-                dict = pmt::dict_add(dict, pmt::mp("beta"), pmt::from_double(beta));
-
-                std::vector<gr_complex> csi = d_equalizer->get_csi();
-                dict = pmt::dict_add(
-                    dict, pmt::mp("csi"), pmt::init_c32vector(csi.size(), csi));
-
-                pmt::pmt_t pairs = pmt::dict_items(dict);
-                for (int i = 0; i < pmt::length(pairs); i++) {
-                    pmt::pmt_t pair = pmt::nth(i, pairs);
-                    add_item_tag(0,
-                                 nitems_written(0) + o,
-                                 pmt::car(pair),
-                                 pmt::cdr(pair),
-                                 alias_pmt());
+            if (!d_have_ht_header) {
+                allow_takeover = true;
+            } else {
+                const int end_rel = d_data_start_rel + d_frame_symbols - 1;
+                if (d_sym_idx > end_rel) {
+                    allow_takeover = true;
                 }
+            }
+
+            if (allow_takeover) {
+                reset_frame_state();
+                d_in_frame = true;
+
+                std::printf("[EQ][FLOW] frame-takeover abs=%llu allow=%d\n",
+                            (unsigned long long)abs_in_off,
+                            allow_takeover ? 1 : 0);
+                std::fflush(stdout);
             }
         }
 
-        if (d_current_symbol > 2) {
-            o++;
-            pmt::pmt_t pdu = pmt::make_dict();
-            message_port_pub(
-                pmt::mp("symbols"),
-                pmt::cons(pmt::make_dict(), pmt::init_c32vector(48, symbols)));
+        // ------------------------------------------------------------
+        // cache direct raw header52 from original sym64 for early symbols
+        // d_early_eqsym[rel][0..47] : 48 header data carriers
+        // d_early_eqsym[rel][48..51]: 4 pilots
+        // ------------------------------------------------------------
+        std::fprintf(stderr, "[EQ][PRE_EXTRACT] d_sym_idx=%d, in_frame=%d\n", d_sym_idx, d_in_frame ? 1 : 0);
+        std::fflush(stderr);
+        std::printf("[EQ][IDX_CHECK] d_sym_idx=%d, condition=%d\n", d_sym_idx, (d_sym_idx >= 0 && d_sym_idx < 8) ? 1 : 0);
+        if (d_sym_idx >= 0 && d_sym_idx < 8) {
+            // 调试：记录提取时的符号索引
+            std::fprintf(stderr, "[EXTRACT_CALL] sym_idx=%d, type=%s\n", d_sym_idx,
+                       d_sym_idx == kLltf0Rel ? "L-LTF0" :
+                       d_sym_idx == kLltf1Rel ? "L-LTF1" :
+                       d_sym_idx == kLSigRel ? "L-SIG" :
+                       d_sym_idx == kHtSig0Rel ? "HT-SIG0" :
+                       d_sym_idx == kHtSig1Rel ? "HT-SIG1" : "OTHER");
+            std::fflush(stderr);
+            extract_header52_from_sym64(sym64, d_early_eqsym[d_sym_idx]);
+            d_early_eqsym_valid[d_sym_idx] = true;
+            std::printf("[EQ][VALID_SET] d_sym_idx=%d, valid=%d\n", d_sym_idx, d_early_eqsym_valid[d_sym_idx] ? 1 : 0);
+
+            // 符号索引调试
+            const char* sym_type = "UNKNOWN";
+            if (d_sym_idx == kLltf0Rel) sym_type = "L-LTF0";
+            else if (d_sym_idx == kLltf1Rel) sym_type = "L-LTF1";
+            else if (d_sym_idx == kLSigRel) sym_type = "L-SIG";
+            else if (d_sym_idx == kHtSig0Rel) sym_type = "HT-SIG0";
+            else if (d_sym_idx == kHtSig1Rel) sym_type = "HT-SIG1";
+            else if (d_sym_idx >= kDataStartRel) sym_type = "DATA";
+
+            std::printf("[EQ][SYM_IDX] sym_idx=%d, type=%s\n", d_sym_idx, sym_type);
+            std::fflush(stdout);
         }
 
-        i++;
+        // ------------------------------------------------------------
+        // legacy equalizer path for downstream 52-value data output
+        // ------------------------------------------------------------
+        gr_complex raw_eq52[52];
+        uint8_t raw_bits52[52];
+
+        std::memset(raw_bits52, 0, sizeof(raw_bits52));
+        for (int k = 0; k < 52; k++) {
+            raw_eq52[k] = gr_complex(0.0f, 0.0f);
+        }
+
+        std::shared_ptr<gr::digital::constellation> cnst = d_bpsk;
+        switch (d_frame_n_bpsc) {
+        case 1: cnst = d_bpsk;  break;
+        case 2: cnst = d_qpsk;  break;
+        case 4: cnst = d_16qam; break;
+        default: cnst = d_bpsk; break;
+        }
+
+        d_equalizer->equalize(const_cast<gr_complex*>(sym64),
+                              d_sym_idx,
+                              raw_eq52,
+                              raw_bits52,
+                              cnst);
+
+        // 调试：验证equalize被调用
+        std::fprintf(stderr, "[EQ][POST_EQUALIZE] d_sym_idx=%d\n", d_sym_idx);
+        std::fflush(stderr);
+
+        // 调试：打印头部符号的解调比特
+        if (d_sym_idx >= 0 && d_sym_idx < 8) {
+            std::fprintf(stderr, "[EQ][RAW_BITS] sym_idx=%d bits52=", d_sym_idx);
+            for (int kk = 0; kk < 52; kk++) {
+                std::fprintf(stderr, "%d", raw_bits52[kk] ? 1 : 0);
+            }
+            std::fprintf(stderr, "\n");
+            std::fflush(stderr);
+        }
+
+        int nonzero_cnt = 0;
+        double eqp52 = 0.0;
+
+        for (int k = 0; k < 52; k++) {
+            const float re = raw_eq52[k].real();
+            const float im = raw_eq52[k].imag();
+
+            if (!std::isfinite(re) || !std::isfinite(im)) {
+                raw_eq52[k] = gr_complex(0.0f, 0.0f);
+                raw_bits52[k] = 0;
+                continue;
+            }
+
+            if (std::fabs(re) > 1e-6f || std::fabs(im) > 1e-6f) {
+                nonzero_cnt++;
+            }
+
+            eqp52 += (double)re * re + (double)im * im;
+            raw_bits52[k] = hard_bit_from_complex(raw_eq52[k]);
+        }
+
+        const bool valid = (nonzero_cnt > 0 && std::isfinite(eqp52) && eqp52 > 1.0);
+
+        if (valid && d_first_valid_symbol < 0) {
+            d_first_valid_symbol = d_sym_idx;
+        }
+
+        if (d_sym_idx >= 0 && d_sym_idx < 8) {
+            std::memcpy(d_early_bits[d_sym_idx], raw_bits52, sizeof(raw_bits52));
+            d_early_bits_valid[d_sym_idx] = valid;
+        }
+
+        // ------------------------------------------------------------
+        // direct mixed-mode header detection:
+        //   L-LTF : rel=1/2
+        //   L-SIG : rel=3
+        //   HTSIG : rel=4/5
+        //
+        // IMPORTANT:
+        //   This path does NOT depend on d_equalizer->equalize() output.
+        // ------------------------------------------------------------
+
+        std::fprintf(stderr, "[EQ][STDERR_DIRECT] Entering direct mixed-mode header detection\n");
+        std::fflush(stderr);
+        std::printf("[EQ][DIRECT_PATH] Entering direct mixed-mode header detection\n");
+        std::fflush(stdout);
+        std::fprintf(stderr, "[EQ][STDERR_BEFORE_GATE] Reached before gate check\n");
+        std::fflush(stderr);
+        std::printf("[EQ][BEFORE_GATE] Reached before gate check\n");
+        std::fflush(stdout);
+        // gate 状态打印，只用于观察
+        if (!d_have_ht_header &&
+            (d_sym_idx >= kLSigRel && d_sym_idx <= kHtSig1Rel + 1)) {
+            std::printf(
+                "[EQ][GATE] sym=%d want_htsig1=%d valid={lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d} have_ht=%d\n",
+                d_sym_idx,
+                kHtSig1Rel,
+                d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
+                d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
+                d_early_eqsym_valid[kLSigRel] ? 1 : 0,
+                d_early_eqsym_valid[kHtSig0Rel] ? 1 : 0,
+                d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0,
+                d_have_ht_header ? 1 : 0);
+            std::fflush(stdout);
+        }
+
+        // 调试：检查条件是否满足
+        std::printf("[EQ][TEST_INSERT] Added new debug output\n");
+        std::printf("[EQ][DEBUG_TEST] ======== DEBUG ENTRY ========\n");
+        std::printf("[EQ][DEBUG] Checking HT-SIG parse condition: d_sym_idx=%d, kHtSig1Rel=%d, d_have_ht_header=%d\n",
+                   d_sym_idx, kHtSig1Rel, d_have_ht_header ? 1 : 0);
+        std::printf("[EQ][DEBUG] valid flags: lltf0=%d, lltf1=%d, lsig=%d, htsig0=%d, htsig1=%d\n",
+                   d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kLSigRel] ? 1 : 0,
+                   d_early_eqsym_valid[kHtSig0Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
+        std::fflush(stdout);
+
+        // 真正的 HT-SIG 解析门条件，必须保留
+        std::printf("[EQ][GATE_DETAIL] d_sym_idx=%d, kHtSig1Rel=%d, d_have_ht_header=%d\n",
+                   d_sym_idx, kHtSig1Rel, d_have_ht_header ? 1 : 0);
+        std::printf("[EQ][GATE_DETAIL] valid flags: lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d\n",
+                   d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kLSigRel] ? 1 : 0,
+                   d_early_eqsym_valid[kHtSig0Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
+        // FIX: Allow HT-SIG parse to trigger when L-SIG validation completes,
+        // not just at the exact symbol index kHtSig1Rel.
+        // This handles the case where L-SIG validation happens later than expected.
+        const bool ht_parse_condition =
+            !d_have_ht_header &&
+            d_sym_idx >= kHtSig1Rel &&
+            d_early_eqsym_valid[kLltf0Rel] &&
+            d_early_eqsym_valid[kLltf1Rel] &&
+            d_early_eqsym_valid[kLSigRel] &&
+            d_early_eqsym_valid[kHtSig0Rel] &&
+            d_early_eqsym_valid[kHtSig1Rel];
+        if (ht_parse_condition) {
+
+            std::printf("[EQ][DEBUG_BLOCK] ENTERING HT-SIG PARSE BLOCK\n");
+            std::fflush(stdout);
+
+            // L-LTF符号调试
+            std::printf("[RX][LLTF-DBG] L-LTF0 valid=%d, L-LTF1 valid=%d\n",
+                        d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
+                        d_early_eqsym_valid[kLltf1Rel] ? 1 : 0);
+            // 打印L-LTF符号的幅度
+            if (d_early_eqsym_valid[kLltf0Rel] && d_early_eqsym_valid[kLltf1Rel]) {
+                float lltf0_mag = 0.0f, lltf1_mag = 0.0f;
+                for (int i = 0; i < 52; i++) {
+                    lltf0_mag += std::abs(d_early_eqsym[kLltf0Rel][i]);
+                    lltf1_mag += std::abs(d_early_eqsym[kLltf1Rel][i]);
+                }
+                lltf0_mag /= 52.0f;
+                lltf1_mag /= 52.0f;
+                std::printf("[RX][LLTF-DBG] L-LTF0 avg_mag=%.4f, L-LTF1 avg_mag=%.4f\n",
+                            lltf0_mag, lltf1_mag);
+                // 打印前几个子载波
+                std::printf("[RX][LLTF-DBG] L-LTF0[0:3]: ");
+                for (int i = 0; i < 4 && i < 52; i++) {
+                    std::printf("%.3f∠%.3f ", std::abs(d_early_eqsym[kLltf0Rel][i]),
+                                std::arg(d_early_eqsym[kLltf0Rel][i]));
+                }
+                std::printf("\n");
+                std::printf("[RX][LLTF-DBG] L-LTF1[0:3]: ");
+                for (int i = 0; i < 4 && i < 52; i++) {
+                    std::printf("%.3f∠%.3f ", std::abs(d_early_eqsym[kLltf1Rel][i]),
+                                std::arg(d_early_eqsym[kLltf1Rel][i]));
+                }
+                std::printf("\n");
+            }
+            std::fflush(stdout);
+
+            gr_complex Hhdr52[52];
+            estimate_header_channel_from_lltf52(d_early_eqsym[kLltf0Rel],
+                                                d_early_eqsym[kLltf1Rel],
+                                                Hhdr52);
+
+            // 信道估计调试输出
+            float h_mag_avg = 0.0f;
+            float h_phase_var = 0.0f;
+            gr_complex h_avg = gr_complex(0.0f, 0.0f);
+            for (int i = 0; i < 52; i++) {
+                h_mag_avg += std::abs(Hhdr52[i]);
+                h_avg += Hhdr52[i];
+            }
+            h_mag_avg /= 52.0f;
+            h_avg /= 52.0f;
+            for (int i = 0; i < 52; i++) {
+                gr_complex diff = Hhdr52[i] - h_avg;
+                h_phase_var += std::arg(diff) * std::arg(diff);
+            }
+            h_phase_var /= 52.0f;
+            std::printf("[RX][CHAN-EST] Hhdr52: avg_mag=%.4f avg_phase=%.4f rad phase_var=%.4f\n",
+                        h_mag_avg, std::arg(h_avg), h_phase_var);
+            // 打印前几个子载波的信道响应
+            std::printf("[RX][CHAN-EST] Hhdr52[0:5]: ");
+            for (int i = 0; i < 6 && i < 52; i++) {
+                std::printf("%.3f∠%.3f ", std::abs(Hhdr52[i]), std::arg(Hhdr52[i]));
+            }
+            std::printf("\n");
+
+            // debug print rel=3/4/5 direct-path raw/equalized/deinterleaved bits
+            for (int rel : {kLSigRel, kHtSig0Rel, kHtSig1Rel}) {
+                uint8_t raw48[48];
+                uint8_t eq48[48];
+                uint8_t deintl48[48];
+
+                extract_header_raw48_bits_from_cache52(d_early_eqsym[rel], raw48);
+                equalize_header52_to_bits48(d_early_eqsym[rel], Hhdr52, eq48, nullptr);
+                deinterleave_bpsk_48(eq48, deintl48);
+
+                std::printf("[RX][HDRDBG] rel=%d raw48=%s\n",
+                            rel, bits_to_string(raw48, 48).c_str());
+                std::printf("[RX][HDRDBG] rel=%d eq48 =%s\n",
+                            rel, bits_to_string(eq48, 48).c_str());
+                std::printf("[RX][HDRDBG] rel=%d deintl48=%s\n",
+                            rel, bits_to_string(deintl48, 48).c_str());
+
+                // 比特错误统计
+                int raw_eq_mismatch = 0;
+                int eq_deintl_mismatch = 0;
+                for (int i = 0; i < 48; i++) {
+                    if (raw48[i] != eq48[i]) raw_eq_mismatch++;
+                    if (eq48[i] != deintl48[i]) eq_deintl_mismatch++;
+                }
+                std::printf("[RX][HDRDBG] rel=%d bit-errors: raw->eq=%d eq->deintl=%d\n",
+                            rel, raw_eq_mismatch, eq_deintl_mismatch);
+            }
+            std::fflush(stdout);
+
+            bool found = false;
+
+            // L-SIG invert brute-force
+            for (int inv_lsig = 0; inv_lsig <= 1 && !found; inv_lsig++) {
+                int lsig_enc = -1;
+                int lsig_len = 0;
+
+                if (!decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
+                                                      Hhdr52,
+                                                      inv_lsig != 0,
+                                                      lsig_enc,
+                                                      lsig_len,
+                                                      nullptr,
+                                                      nullptr)) {
+                    continue;
+                }
+
+                if (lsig_enc != 0) {
+                    continue;
+                }
+
+                // HT-SIG may still differ by a 180-degree ambiguity on each symbol
+                for (int inv_a = 0; inv_a <= 1 && !found; inv_a++) {
+                    for (int inv_b = 0; inv_b <= 1 && !found; inv_b++) {
+                        int parsed_len = 0;
+                        int parsed_mcs = -1;
+                        bool parsed_sgi = false;
+                        bool parsed_agg = false;
+
+                        if (!decode_htsig_direct_from_header52(d_early_eqsym[kHtSig0Rel],
+                                                               d_early_eqsym[kHtSig1Rel],
+                                                               Hhdr52,
+                                                               inv_a != 0,
+                                                               inv_b != 0,
+                                                               parsed_len,
+                                                               parsed_mcs,
+                                                               parsed_sgi,
+                                                               parsed_agg,
+                                                               nullptr,
+                                                               nullptr,
+                                                               nullptr,
+                                                               nullptr)) {
+                            continue;
+                        }
+
+                        d_have_lsig = true;
+                        d_lsig_rel = kLSigRel;
+                        d_hdr_reorder_mode = 0;
+                        d_hdr_inverted = false;
+                        d_htsig0_rel = kHtSig0Rel;
+                        d_htsig1_rel = kHtSig1Rel;
+                        d_data_start_rel = kDataStartRel;
+                        d_chan_est_mode = 0;
+
+                        set_ht_frame_params_from_mcs_len(parsed_mcs, parsed_len);
+
+                        std::printf("[EQ][L-SIG] parsed OK: rel=%d inv=%d len=%d\n",
+                                    kLSigRel, inv_lsig, lsig_len);
+                        std::printf("[EQ][HT-SIG] parsed OK: lsig=%d htsig=%d/%d invA=%d invB=%d mcs=%d len=%d sgi=%d agg=%d data_start=%d n_sym=%d\n",
+                                    kLSigRel,
+                                    kHtSig0Rel,
+                                    kHtSig1Rel,
+                                    inv_a,
+                                    inv_b,
+                                    parsed_mcs,
+                                    parsed_len,
+                                    parsed_sgi ? 1 : 0,
+                                    parsed_agg ? 1 : 0,
+                                    d_data_start_rel,
+                                    d_frame_symbols);
+                        std::fflush(stdout);
+
+                        found = true;
+                    }
+                }
+            }
+
+            if (!found) {
+                std::printf("[EQ][HT-SIG] parse failed: lsig=%d htsig=%d/%d\n",
+                            kLSigRel, kHtSig0Rel, kHtSig1Rel);
+                // 调试：打印L-SIG和HT-SIG比特
+                if (d_early_bits_valid[kLSigRel]) {
+                    std::fprintf(stderr, "[EQ][HT-SIG][DEBUG] L-SIG bits (48): ");
+                    for (int i = 0; i < 48; i++) {
+                        std::fprintf(stderr, "%d", d_early_bits[kLSigRel][i] ? 1 : 0);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+                if (d_early_bits_valid[kHtSig0Rel]) {
+                    std::fprintf(stderr, "[EQ][HT-SIG][DEBUG] HT-SIG0 bits (48): ");
+                    for (int i = 0; i < 48; i++) {
+                        std::fprintf(stderr, "%d", d_early_bits[kHtSig0Rel][i] ? 1 : 0);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+                if (d_early_bits_valid[kHtSig1Rel]) {
+                    std::fprintf(stderr, "[EQ][HT-SIG][DEBUG] HT-SIG1 bits (48): ");
+                    for (int i = 0; i < 48; i++) {
+                        std::fprintf(stderr, "%d", d_early_bits[kHtSig1Rel][i] ? 1 : 0);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+                std::fflush(stdout);
+                std::fflush(stderr);
+            }
+        }
+
+        bool tag_this_output_as_frame_start = false;
+        bool emit_this_symbol = false;
+
+        if (d_have_ht_header) {
+            if (d_sym_idx == d_data_start_rel) {
+                tag_this_output_as_frame_start = true;
+            }
+            if (d_sym_idx >= d_data_start_rel) {
+                emit_this_symbol = true;
+            }
+        }
+
+        if (emit_this_symbol && (produced + 52) <= noutput_items) {
+            gr_complex* out52 = out + produced;
+
+            const bool use_direct_tx_order_mcs0 =
+                (d_have_ht_header && d_is_ht && d_frame_n_bpsc == 1);
+            const int data_sym_idx = d_sym_idx - d_data_start_rel;
+
+            if (use_direct_tx_order_mcs0) {
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, out52);
+            } else {
+                if (!reorder_eq_52_mode(raw_eq52, out52, d_hdr_reorder_mode)) {
+                    std::memcpy(out52, raw_eq52, 52 * sizeof(gr_complex));
+                }
+            }
+
+            const bool trace_sym =
+                (data_sym_idx == 0) ||
+                (data_sym_idx == 1) ||
+                (data_sym_idx == 2) ||
+                (data_sym_idx == 19) ||
+                (data_sym_idx == 20) ||
+                (data_sym_idx == 31);
+
+            if (trace_sym) {
+                uint8_t out_bits52[52];
+                for (int i = 0; i < 52; i++) {
+                    out_bits52[i] = hard_bit_from_complex(out52[i]);
+                }
+
+                std::string ref_path;
+                uint8_t tx_ref52[52];
+                const bool have_ref = read_tx_ref_bits52(tx_ref52, ref_path);
+
+                std::printf("[EQ][HT-DATA%d][OUT52] bits52=%s\n",
+                            data_sym_idx,
+                            bits_to_string(out_bits52, 52).c_str());
+                if (have_ref) {
+                    int mism = 0;
+                    for (int i = 0; i < 52; i++) {
+                        if (out_bits52[i] != tx_ref52[i]) {
+                            mism++;
+                        }
+                    }
+                    std::printf("[EQ][HT-DATA%d][OUT52] compare-to-TX mismatches=%d path=%s\n",
+                                data_sym_idx,
+                                mism,
+                                ref_path.c_str());
+                } else {
+                    std::printf("[EQ][HT-DATA%d][OUT52] TX reference unavailable path=%s\n",
+                                data_sym_idx,
+                                ref_path.c_str());
+                }
+                std::fflush(stdout);
+            }
+
+            if (use_direct_tx_order_mcs0 && trace_sym) {
+                gr_complex dbg52[52];
+                uint8_t bits52[52];
+
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, dbg52);
+
+                for (int i = 0; i < 52; i++) {
+                    bits52[i] = hard_bit_from_complex(dbg52[i]);
+                }
+
+                std::string ref_path;
+                uint8_t tx_ref52[52];
+                const bool have_ref = read_tx_ref_bits52(tx_ref52, ref_path);
+
+                std::printf("[EQ][HT-DATA%d][DIRECT-DBG] tx-order bits52=%s\n",
+                            data_sym_idx,
+                            bits_to_string(bits52, 52).c_str());
+                if (have_ref) {
+                    int mism = 0;
+                    for (int i = 0; i < 52; i++) {
+                        if (bits52[i] != tx_ref52[i]) {
+                            mism++;
+                        }
+                    }
+                    std::printf("[EQ][HT-DATA%d][DIRECT-DBG] compare-to-TX mismatches=%d path=%s\n",
+                                data_sym_idx,
+                                mism,
+                                ref_path.c_str());
+                } else {
+                    std::printf("[EQ][HT-DATA%d][DIRECT-DBG] TX reference unavailable path=%s\n",
+                                data_sym_idx,
+                                ref_path.c_str());
+                }
+                std::fflush(stdout);
+            }
+
+            {
+                pmt::pmt_t meta = pmt::make_dict();
+                meta = pmt::dict_add(meta, pmt::mp("packet_len"), pmt::from_long(52));
+                pmt::pmt_t vec = pmt::init_c32vector(52, out52);
+                message_port_pub(pmt::mp("symbols"), pmt::cons(meta, vec));
+            }
+
+            if (tag_this_output_as_frame_start) {
+                const uint64_t out_off = this->nitems_written(0) + produced;
+
+                this->add_item_tag(
+                    0,
+                    out_off,
+                    pmt::intern("frame_bytes"),
+                    pmt::from_uint64((uint64_t)d_frame_bytes),
+                    pmt::intern(this->name()));
+
+                this->add_item_tag(
+                    0,
+                    out_off,
+                    pmt::intern("frame bytes"),
+                    pmt::from_uint64((uint64_t)d_frame_bytes),
+                    pmt::intern(this->name()));
+
+                this->add_item_tag(
+                    0,
+                    out_off,
+                    pmt::intern("encoding"),
+                    pmt::from_uint64((uint64_t)d_frame_encoding),
+                    pmt::intern(this->name()));
+
+                this->add_item_tag(
+                    0,
+                    out_off,
+                    pmt::intern("mcs"),
+                    pmt::from_uint64((uint64_t)d_frame_encoding),
+                    pmt::intern(this->name()));
+            }
+
+            produced += 52;
+        }
+
+        consumed++;
         d_current_symbol++;
-    }
+        d_sym_idx++;
 
-    consume(0, i);
-    return o;
-}
-
-bool frame_equalizer_impl::decode_signal_field(uint8_t* rx_bits)
-{
-
-    static ofdm_param ofdm(BPSK_1_2);
-    static frame_param frame(ofdm, 0);
-
-    deinterleave(rx_bits);
-    uint8_t* decoded_bits = d_decoder.decode(&ofdm, &frame, d_deinterleaved);
-
-    return parse_signal(decoded_bits);
-}
-
-void frame_equalizer_impl::deinterleave(uint8_t* rx_bits)
-{
-    for (int i = 0; i < 48; i++) {
-        d_deinterleaved[i] = rx_bits[interleaver_pattern[i]];
-    }
-}
-
-bool frame_equalizer_impl::parse_signal(uint8_t* decoded_bits)
-{
-
-    int r = 0;
-    d_frame_bytes = 0;
-    bool parity = false;
-    for (int i = 0; i < 17; i++) {
-        parity ^= decoded_bits[i];
-
-        if ((i < 4) && decoded_bits[i]) {
-            r = r | (1 << i);
+        if (d_have_ht_header && d_frame_symbols > 0) {
+            const int end_rel = d_data_start_rel + d_frame_symbols;
+            if (d_sym_idx >= end_rel) {
+                reset_frame_state();
+                d_in_frame = false;
+            }
         }
 
-        if (decoded_bits[i] && (i > 4) && (i < 17)) {
-            d_frame_bytes = d_frame_bytes | (1 << (i - 5));
+        if (d_in_frame && d_sym_idx > kMaxFrameRel) {
+            reset_frame_state();
+            d_in_frame = false;
         }
     }
 
-    if (parity != decoded_bits[17]) {
-        dout << "SIGNAL: wrong parity" << std::endl;
-        return false;
-    }
-
-    switch (r) {
-    case 11:
-        d_frame_encoding = 0;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)24);
-        d_frame_mod = d_bpsk;
-        dout << "Encoding: 3 Mbit/s   ";
-        break;
-    case 15:
-        d_frame_encoding = 1;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)36);
-        d_frame_mod = d_bpsk;
-        dout << "Encoding: 4.5 Mbit/s   ";
-        break;
-    case 10:
-        d_frame_encoding = 2;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)48);
-        d_frame_mod = d_qpsk;
-        dout << "Encoding: 6 Mbit/s   ";
-        break;
-    case 14:
-        d_frame_encoding = 3;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)72);
-        d_frame_mod = d_qpsk;
-        dout << "Encoding: 9 Mbit/s   ";
-        break;
-    case 9:
-        d_frame_encoding = 4;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)96);
-        d_frame_mod = d_16qam;
-        dout << "Encoding: 12 Mbit/s   ";
-        break;
-    case 13:
-        d_frame_encoding = 5;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)144);
-        d_frame_mod = d_16qam;
-        dout << "Encoding: 18 Mbit/s   ";
-        break;
-    case 8:
-        d_frame_encoding = 6;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)192);
-        d_frame_mod = d_64qam;
-        dout << "Encoding: 24 Mbit/s   ";
-        break;
-    case 12:
-        d_frame_encoding = 7;
-        d_frame_symbols = (int)ceil((16 + 8 * d_frame_bytes + 6) / (double)216);
-        d_frame_mod = d_64qam;
-        dout << "Encoding: 27 Mbit/s   ";
-        break;
-    default:
-        dout << "unknown encoding" << std::endl;
-        return false;
-    }
-
-    mylog("encoding: {} - length: {} - symbols: {}",
-          d_frame_encoding,
-          d_frame_bytes,
-          d_frame_symbols);
-    return true;
+    consume_each(consumed);
+    return produced;
 }
 
-const int frame_equalizer_impl::interleaver_pattern[48] = {
-    0, 3, 6, 9,  12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45,
-    1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46,
-    2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47
-};
+} // namespace ieee802_11
+} // namespace gr
 
-} /* namespace ieee802_11 */
-} /* namespace gr */
