@@ -21,6 +21,7 @@
 #include <ieee802_11/sync_long.h>
 #include <volk/volk.h>
 
+#include <cmath>
 #include <list>
 #include <tuple>
 
@@ -188,7 +189,6 @@ public:
 
     void search_frame_start()
     {
-
         // sort list (highest correlation first)
         assert(d_cor.size() == SYNC_LENGTH);
         d_cor.sort(compare_abs);
@@ -217,7 +217,6 @@ public:
                     d_freq_offset = arg(first * conj(second)) / 64;
                     // nice match found, return immediately
                     return;
-
                 } else if (diff == 63) {
                     d_frame_start = min(get<1>(vec[i]), get<1>(vec[k]));
                     d_freq_offset = arg(first * conj(second)) / 63;
