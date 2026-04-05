@@ -213,15 +213,15 @@ public:
                 }
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
                 if (diff == 64) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k]));
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;  // FFT window from CP end
                     d_freq_offset = arg(first * conj(second)) / 64;
                     // nice match found, return immediately
                     return;
                 } else if (diff == 63) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k]));
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
                     d_freq_offset = arg(first * conj(second)) / 63;
                 } else if (diff == 65) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k]));
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
                     d_freq_offset = arg(first * conj(second)) / 65;
                 }
             }
