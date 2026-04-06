@@ -153,6 +153,11 @@ public:
                 }
 
                 if (rel >= 0 && (rel < 128 || ((rel - 128) % 80) > 15)) {
+                    // Debug: log COPY output for preamble and HT-SIG symbols
+                    if ((rel >= 0 && rel <= 7) || (rel >= 192 && rel <= 319)) {
+                        fprintf(stderr, "[COPY_OUT] rel=%d, d_offset=%d, d_frame_start=%d\n",
+                                rel, d_offset, d_frame_start);
+                    }
                     // CFO correction disabled for testing - threshold set to 100.0 to force no correction
                     if (std::abs(d_freq_offset) > 100.0) {
                         out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
