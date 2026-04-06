@@ -212,17 +212,32 @@ public:
                     second = get<0>(vec[k]);
                 }
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
-                if (diff == 64) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;  // FFT window from CP end
-                    d_freq_offset = arg(first * conj(second)) / 64;
-                    // nice match found, return immediately
+
+                // HT Mixed mode: L-LTF period is 80 samples (64 data + 16 CP)
+                // Check for diff=80 first (most likely for HT Mixed)
+                if (diff == 80) {
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;  // CP end
+                    d_freq_offset = arg(first * conj(second)) / 80;
                     return;
-                } else if (diff == 63) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
-                    d_freq_offset = arg(first * conj(second)) / 63;
-                } else if (diff == 65) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
-                    d_freq_offset = arg(first * conj(second)) / 65;
+                } else if (diff == 79 || diff == 81) {
+                    // Near-80 spacing (HT Mixed with tolerance)
+                    if (d_frame_start >= SYNC_LENGTH) {  // Only if no earlier peak found
+                        d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
+                        d_freq_offset = arg(first * conj(second)) / diff;
+                    }
+                }
+
+                // Legacy mode: L-LTF period is 64 samples
+                if (diff == 64) {
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;  // CP end
+                    d_freq_offset = arg(first * conj(second)) / 64;
+                    return;
+                } else if (diff == 63 || diff == 65) {
+                    // Near-64 spacing (legacy with tolerance)
+                    if (d_frame_start >= SYNC_LENGTH) {
+                        d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
+                        d_freq_offset = arg(first * conj(second)) / diff;
+                    }
                 }
             }
         }
