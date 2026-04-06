@@ -990,6 +990,68 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
 }
 
 // ============================================================
+// HT-SIG QBPSK rotation detection and compensation
+// ============================================================
+
+// Rotation codes:
+//   0 = no rotation (0°)
+//   1 = +90° rotation (multiply by j)
+//   2 = -90° rotation (multiply by -j)
+//   3 = 180° rotation (multiply by -1)
+
+static inline gr_complex get_htsig_rotation_factor(int rotation)
+{
+    switch (rotation) {
+        case 0: return gr_complex(1.0f, 0.0f);   // 0°
+        case 1: return gr_complex(0.0f, 1.0f);    // +90°
+        case 2: return gr_complex(0.0f, -1.0f);   // -90°
+        case 3: return gr_complex(-1.0f, 0.0f);   // 180°
+        default: return gr_complex(1.0f, 0.0f);
+    }
+}
+
+// Detect HT-SIG QBPSK rotation by analyzing pilot phases
+// HT-SIG pilots are at indices 48-51 (subcarriers -21, -7, +7, +21)
+static int detect_htsig_rotation(const gr_complex* ht_sig_eq52)
+{
+    gr_complex pilot_sum(0.0f, 0.0f);
+    int pilot_count = 0;
+
+    for (int i = 0; i < 4; i++) {
+        const gr_complex pilot = ht_sig_eq52[48 + i];
+        pilot_sum += pilot;
+        pilot_count++;
+    }
+
+    if (pilot_count == 0) {
+        return 0;
+    }
+
+    float avg_phase = std::arg(pilot_sum);
+    const float PI = 3.14159265358979f;
+
+    // Classify based on phase angle (±45° tolerance)
+    if (avg_phase >= -PI/4 && avg_phase < PI/4) {
+        return 0;  // No rotation (0°)
+    } else if (avg_phase >= PI/4 && avg_phase < 3*PI/4) {
+        return 1;  // +90° rotation
+    } else if (avg_phase >= -3*PI/4 && avg_phase < -PI/4) {
+        return 2;  // -90° rotation
+    } else {
+        return 3;  // 180° rotation
+    }
+}
+
+// Apply rotation compensation to HT-SIG before decoding
+static void apply_htsig_rotation(const gr_complex* in52, gr_complex* out52, int rotation)
+{
+    gr_complex rot = get_htsig_rotation_factor(rotation);
+    for (int i = 0; i < 52; i++) {
+        out52[i] = in52[i] * std::conj(rot);
+    }
+}
+
+// ============================================================
 // Direct header decode from raw sym64-derived cached header52
 // ============================================================
 
@@ -1132,8 +1194,23 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
+    // Debug: print first 24 encoded bits before Viterbi (HT-SIG)
+    std::fprintf(stderr, "[VITERBI_IN] enc96[0:24] = ");
+    for (int i = 0; i < 24; i++) {
+        std::fprintf(stderr, "%d", enc96[i]);
+    }
+    std::fprintf(stderr, "\n");
+
+    // Debug: print first 20 encoded bits before Viterbi (HT-SIG)
+    std::fprintf(stderr, "[VITERBI_HT_SIG] enc96[0:20] = ");
+    for (int i = 0; i < 20 && i < 96; i++) {
+        std::fprintf(stderr, "%d", enc96[i]);
+    }
+    std::fprintf(stderr, "\n");
+
     std::vector<uint8_t> dec48;
     if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+        std::fprintf(stderr, "[VITERBI_HT_SIG] decode failed!\n");
         return false;
     }
     if ((int)dec48.size() != 48) {
@@ -1732,6 +1809,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                        d_sym_idx == kHtSig1Rel ? "HT-SIG1" : "OTHER");
             std::fflush(stderr);
             extract_header52_from_sym64(sym64, d_early_eqsym[d_sym_idx]);
+            // DEBUG: Print raw FFT bins for HT-SIG verification
+            std::fprintf(stderr, "[EXTRACT_HT_SIG] rel=%d, sym64[6-10] = ", d_sym_idx);
+            for (int i = 6; i < 10; i++) {
+                std::fprintf(stderr, "%.3f+%.3fi ", sym64[i].real(), sym64[i].imag());
+            }
+            std::fprintf(stderr, "\n");
+            std::fflush(stderr);
             d_early_eqsym_valid[d_sym_idx] = true;
             std::printf("[EQ][VALID_SET] d_sym_idx=%d, valid=%d\n", d_sym_idx, d_early_eqsym_valid[d_sym_idx] ? 1 : 0);
 
@@ -2001,45 +2085,56 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     continue;
                 }
 
-                // HT-SIG may still differ by a 180-degree ambiguity on each symbol
-                for (int inv_a = 0; inv_a <= 1 && !found; inv_a++) {
-                    for (int inv_b = 0; inv_b <= 1 && !found; inv_b++) {
-                        int parsed_len = 0;
-                        int parsed_mcs = -1;
-                        bool parsed_sgi = false;
-                        bool parsed_agg = false;
+                // Detect HT-SIG QBPSK rotation
+                int detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);
+                std::printf("[EQ][HT_ROT] detected rotation=%d\n", detected_rot);
 
-                        if (!decode_htsig_direct_from_header52(d_early_eqsym[kHtSig0Rel],
-                                                               d_early_eqsym[kHtSig1Rel],
-                                                               Hhdr52,
-                                                               inv_a != 0,
-                                                               inv_b != 0,
-                                                               parsed_len,
-                                                               parsed_mcs,
-                                                               parsed_sgi,
-                                                               parsed_agg,
-                                                               nullptr,
-                                                               nullptr,
-                                                               nullptr,
-                                                               nullptr)) {
-                            continue;
-                        }
+                // Try all rotations (0, 90°, 180°, 270°) and 180° ambiguity on each symbol
+                for (int rot = 0; rot <= 3 && !found; rot++) {
+                    // Apply rotation compensation
+                    gr_complex rot_htsig0[52];
+                    gr_complex rot_htsig1[52];
+                    apply_htsig_rotation(d_early_eqsym[kHtSig0Rel], rot_htsig0, rot);
+                    apply_htsig_rotation(d_early_eqsym[kHtSig1Rel], rot_htsig1, rot);
 
-                        d_have_lsig = true;
-                        d_lsig_rel = kLSigRel;
-                        d_hdr_reorder_mode = 0;
-                        d_hdr_inverted = false;
-                        d_htsig0_rel = kHtSig0Rel;
-                        d_htsig1_rel = kHtSig1Rel;
-                        d_data_start_rel = kDataStartRel;
-                        d_chan_est_mode = 0;
+                    for (int inv_a = 0; inv_a <= 1 && !found; inv_a++) {
+                        for (int inv_b = 0; inv_b <= 1 && !found; inv_b++) {
+                            int parsed_len = 0;
+                            int parsed_mcs = -1;
+                            bool parsed_sgi = false;
+                            bool parsed_agg = false;
 
-                        set_ht_frame_params_from_mcs_len(parsed_mcs, parsed_len);
+                            if (!decode_htsig_direct_from_header52(rot_htsig0,
+                                                                   rot_htsig1,
+                                                                   Hhdr52,
+                                                                   inv_a != 0,
+                                                                   inv_b != 0,
+                                                                   parsed_len,
+                                                                   parsed_mcs,
+                                                                   parsed_sgi,
+                                                                   parsed_agg,
+                                                                   nullptr,
+                                                                   nullptr,
+                                                                   nullptr,
+                                                                   nullptr)) {
+                                continue;
+                            }
 
-                        std::printf("[EQ][L-SIG] parsed OK: rel=%d inv=%d len=%d\n",
-                                    kLSigRel, inv_lsig, lsig_len);
-                        std::printf("[EQ][HT-SIG] parsed OK: lsig=%d htsig=%d/%d invA=%d invB=%d mcs=%d len=%d sgi=%d agg=%d data_start=%d n_sym=%d\n",
-                                    kLSigRel,
+                            d_have_lsig = true;
+                            d_lsig_rel = kLSigRel;
+                            d_hdr_reorder_mode = 0;
+                            d_hdr_inverted = false;
+                            d_htsig0_rel = kHtSig0Rel;
+                            d_htsig1_rel = kHtSig1Rel;
+                            d_data_start_rel = kDataStartRel;
+                            d_chan_est_mode = 0;
+
+                            set_ht_frame_params_from_mcs_len(parsed_mcs, parsed_len);
+
+                            std::printf("[EQ][L-SIG] parsed OK: rel=%d inv=%d len=%d\n",
+                                        kLSigRel, inv_lsig, lsig_len);
+                            std::printf("[EQ][HT-SIG] parsed OK: lsig=%d htsig=%d/%d rot=%d invA=%d invB=%d mcs=%d len=%d sgi=%d agg=%d data_start=%d n_sym=%d\n",
+                                        kLSigRel,
                                     kHtSig0Rel,
                                     kHtSig1Rel,
                                     inv_a,
@@ -2054,6 +2149,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                         found = true;
                     }
+                }
                 }
             }
 
