@@ -111,9 +111,23 @@ public:
                 i++;
                 d_offset++;
 
+                // Debug: periodically log d_offset
+                if (d_offset == 100 || d_offset == 200 || d_offset == 300 || d_offset == 400 || d_offset == 401) {
+                    FILE* df = fopen("/tmp/sync_debug.txt", "a");
+                    if (df) { fprintf(df, "SYNC_LONG: d_offset=%d ninput=%d\n", d_offset, ninput); fclose(df); }
+                }
+
                 if (d_offset == SYNC_LENGTH) {
+                    FILE* df = fopen("/tmp/sync_debug.txt", "a");
+                    if (df) {
+                        fprintf(df, "SYNC_LONG: calling search_frame_start() d_offset=%d d_cor.size=%zu\n", d_offset, d_cor.size());
+                        fclose(df);
+                    } else {
+                        FILE* ef = fopen("/tmp/sync_err.txt", "a");
+                        if (ef) { fprintf(ef, "SYNC_LONG: fopen failed! errno=%d\n", errno); fclose(ef); }
+                    }
                     search_frame_start();
-                    mylog("LONG: frame start at {}",d_frame_start);
+                    mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                     d_offset = 0;
                     d_count = 0;
                     d_state = COPY;
@@ -124,12 +138,13 @@ public:
 
             break;
 
-        case COPY:
+        case COPY: {
             while (i < ninput && o < noutput) {
 
                 int rel = d_offset - d_frame_start;
 
-                if (!rel) {
+                // Add wifi_start tag at d_frame_start (the start of L-LTF data)
+                if (rel == 0) {
                     add_item_tag(0,
                                  nitems_written(0),
                                  pmt::string_to_symbol("wifi_start"),
@@ -138,7 +153,13 @@ public:
                 }
 
                 if (rel >= 0 && (rel < 128 || ((rel - 128) % 80) > 15)) {
-                    out[o] = in_delayed[i] * exp(gr_complex(0, d_offset * d_freq_offset));
+                    // Apply CFO correction only if d_freq_offset is significant (> 0.001)
+                    // For loopback tests with no actual CFO, d_freq_offset is near 0
+                    if (std::abs(d_freq_offset) > 0.001) {
+                        out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
+                    } else {
+                        out[o] = in_delayed[i];
+                    }
                     o++;
                 }
 
@@ -147,6 +168,7 @@ public:
             }
 
             break;
+        }
 
         case RESET: {
             while (o < noutput) {
@@ -189,6 +211,9 @@ public:
 
     void search_frame_start()
     {
+        FILE* df = fopen("/tmp/sync_debug.txt", "a");
+        if (df) { fprintf(df, "SYNC_LONG: search_frame_start() CALLED\n"); fclose(df); }
+
         // sort list (highest correlation first)
         assert(d_cor.size() == SYNC_LENGTH);
         d_cor.sort(compare_abs);
@@ -197,6 +222,17 @@ public:
         vector<pair<gr_complex, int>> vec(d_cor.begin(), d_cor.end());
         d_cor.clear();
 
+        // Debug: print top 10 peaks
+        df = fopen("/tmp/sync_debug.txt", "a");
+        if (df) {
+            fprintf(df, "SYNC_LONG Top 10 peaks:\n");
+            for (int i = 0; i < (int)vec.size() && i < 10; i++) {
+                fprintf(df, "  vec[%d]: mag=%.4f pos=%d\n",
+                        i, (double)abs(get<0>(vec[i])), get<1>(vec[i]));
+            }
+            fclose(df);
+        }
+
         // Method 1: Try to find pairs with expected L-LTF spacing
         // HT Mixed: 80 samples, Legacy: 64 samples
         for (int i = 0; i < (int)vec.size() && i < 10; i++) {
@@ -204,18 +240,54 @@ public:
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
 
                 // HT Mixed mode: L-LTF period is 80 samples
+                // The lower peak corresponds to L-LTF0 data start (~176)
+                // The higher peak corresponds to L-LTF1 data start (~256)
+                // For channel estimation, we need L-LTF0, so use the lower peak
+                // The correlation peak is 2 samples BEFORE the actual L-LTF data start
                 if (diff >= 78 && diff <= 82) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
-                    // Ensure non-negative
-                    if (d_frame_start < 0) d_frame_start = 0;
+                    int p1 = get<1>(vec[i]);
+                    int p2 = get<1>(vec[k]);
+                    // Lower peak corresponds to L-LTF0 data start
+                    int lower_peak = min(p1, p2);
+                    // L-LTF data starts at lower_peak + 2 = 176
+                    // wifi_start should be at this position so frame_equalizer
+                    // starts FFT at the beginning of L-LTF data
+                    d_frame_start = lower_peak + 2;
+                    // Ensure reasonable bounds (data start should be around 176)
+                    if (d_frame_start < 170) d_frame_start = 176;
+                    if (d_frame_start > 182) d_frame_start = 176;
                     d_freq_offset = arg(get<0>(vec[i]) * conj(get<0>(vec[k]))) / diff;
+                    fprintf(stderr, "[SYNC_CFO] diff=%d, arg(vec[i])=%.4f, arg(vec[k])=%.4f, arg(product)=%.4f, CFO=%.6f\n",
+                            diff,
+                            std::arg(get<0>(vec[i])),
+                            std::arg(get<0>(vec[k])),
+                            std::arg(get<0>(vec[i]) * std::conj(get<0>(vec[k]))),
+                            d_freq_offset);
+                    df = fopen("/tmp/sync_debug.txt", "a");
+                    if (df) { fprintf(df, "SYNC_LONG Method1 HT found: diff=%d, pos1=%d pos2=%d -> d_frame_start=%d CFO=%.6f\n", diff, p1, p2, d_frame_start, d_freq_offset); fclose(df); }
                     return;
                 }
                 // Legacy mode: L-LTF period is 64 samples
+                // The peaks occur at the actual L-LTF data start
                 if (diff >= 62 && diff <= 66) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
+                    int p1 = get<1>(vec[i]);
+                    int p2 = get<1>(vec[k]);
+                    // Lower peak corresponds to L-LTF0 data start
+                    int lower_peak = min(p1, p2);
+                    // For Legacy, data_start = lower_peak (no offset needed)
+                    d_frame_start = lower_peak;
                     if (d_frame_start < 0) d_frame_start = 0;
+                    // For Legacy, FFT block alignment: data is already 64 samples
+                    // Ensure d_frame_start is at data start, not CP start
                     d_freq_offset = arg(get<0>(vec[i]) * conj(get<0>(vec[k]))) / diff;
+                    fprintf(stderr, "[SYNC_CFO_LEGACY] diff=%d, arg(vec[i])=%.4f, arg(vec[k])=%.4f, arg(product)=%.4f, CFO=%.6f\n",
+                            diff,
+                            std::arg(get<0>(vec[i])),
+                            std::arg(get<0>(vec[k])),
+                            std::arg(get<0>(vec[i]) * std::conj(get<0>(vec[k]))),
+                            d_freq_offset);
+                    df = fopen("/tmp/sync_debug.txt", "a");
+                    if (df) { fprintf(df, "SYNC_LONG Method1 Legacy found: diff=%d, pos1=%d pos2=%d -> d_frame_start=%d\n", diff, p1, p2, d_frame_start); fclose(df); }
                     return;
                 }
             }
@@ -225,15 +297,22 @@ public:
         // (Less accurate but better fallback than SYNC_LENGTH)
         if (!vec.empty()) {
             int peak_pos = get<1>(vec[0]);
-            d_frame_start = peak_pos - 16;  // Adjust for CP
-            if (d_frame_start < 0) d_frame_start = 0;
+            // Correlation peak is 2 samples before L-LTF data start
+            // so data_start = peak_pos + 2
+            d_frame_start = peak_pos + 2;
+            if (d_frame_start < 170) d_frame_start = 176;
+            if (d_frame_start > 185) d_frame_start = 176;
             d_freq_offset = 0.0f;
+            df = fopen("/tmp/sync_debug.txt", "a");
+            if (df) { fprintf(df, "SYNC_LONG Method2 fallback: peak_pos=%d -> d_frame_start=%d\n", peak_pos, d_frame_start); fclose(df); }
             return;
         }
 
         // Fallback: use SYNC_LENGTH (no detection)
         d_frame_start = SYNC_LENGTH;
         d_freq_offset = 0.0f;
+        df = fopen("/tmp/sync_debug.txt", "a");
+        if (df) { fprintf(df, "SYNC_LONG SYNC_LENGTH fallback: d_frame_start=%d\n", d_frame_start); fclose(df); }
     }
 
 private:
