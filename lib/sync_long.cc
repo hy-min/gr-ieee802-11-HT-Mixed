@@ -197,50 +197,43 @@ public:
         vector<pair<gr_complex, int>> vec(d_cor.begin(), d_cor.end());
         d_cor.clear();
 
-        // in case we don't find anything use SYNC_LENGTH
-        d_frame_start = SYNC_LENGTH;
-
-        for (int i = 0; i < 3; i++) {
-            for (int k = i + 1; k < 4; k++) {
-                gr_complex first;
-                gr_complex second;
-                if (get<1>(vec[i]) > get<1>(vec[k])) {
-                    first = get<0>(vec[k]);
-                    second = get<0>(vec[i]);
-                } else {
-                    first = get<0>(vec[i]);
-                    second = get<0>(vec[k]);
-                }
+        // Method 1: Try to find pairs with expected L-LTF spacing
+        // HT Mixed: 80 samples, Legacy: 64 samples
+        for (int i = 0; i < (int)vec.size() && i < 10; i++) {
+            for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
 
-                // HT Mixed mode: L-LTF period is 80 samples (64 data + 16 CP)
-                // Check for diff=80 first (most likely for HT Mixed)
-                if (diff == 80) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;  // CP end
-                    d_freq_offset = arg(first * conj(second)) / 80;
+                // HT Mixed mode: L-LTF period is 80 samples
+                if (diff >= 78 && diff <= 82) {
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
+                    // Ensure non-negative
+                    if (d_frame_start < 0) d_frame_start = 0;
+                    d_freq_offset = arg(get<0>(vec[i]) * conj(get<0>(vec[k]))) / diff;
                     return;
-                } else if (diff == 79 || diff == 81) {
-                    // Near-80 spacing (HT Mixed with tolerance)
-                    if (d_frame_start >= SYNC_LENGTH) {  // Only if no earlier peak found
-                        d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
-                        d_freq_offset = arg(first * conj(second)) / diff;
-                    }
                 }
-
                 // Legacy mode: L-LTF period is 64 samples
-                if (diff == 64) {
-                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;  // CP end
-                    d_freq_offset = arg(first * conj(second)) / 64;
+                if (diff >= 62 && diff <= 66) {
+                    d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
+                    if (d_frame_start < 0) d_frame_start = 0;
+                    d_freq_offset = arg(get<0>(vec[i]) * conj(get<0>(vec[k]))) / diff;
                     return;
-                } else if (diff == 63 || diff == 65) {
-                    // Near-64 spacing (legacy with tolerance)
-                    if (d_frame_start >= SYNC_LENGTH) {
-                        d_frame_start = min(get<1>(vec[i]), get<1>(vec[k])) - 16;
-                        d_freq_offset = arg(first * conj(second)) / diff;
-                    }
                 }
             }
         }
+
+        // Method 2: Use the highest correlation peak as frame start
+        // (Less accurate but better fallback than SYNC_LENGTH)
+        if (!vec.empty()) {
+            int peak_pos = get<1>(vec[0]);
+            d_frame_start = peak_pos - 16;  // Adjust for CP
+            if (d_frame_start < 0) d_frame_start = 0;
+            d_freq_offset = 0.0f;
+            return;
+        }
+
+        // Fallback: use SYNC_LENGTH (no detection)
+        d_frame_start = SYNC_LENGTH;
+        d_freq_offset = 0.0f;
     }
 
 private:
