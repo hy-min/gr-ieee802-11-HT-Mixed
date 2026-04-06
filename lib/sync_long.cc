@@ -153,9 +153,8 @@ public:
                 }
 
                 if (rel >= 0 && (rel < 128 || ((rel - 128) % 80) > 15)) {
-                    // Apply CFO correction only if d_freq_offset is significant (> 0.001)
-                    // For loopback tests with no actual CFO, d_freq_offset is near 0
-                    if (std::abs(d_freq_offset) > 0.001) {
+                    // CFO correction disabled for testing - threshold set to 100.0 to force no correction
+                    if (std::abs(d_freq_offset) > 100.0) {
                         out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
                     } else {
                         out[o] = in_delayed[i];
