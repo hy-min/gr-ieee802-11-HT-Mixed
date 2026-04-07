@@ -51,6 +51,7 @@ private:
     bool d_have_header;
     bool d_have_ht_header;
     bool d_is_ht;
+    bool d_is_ht_frame;  // Frame type detection result: true=HT-Mixed, false=Legacy
 
     int d_sym_idx;
     int d_first_valid_symbol;
