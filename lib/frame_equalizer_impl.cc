@@ -1993,6 +1993,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // This handles the case where L-SIG validation happens later than expected.
         const bool ht_parse_condition =
             !d_have_ht_header &&
+            d_is_ht_frame &&     // Only parse HT-SIG for HT-Mixed frames
             d_sym_idx >= kHtSig1Rel &&
             d_early_eqsym_valid[kLltf0Rel] &&
             d_early_eqsym_valid[kLltf1Rel] &&
