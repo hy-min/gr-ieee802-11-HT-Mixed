@@ -147,10 +147,12 @@ public:
                 // Add wifi_start tag at L-LTF0 DATA start (rel=0)
                 // Only add if we haven't already added one for this detection
                 if (rel == 0 && !d_wifi_start_added) {
+                    // Store d_frame_start in the tag value so downstream knows
+                    // that this tag's offset (0) actually corresponds to input d_frame_start
                     add_item_tag(0,
                                  nitems_written(0),
                                  pmt::string_to_symbol("wifi_start"),
-                                 pmt::from_double(d_freq_offset_short - d_freq_offset),
+                                 pmt::from_double(d_frame_start),
                                  pmt::string_to_symbol(name()));
                     d_wifi_start_added = true;
                 }
@@ -242,63 +244,89 @@ public:
         }
 
         // Method 1: Try to find pairs with expected L-LTF spacing
-        // HT Mixed: 80 samples, Legacy: 64 samples
+        // Use magnitude-priority and HT-mode-preferred selection
+        // to prevent "last detection wins" tag overwriting problem
+        int best_start = -1;
+        double max_magnitude = -1.0;
+        int best_diff = -1;
+        bool best_is_ht = false;
+
         for (int i = 0; i < (int)vec.size() && i < 10; i++) {
             for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
+                double mag = abs(get<0>(vec[i]));
 
-                // HT Mixed mode: L-LTF period is 80 samples
-                // The lower peak corresponds to L-LTF0 data start (~176)
-                // The higher peak corresponds to L-LTF1 data start (~256)
-                // For channel estimation, we need L-LTF0, so use the lower peak
-                // The correlation peak is 2 samples BEFORE the actual L-LTF data start
+                // HT Mixed mode: L-LTF period is 80 samples (diff 78-82)
                 if (diff >= 78 && diff <= 82) {
                     int p1 = get<1>(vec[i]);
                     int p2 = get<1>(vec[k]);
-                    // Lower peak corresponds to L-LTF0 data start
                     int lower_peak = min(p1, p2);
-                    // L-LTF data starts at lower_peak + 2 = 176
-                    // wifi_start should be at this position so frame_equalizer
-                    // starts FFT at the beginning of L-LTF data
-                    d_frame_start = lower_peak + 2;
-                    // Ensure reasonable bounds (data start should be around 176)
-                    if (d_frame_start < 170) d_frame_start = 176;
-                    if (d_frame_start > 182) d_frame_start = 176;
-                    d_freq_offset = arg(get<0>(vec[i]) * conj(get<0>(vec[k]))) / diff;
-                    fprintf(stderr, "[SYNC_CFO] diff=%d, arg(vec[i])=%.4f, arg(vec[k])=%.4f, arg(product)=%.4f, CFO=%.6f\n",
-                            diff,
-                            std::arg(get<0>(vec[i])),
-                            std::arg(get<0>(vec[k])),
-                            std::arg(get<0>(vec[i]) * std::conj(get<0>(vec[k]))),
-                            d_freq_offset);
-                    df = fopen("/tmp/sync_debug.txt", "a");
-                    if (df) { fprintf(df, "SYNC_LONG Method1 HT found: diff=%d, pos1=%d pos2=%d -> d_frame_start=%d CFO=%.6f\n", diff, p1, p2, d_frame_start, d_freq_offset); fclose(df); }
-                    return;
+                    int candidate_start = lower_peak + 2;
+                    if (candidate_start < 170) candidate_start = 176;
+                    if (candidate_start > 182) candidate_start = 176;
+
+                    // Only update if magnitude is stronger
+                    bool should_update = false;
+                    if (best_diff == -1) {
+                        should_update = true;  // First HT candidate
+                    } else if (best_is_ht && best_diff >= 78 && best_diff <= 82) {
+                        // Same type (HT): prefer stronger magnitude
+                        should_update = (mag > max_magnitude);
+                    } else if (!best_is_ht) {
+                        // Switch from Legacy to HT if HT found
+                        should_update = true;
+                    }
+
+                    if (should_update) {
+                        best_start = candidate_start;
+                        max_magnitude = mag;
+                        best_diff = diff;
+                        best_is_ht = true;
+                    }
                 }
-                // Legacy mode: L-LTF period is 64 samples
-                // The peaks occur at the actual L-LTF data start
-                if (diff >= 62 && diff <= 66) {
+                // Legacy mode: L-LTF period is 64 samples (diff 62-66)
+                else if (diff >= 62 && diff <= 66) {
                     int p1 = get<1>(vec[i]);
                     int p2 = get<1>(vec[k]);
-                    // Lower peak corresponds to L-LTF0 data start
                     int lower_peak = min(p1, p2);
-                    // For Legacy, data_start = lower_peak (no offset needed)
-                    d_frame_start = lower_peak;
-                    if (d_frame_start < 0) d_frame_start = 0;
-                    // For Legacy, FFT block alignment: data is already 64 samples
-                    // Ensure d_frame_start is at data start, not CP start
-                    d_freq_offset = arg(get<0>(vec[i]) * conj(get<0>(vec[k]))) / diff;
-                    fprintf(stderr, "[SYNC_CFO_LEGACY] diff=%d, arg(vec[i])=%.4f, arg(vec[k])=%.4f, arg(product)=%.4f, CFO=%.6f\n",
-                            diff,
-                            std::arg(get<0>(vec[i])),
-                            std::arg(get<0>(vec[k])),
-                            std::arg(get<0>(vec[i]) * std::conj(get<0>(vec[k]))),
-                            d_freq_offset);
-                    df = fopen("/tmp/sync_debug.txt", "a");
-                    if (df) { fprintf(df, "SYNC_LONG Method1 Legacy found: diff=%d, pos1=%d pos2=%d -> d_frame_start=%d\n", diff, p1, p2, d_frame_start); fclose(df); }
-                    return;
+                    int candidate_start = lower_peak;
+                    if (candidate_start < 0) candidate_start = 0;
+
+                    // Only update if magnitude is stronger AND no better HT candidate
+                    bool should_update = false;
+                    if (best_diff == -1) {
+                        should_update = true;  // First candidate
+                    } else if (!best_is_ht && best_diff >= 62 && best_diff <= 66) {
+                        // Same type (Legacy): prefer stronger magnitude
+                        should_update = (mag > max_magnitude);
+                    }
+                    // Don't switch from HT to Legacy unless HT was weak
+
+                    if (should_update) {
+                        best_start = candidate_start;
+                        max_magnitude = mag;
+                        best_diff = diff;
+                        best_is_ht = false;
+                    }
                 }
             }
+        }
+
+        // Use best candidate if found
+        if (best_start != -1) {
+            d_frame_start = best_start;
+            if (best_is_ht) {
+                fprintf(stderr, "[SYNC_CFO] HT-mode (diff=%d) selected: mag=%.4f, d_frame_start=%d\n",
+                        best_diff, max_magnitude, d_frame_start);
+                df = fopen("/tmp/sync_debug.txt", "a");
+                if (df) { fprintf(df, "SYNC_LONG Method1 HT selected: diff=%d, mag=%.4f, d_frame_start=%d\n", best_diff, max_magnitude, d_frame_start); fclose(df); }
+            } else {
+                fprintf(stderr, "[SYNC_CFO] Legacy mode (diff=%d) selected: mag=%.4f, d_frame_start=%d\n",
+                        best_diff, max_magnitude, d_frame_start);
+                df = fopen("/tmp/sync_debug.txt", "a");
+                if (df) { fprintf(df, "SYNC_LONG Method1 Legacy selected: diff=%d, mag=%.4f, d_frame_start=%d\n", best_diff, max_magnitude, d_frame_start); fclose(df); }
+            }
+            return;
         }
 
         // Method 2: Use the highest correlation peak as frame start
