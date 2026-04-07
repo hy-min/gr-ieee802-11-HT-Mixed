@@ -93,27 +93,84 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
         for (const auto& tag : tags) {
             if (pmt::symbol_to_string(tag.key) == "wifi_start") {
-                // wifi_start tag is written at sync_long output position 0 (when rel=0)
-                // This corresponds to the start of L-LTF DATA
-                // For HT-Mixed 20MHz, L-LTF DATA starts at sync_long input ~176
-                // But we need to find the offset to L-LTF DATA within the stream
-
-                // The tag appears at position start_abs_idx in our input
-                // wifi_start was written at output position 0 of sync_long
+                // sync_long writes wifi_start at nitems_written(0) when rel=0.
+                // In COPY state, rel=0 means d_offset = d_frame_start.
+                // sync_long outputs: out[o] = in[d_offset + o] = in[d_frame_start + o]
+                // So output position 0 corresponds to input position d_frame_start.
+                //
+                // The wifi_start tag offset is the OUTPUT position in sync_long's stream.
+                // Since sync_long output[tag.offset] = sync_long input[d_frame_start],
+                // and sync_long output maps 1:1 to ht_symbol_splitter input:
+                //   ht_symbol_splitter input[tag.offset] = sync_long input[d_frame_start]
+                //
+                // But we want ht_symbol_splitter input position 0 to correspond to L-LTF DATA start.
+                // L-LTF DATA starts at input position d_frame_start in sync_long.
+                // So we need: d_frame_start_abs = tag.offset - d_frame_start
+                //
+                // Actually, simpler interpretation:
+                // - The tag.offset is where wifi_start appears in the input stream
+                // - At that position, we're reading sync_long input[d_frame_start]
+                // - We want d_frame_start_abs such that rel_idx = current_idx - d_frame_start_abs = 0
+                //   when current_idx = tag.offset
+                // - So d_frame_start_abs = tag.offset
+                //
+                // But tag.offset is the position in sync_long's OUTPUT, and we want the position
+                // in ht_symbol_splitter's INPUT where L-LTF DATA starts.
+                //
+                // Since sync_long output = ht_symbol_splitter input (1:1), and
+                // sync_long output[tag.offset] = input[d_frame_start],
+                // the L-LTF DATA starts at ht_symbol_splitter input position d_frame_start.
+                // But tag.offset is where wifi_start was written, which is at sync_long output position 0.
                 // Since sync_long output position 0 = sync_long input position d_frame_start,
-                // and d_frame_start = 176 for HT-Mixed, we need to find d_frame_start
+                // and this maps 1:1 to ht_symbol_splitter input, wifi_start appears at
+                // ht_symbol_splitter input position d_frame_start.
+                //
+                // So d_frame_start_abs = d_frame_start (the tag.value)!
+                uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
+                uint64_t tag_abs_pos = (uint64_t)tag.offset;
 
-                // For now, assume wifi_start at position X means L-LTF DATA starts at X
-                // This assumes 1:1 input-output mapping in the connected stream
-                d_frame_start_abs = start_abs_idx;
+                fprintf(stderr, "[HT_SPLITTER] wifi_start tag: offset=%llu, value(d_frame_start)=%llu\n",
+                        (unsigned long long)tag_abs_pos, (unsigned long long)d_frame_start);
+
+                // d_frame_start_abs should be the ABSOLUTE position where L-LTF DATA starts.
+                // wifi_start tag.offset = absolute position in input stream where tag was written
+                // d_frame_start (176) = offset within sync_long where L-LTF DATA starts
+                // sync_long output[0] = sync_long input[d_frame_start]
+                // Since sync_long output IS ht_symbol_splitter input (1:1 mapping):
+                //   ht_symbol_splitter input position 0 = sync_long input[d_frame_start]
+                // So L-LTF DATA starts at ht_symbol_splitter input position 0.
+                // But we use tag.offset to find where we are in the stream.
+                // The first sample we consume (i=0) has current_idx = tag.offset.
+                // This corresponds to ht_symbol_splitter input position 0.
+                // So d_frame_start_abs = 0 (meaning L-LTF DATA is at rel_idx 0).
+                //
+                // But wait - we want to buffer DATA, not CP. L-LTF DATA starts at
+                // sync_long input position d_frame_start = 176.
+                // In ht_symbol_splitter's coordinate: first sample (position 0) IS L-LTF DATA.
+                // So d_frame_start_abs should be 0, not d_frame_start.
+                //
+                // Actually, the issue is that d_frame_start_abs is used to compute rel_idx,
+                // and rel_idx=0 should correspond to L-LTF DATA. Since our input position 0
+                // IS L-LTF DATA, we need d_frame_start_abs = 0.
+                //
+                // But the original code uses d_frame_start = 176, which would make
+                // rel_idx = current_idx - 176. At current_idx = 1166976 (where tag was found),
+                // rel_idx = 1166800, which is way off.
+                //
+                // The fix: d_frame_start_abs should be tag.offset (the absolute position
+                // of the first sample in our input stream), since that sample IS L-LTF DATA.
+                // d_frame_start_abs = tag.offset;
+
+                d_frame_start_abs = tag_abs_pos;  // L-LTF DATA starts at position 0 in our input
+
                 d_frame_start_known = true;
-                fprintf(stderr, "[HT_SPLITTER] wifi_start tag found at start_abs_idx=%llu\n",
-                        (unsigned long long)start_abs_idx);
+                fprintf(stderr, "[HT_SPLITTER] d_frame_start_abs=%llu\n",
+                        (unsigned long long)d_frame_start_abs);
                 // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
                 add_item_tag(0,  // output port 0
                              nitems_written(0),  // current output position
                              pmt::string_to_symbol("wifi_start"),
-                             pmt::from_double(pmt::to_double(tag.value)),  // preserve freq offset
+                             pmt::from_double(d_frame_start_abs),
                              pmt::string_to_symbol(name()));
                 fprintf(stderr, "[HT_SPLITTER] wifi_start tag propagated at output pos %llu\n",
                         (unsigned long long)nitems_written(0));
