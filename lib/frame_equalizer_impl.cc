@@ -2117,8 +2117,20 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 int detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);
                 std::printf("[EQ][HT_ROT] detected rotation=%d\n", detected_rot);
 
+                // Energy-based rotation verification (more reliable than pilot-only)
+                gr_complex rot_htsig0_energy[52];
+                apply_htsig_rotation(d_early_eqsym[kHtSig0Rel], rot_htsig0_energy, detected_rot);
+                int energy_rot = vote_qbpsk_rotation(rot_htsig0_energy);
+                fprintf(stderr, "[HT_SIG] pilot-based rotation=%d energy-based rotation=%d\n", detected_rot, energy_rot);
+
+                int start_rot = 0;
+                if (energy_rot != detected_rot && energy_rot == 1) {
+                    fprintf(stderr, "[HT_SIG] Energy vote overrides pilot: %d -> %d\n", detected_rot, energy_rot);
+                    start_rot = energy_rot;
+                }
+
                 // Try all rotations (0, 90°, 180°, 270°) and 180° ambiguity on each symbol
-                for (int rot = 0; rot <= 3 && !found; rot++) {
+                for (int rot = start_rot; rot <= 3 && !found; rot++) {
                     // Apply rotation compensation
                     gr_complex rot_htsig0[52];
                     gr_complex rot_htsig1[52];
