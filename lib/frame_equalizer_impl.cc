@@ -1328,25 +1328,20 @@ void frame_equalizer_impl::compute_subcarrier_energy(const gr_complex* eq52, dou
 }
 
 // QBPSK rotation detection via constellation energy voting
-int frame_equalizer_impl::vote_qbpsk_rotation(const gr_complex* eq52)
+int frame_equalizer_impl::vote_qbpsk_rotation(const gr_complex* eq_data)
 {
     double E_I, E_Q;
-    compute_subcarrier_energy(eq52, E_I, E_Q);
+    compute_subcarrier_energy(eq_data, E_I, E_Q);
 
+    // Epsilon 1e-10: prevents division by zero when E_I is negligible
+    // Threshold 2.0: derived from HT-SIG QBPSK constellation analysis
+    //   - QBPSK rotation moves I-axis energy to Q-axis, giving E_Q/E_I > 2.0
+    //   - Legacy BPSK has E_Q/E_I < 0.5
     double ratio = (E_I > 1e-10) ? E_Q / E_I : 0.0;
 
     fprintf(stderr, "[QBPSK_VOTE] E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I, E_Q, ratio);
 
-    // HT-SIG QBPSK: E_Q should dominate (typical ratio > 2.0)
-    if (ratio > 2.0) {
-        return 1;  // +90° rotation
-    }
-    // Legacy BPSK: E_I dominates or both equal
-    if (E_I > E_Q) {
-        return 0;  // 0° or 180°
-    }
-    // Both energies similar, conservatively return 0
-    return 0;
+    return (ratio > 2.0) ? 1 : 0;
 }
 
 frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,

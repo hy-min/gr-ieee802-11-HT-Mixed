@@ -113,7 +113,7 @@ private:
 
     // QBPSK energy voting for frame type detection
     static void compute_subcarrier_energy(const gr_complex* eq52, double& Esum_I, double& Esum_Q);
-    static int vote_qbpsk_rotation(const gr_complex* eq52);
+    static int vote_qbpsk_rotation(const gr_complex* eq_data);
 
 public:
     frame_equalizer_impl(Equalizer algo,
