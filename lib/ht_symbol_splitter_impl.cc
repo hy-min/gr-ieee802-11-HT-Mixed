@@ -266,30 +266,29 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // rel_idx 384-399: HT-STF CP (input 560-575) - SKIP
             // rel_idx 400-463: HT-STF DATA (input 576-639)
             // rel_idx 464+: HT-DATA (each symbol 80 samples: 16 CP + 64 data)
-            if (rel_idx >= 0 && rel_idx < 64) {
-                // L-LTF0 DATA: rel_idx 0-63 (input 176-239)
+            // HT-Mixed 20MHz preamble with CORRECT boundaries:
+            // L-LTF: 128 samples continuous (32 GI + 64 LTF0 + 64 LTF1) - NO CP between symbols!
+            // From rel_idx 128 onwards: 80-sample symbols (16 CP + 64 Data)
+            //
+            // Correct boundaries:
+            // rel_idx 0-63: L-LTF0 DATA (input 176-239)
+            // rel_idx 64-127: L-LTF1 DATA (input 240-303) - continuous, no CP skip!
+            // rel_idx 128-191: L-SIG CP (input 304-319) - SKIP
+            // rel_idx 192-255: L-SIG DATA (input 336-399)
+            // rel_idx 256-319: HT-SIG0 CP (input 432-447) - SKIP
+            // rel_idx 320-383: HT-SIG0 DATA (input 448-511)
+            // rel_idx 384-447: HT-SIG1 CP (input 560-575) - SKIP
+            // rel_idx 448-511: HT-SIG1 DATA (input 576-639)
+            // rel_idx 512+: HT-STF and HT-DATA (80-sample symbols: 16 CP + 64 Data)
+            if (rel_idx < 128) {
+                // Stage 1: L-LTF is continuous 128 samples - buffer all (no CP skip!)
                 should_buffer = true;
-            } else if (rel_idx >= 80 && rel_idx < 144) {
-                // L-LTF1 DATA: rel_idx 80-143 (input 256-319)
-                // Skip rel_idx 64-79 (L-LTF1 CP: input 240-255)
-                should_buffer = true;
-            } else if (rel_idx >= 160 && rel_idx < 224) {
-                // L-SIG DATA: rel_idx 160-223 (input 336-399)
-                // Skip rel_idx 144-159 (L-SIG CP: input 320-335)
-                should_buffer = true;
-            } else if (rel_idx >= 240 && rel_idx < 304) {
-                // HT-SIG0 DATA: rel_idx 240-303 (input 416-479)
-                // Skip rel_idx 224-239 (HT-SIG0 CP: input 400-415)
-                should_buffer = true;
-            } else if (rel_idx >= 320 && rel_idx < 384) {
-                // HT-SIG1 DATA: rel_idx 320-383 (input 496-559)
-                // Skip rel_idx 304-319 (HT-SIG1 CP: input 480-495)
-                should_buffer = true;
-            } else if (rel_idx >= 384) {
-                // HT-STF and HT-DATA: each 80-sample symbol
-                uint64_t sym_offset = (rel_idx - 384) % 80;
+            } else {
+                // Stage 2: L-SIG and subsequent symbols (80-sample period: 16 CP + 64 Data)
+                uint64_t sym_rel_idx = rel_idx - 128;
+                uint64_t sym_offset = sym_rel_idx % 80;
                 if (sym_offset >= 16) {
-                    should_buffer = true;  // Skip CP, buffer data
+                    should_buffer = true;  // Skip CP, buffer Data
                 }
             }
 
