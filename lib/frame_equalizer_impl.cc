@@ -1316,6 +1316,39 @@ frame_equalizer::make(Equalizer algo, double freq, double bw, bool log, bool deb
         new frame_equalizer_impl(algo, freq, bw, log, debug));
 }
 
+// Calculate energy distribution across 52 subcarriers
+void frame_equalizer_impl::compute_subcarrier_energy(const gr_complex* eq52, double& Esum_I, double& Esum_Q)
+{
+    Esum_I = 0.0;
+    Esum_Q = 0.0;
+    for (int i = 0; i < 48; i++) {  // 48 data subcarriers (excluding pilots)
+        Esum_I += (double)eq52[i].real() * eq52[i].real();
+        Esum_Q += (double)eq52[i].imag() * eq52[i].imag();
+    }
+}
+
+// QBPSK rotation detection via constellation energy voting
+int frame_equalizer_impl::vote_qbpsk_rotation(const gr_complex* eq52)
+{
+    double E_I, E_Q;
+    compute_subcarrier_energy(eq52, E_I, E_Q);
+
+    double ratio = (E_I > 1e-10) ? E_Q / E_I : 0.0;
+
+    fprintf(stderr, "[QBPSK_VOTE] E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I, E_Q, ratio);
+
+    // HT-SIG QBPSK: E_Q should dominate (typical ratio > 2.0)
+    if (ratio > 2.0) {
+        return 1;  // +90° rotation
+    }
+    // Legacy BPSK: E_I dominates or both equal
+    if (E_I > E_Q) {
+        return 0;  // 0° or 180°
+    }
+    // Both energies similar, conservatively return 0
+    return 0;
+}
+
 frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                                            double freq,
                                            double bw,

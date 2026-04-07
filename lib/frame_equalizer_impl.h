@@ -1,83 +1,140 @@
-/*
- * Copyright (C) 2016 Bastian Bloessl <bloessl@ccs-labs.org>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 #ifndef INCLUDED_IEEE802_11_FRAME_EQUALIZER_IMPL_H
 #define INCLUDED_IEEE802_11_FRAME_EQUALIZER_IMPL_H
 
+#include <gnuradio/ieee802_11/frame_equalizer.h>
+#include <gnuradio/digital/constellation.h>
+#include <gnuradio/gr_complex.h>
+#include <pmt/pmt.h>
+
 #include "equalizer/base.h"
-#include "viterbi_decoder/viterbi_decoder.h"
-#include <ieee802_11/constellations.h>
-#include <ieee802_11/frame_equalizer.h>
+#include "equalizer/comb.h"
+#include "equalizer/ls.h"
+#include "equalizer/lms.h"
+#include "equalizer/sta.h"
+
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace gr {
 namespace ieee802_11 {
 
-class frame_equalizer_impl : virtual public frame_equalizer
+class frame_equalizer_impl : public frame_equalizer
 {
+private:
+    std::shared_ptr<equalizer::base> d_equalizer;
+
+    std::shared_ptr<gr::digital::constellation> d_bpsk;
+    std::shared_ptr<gr::digital::constellation> d_qpsk;
+    std::shared_ptr<gr::digital::constellation> d_16qam;
+
+    int d_current_symbol;
+    int d_copied;
+
+    bool d_debug;
+    bool d_log;
+
+    double d_freq_offset_from_synclong;
+    int d_bw;
+    int d_chan_est_mode;
+    bool d_enable_soft_output;
+
+    int d_frame_bytes;
+    int d_frame_encoding;
+
+    int d_frame_symbols;
+    int d_frame_mod;
+    int d_frame_n_bpsc;
+    int d_frame_n_cbps;
+    int d_frame_n_dbps;
+
+    bool d_have_header;
+    bool d_have_ht_header;
+    bool d_is_ht;
+
+    int d_sym_idx;
+    int d_first_valid_symbol;
+    bool d_in_frame;
+
+    // early cache
+    uint8_t d_early_bits[8][52];
+    bool d_early_bits_valid[8];
+    gr_complex d_early_eqsym[8][52];
+    bool d_early_eqsym_valid[8];
+
+    // dynamic header detection state
+    bool d_have_lsig;
+    int d_lsig_rel;
+    int d_hdr_reorder_mode;
+    bool d_hdr_inverted;
+    int d_htsig0_rel;
+    int d_htsig1_rel;
+    int d_data_start_rel;
+
+    void reset_frame_state(void);
+
+    bool parse_signal(const uint8_t* decoded_bits,
+                      int& encoding,
+                      int& psdu_length);
+
+    bool parse_signal_ht(const uint8_t* decoded_bits,
+                         int& mcs,
+                         int& psdu_length,
+                         bool& aggregation,
+                         bool& short_gi);
+
+    void set_ht_frame_params_from_mcs_len(int mcs, int len_bytes);
+
+    bool decode_lsig_from_bits52(const uint8_t* bits52,
+                                 int reorder_mode,
+                                 bool invert_bits,
+                                 int& encoding,
+                                 int& psdu_length);
+
+    bool decode_htsig_from_bits52(const uint8_t* bits_a,
+                                  const uint8_t* bits_b,
+                                  int reorder_mode,
+                                  bool swap_symbols,
+                                  bool invert_bits,
+                                  int& out_len_bytes,
+                                  int& out_mcs,
+                                  bool& out_sgi,
+                                  bool& out_agg);
+
+    bool decode_htsig_from_eqsym52(const gr_complex* sym_a,
+                                   const gr_complex* sym_b,
+                                   int reorder_mode,
+                                   bool swap_symbols,
+                                   bool invert_bits,
+                                   int& out_len_bytes,
+                                   int& out_mcs,
+                                   bool& out_sgi,
+                                   bool& out_agg);
+
+    // QBPSK energy voting for frame type detection
+    static void compute_subcarrier_energy(const gr_complex* eq52, double& Esum_I, double& Esum_Q);
+    static int vote_qbpsk_rotation(const gr_complex* eq52);
 
 public:
-    frame_equalizer_impl(Equalizer algo, double freq, double bw, bool log, bool debug);
-    ~frame_equalizer_impl();
+    frame_equalizer_impl(Equalizer algo,
+                         double freq,
+                         double bw,
+                         bool log,
+                         bool debug);
+    ~frame_equalizer_impl() override;
 
-    void set_algorithm(Equalizer algo);
-    void set_bandwidth(double bw);
-    void set_frequency(double freq);
+    void set_algorithm(Equalizer algo) override;
+    void set_bandwidth(double bw) override;
+    void set_frequency(double freq) override;
+    void set_extra_header_symbols(int n) override;
 
-    void forecast(int noutput_items, gr_vector_int& ninput_items_required);
+    void forecast(int noutput_items,
+                  gr_vector_int& ninput_items_required) override;
+
     int general_work(int noutput_items,
                      gr_vector_int& ninput_items,
                      gr_vector_const_void_star& input_items,
-                     gr_vector_void_star& output_items);
-
-private:
-    bool parse_signal(uint8_t* signal);
-    bool decode_signal_field(uint8_t* rx_bits);
-    void deinterleave(uint8_t* rx_bits);
-
-    equalizer::base* d_equalizer;
-    gr::thread::mutex d_mutex;
-    std::vector<gr::tag_t> tags;
-    bool d_debug;
-    bool d_log;
-    int d_current_symbol;
-    viterbi_decoder d_decoder;
-
-    // freq offset
-    double d_freq;                      // Hz
-    double d_freq_offset_from_synclong; // Hz, estimation from "sync_long" block
-    double d_bw;                        // Hz
-    double d_er;
-    double d_epsilon0;
-    gr_complex d_prev_pilots[4];
-
-    int d_frame_bytes;
-    int d_frame_symbols;
-    int d_frame_encoding;
-
-    uint8_t d_deinterleaved[48];
-    gr_complex symbols[48];
-
-    std::shared_ptr<gr::digital::constellation> d_frame_mod;
-    constellation_bpsk::sptr d_bpsk;
-    constellation_qpsk::sptr d_qpsk;
-    constellation_16qam::sptr d_16qam;
-    constellation_64qam::sptr d_64qam;
-
-    static const int interleaver_pattern[48];
+                     gr_vector_void_star& output_items) override;
 };
 
 } // namespace ieee802_11
