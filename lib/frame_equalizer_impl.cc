@@ -2115,14 +2115,14 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                 // Detect HT-SIG QBPSK rotation
                 int detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);
-                std::printf("[EQ][HT_ROT] detected rotation=%d\n", detected_rot);
+                fprintf(stderr, "[HT_SIG] pilot-based rotation=%d\n", detected_rot);
 
                 // Energy-based rotation verification (more reliable than pilot-only)
-                gr_complex rot_htsig0_energy[52];
-                apply_htsig_rotation(d_early_eqsym[kHtSig0Rel], rot_htsig0_energy, detected_rot);
-                int energy_rot = vote_qbpsk_rotation(rot_htsig0_energy);
-                fprintf(stderr, "[HT_SIG] pilot-based rotation=%d energy-based rotation=%d\n", detected_rot, energy_rot);
+                // Vote on RAW HT-SIG0 symbols before any rotation is applied
+                int energy_rot = vote_qbpsk_rotation(d_early_eqsym[kHtSig0Rel]);
+                fprintf(stderr, "[HT_SIG] energy-based rotation=%d\n", energy_rot);
 
+                // Override pilot if energy vote strongly indicates QBPSK (+90°)
                 int start_rot = 0;
                 if (energy_rot != detected_rot && energy_rot == 1) {
                     fprintf(stderr, "[HT_SIG] Energy vote overrides pilot: %d -> %d\n", detected_rot, energy_rot);
