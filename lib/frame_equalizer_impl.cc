@@ -1374,9 +1374,14 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
-    // Debug: print first 24 encoded bits before Viterbi
-    std::fprintf(stderr, "[VITERBI_IN] enc96[0:24] = ");
-    for (int i = 0; i < 24; i++) {
+    // Debug: print full 96 encoded bits before Viterbi
+    std::fprintf(stderr, "[VITERBI_IN] enc96[0:48] = ");
+    for (int i = 0; i < 48; i++) {
+        std::fprintf(stderr, "%d", enc96[i]);
+    }
+    std::fprintf(stderr, "\n");
+    std::fprintf(stderr, "[VITERBI_IN] enc96[48:96] = ");
+    for (int i = 48; i < 96; i++) {
         std::fprintf(stderr, "%d", enc96[i]);
     }
     std::fprintf(stderr, "\n");
