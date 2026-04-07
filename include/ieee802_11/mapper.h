@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013, 2016 Bastian Bloessl <bloessl@ccs-labs.org>
+ * Copyright (C) 2013 Bastian Bloessl <bloessl@ccs-labs.org>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,12 +33,13 @@ enum Encoding {
     QAM16_3_4 = 5,
     QAM64_2_3 = 6,
     QAM64_3_4 = 7,
+
+    // ===== HT MCS7 needs 64QAM 5/6 =====
+    QAM64_5_6 = 8,
 };
 
 // Required for fmt 10
-inline uint8_t format_as(Encoding e) {
-  return static_cast<uint8_t>(e);
-}
+inline uint8_t format_as(Encoding e) { return static_cast<uint8_t>(e); }
 
 class IEEE802_11_API mapper : virtual public block
 {

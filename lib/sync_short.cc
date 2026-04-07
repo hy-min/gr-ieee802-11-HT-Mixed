@@ -53,6 +53,9 @@ public:
                      gr_vector_void_star& output_items)
     {
 
+        std::fprintf(stderr, "[SYNC-SHORT] general_work called: noutput=%d ninput=%d threshold=%.3f state=%d\n",
+                     noutput_items, ninput_items[0], d_threshold, d_state);
+
         const gr_complex* in = (const gr_complex*)input_items[0];
         const gr_complex* in_abs = (const gr_complex*)input_items[1];
         const float* in_cor = (const float*)input_items[2];
@@ -82,6 +85,8 @@ public:
                         d_plateau = 0;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i);
                         dout << "SHORT Frame!" << std::endl;
+                        std::fprintf(stderr, "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.3f\n",
+                                     i, in_cor[i], d_freq_offset);
                         break;
                     }
                 } else {

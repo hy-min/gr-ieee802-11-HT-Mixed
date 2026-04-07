@@ -1,24 +1,10 @@
-/*
- * Copyright (C) 2013 Bastian Bloessl <bloessl@ccs-labs.org>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
 #include "utils.h"
 
 #include <math.h>
 #include <cassert>
 #include <cstring>
+#include <algorithm>
+#include <iostream>
 
 using gr::ieee802_11::BPSK_1_2;
 using gr::ieee802_11::BPSK_3_4;
@@ -28,100 +14,105 @@ using gr::ieee802_11::QAM16_1_2;
 using gr::ieee802_11::QAM16_3_4;
 using gr::ieee802_11::QAM64_2_3;
 using gr::ieee802_11::QAM64_3_4;
+using gr::ieee802_11::QAM64_5_6;
 
 ofdm_param::ofdm_param(Encoding e)
 {
     encoding = e;
 
+    // 这里保持 legacy OFDM 参数（48 data carriers）
+    // HT 路径需要在 mapper/decode_mac 中显式覆盖 n_bpsc/n_cbps/n_dbps
     switch (e) {
     case BPSK_1_2:
         n_bpsc = 1;
         n_cbps = 48;
         n_dbps = 24;
-        rate_field = 0x0D; // 0b00001101
+        rate_field = 0x0D;
         break;
 
     case BPSK_3_4:
         n_bpsc = 1;
         n_cbps = 48;
         n_dbps = 36;
-        rate_field = 0x0F; // 0b00001111
+        rate_field = 0x0F;
         break;
 
     case QPSK_1_2:
         n_bpsc = 2;
         n_cbps = 96;
         n_dbps = 48;
-        rate_field = 0x05; // 0b00000101
+        rate_field = 0x05;
         break;
 
     case QPSK_3_4:
         n_bpsc = 2;
         n_cbps = 96;
         n_dbps = 72;
-        rate_field = 0x07; // 0b00000111
+        rate_field = 0x07;
         break;
 
     case QAM16_1_2:
         n_bpsc = 4;
         n_cbps = 192;
         n_dbps = 96;
-        rate_field = 0x09; // 0b00001001
+        rate_field = 0x09;
         break;
 
     case QAM16_3_4:
         n_bpsc = 4;
         n_cbps = 192;
         n_dbps = 144;
-        rate_field = 0x0B; // 0b00001011
+        rate_field = 0x0B;
         break;
 
     case QAM64_2_3:
         n_bpsc = 6;
         n_cbps = 288;
         n_dbps = 192;
-        rate_field = 0x01; // 0b00000001
+        rate_field = 0x01;
         break;
 
     case QAM64_3_4:
         n_bpsc = 6;
         n_cbps = 288;
         n_dbps = 216;
-        rate_field = 0x03; // 0b00000011
+        rate_field = 0x03;
         break;
+
+    case QAM64_5_6:
+        // 工程里给 HT MCS7 借壳用
+        // legacy SIGNAL 本身没有 5/6，这里只给占位值
+        n_bpsc = 6;
+        n_cbps = 288;
+        n_dbps = 240;
+        rate_field = 0x00;
+        break;
+
     default:
         assert(false);
         break;
     }
 }
 
-
 void ofdm_param::print()
 {
     std::cout << "OFDM Parameters:" << std::endl;
-    std::cout << "endcoding :" << encoding << std::endl;
+    std::cout << "encoding :" << encoding << std::endl;
     std::cout << "rate_field :" << (int)rate_field << std::endl;
     std::cout << "n_bpsc :" << n_bpsc << std::endl;
     std::cout << "n_cbps :" << n_cbps << std::endl;
     std::cout << "n_dbps :" << n_dbps << std::endl;
 }
 
-
 frame_param::frame_param(ofdm_param& ofdm, int psdu_length)
 {
-
     psdu_size = psdu_length;
-
-    // number of symbols (17-11)
     n_sym = (int)ceil((16 + 8 * psdu_size + 6) / (double)ofdm.n_dbps);
-
     n_data_bits = n_sym * ofdm.n_dbps;
-
-    // number of padding bits (17-13)
     n_pad = n_data_bits - (16 + 8 * psdu_size + 6);
-
     n_encoded_bits = n_sym * ofdm.n_cbps;
 }
+
 void frame_param::print()
 {
     std::cout << "FRAME Parameters:" << std::endl;
@@ -132,27 +123,22 @@ void frame_param::print()
     std::cout << "n_data_bits: " << n_data_bits << std::endl;
 }
 
-
 void scramble(const char* in, char* out, frame_param& frame, char initial_state)
 {
-
     int state = initial_state;
     int feedback;
 
     for (int i = 0; i < frame.n_data_bits; i++) {
-
         feedback = (!!(state & 64)) ^ (!!(state & 8));
         out[i] = feedback ^ in[i];
         state = ((state << 1) & 0x7e) | feedback;
     }
 }
 
-
 void reset_tail_bits(char* scrambled_data, frame_param& frame)
 {
     memset(scrambled_data + frame.n_data_bits - frame.n_pad - 6, 0, 6 * sizeof(char));
 }
-
 
 int ones(int n)
 {
@@ -165,24 +151,20 @@ int ones(int n)
     return sum;
 }
 
-
 void convolutional_encoding(const char* in, char* out, frame_param& frame)
 {
-
     int state = 0;
 
     for (int i = 0; i < frame.n_data_bits; i++) {
         assert(in[i] == 0 || in[i] == 1);
         state = ((state << 1) & 0x7e) | in[i];
-        out[i * 2] = ones(state & 0155) % 2;
-        out[i * 2 + 1] = ones(state & 0117) % 2;
+        out[i * 2]     = ones(state & 0133) % 2;
+        out[i * 2 + 1] = ones(state & 0171) % 2;
     }
 }
 
-
 void puncturing(const char* in, char* out, frame_param& frame, ofdm_param& ofdm)
 {
-
     int mod;
 
     for (int i = 0; i < frame.n_data_bits * 2; i++) {
@@ -211,6 +193,16 @@ void puncturing(const char* in, char* out, frame_param& frame, ofdm_param& ofdm)
                 out++;
             }
             break;
+
+        case QAM64_5_6: {
+            int m = i % 10;
+            if (!(m == 3 || m == 4 || m == 7 || m == 8)) {
+                *out = in[i];
+                out++;
+            }
+            break;
+        }
+
         default:
             assert(false);
             break;
@@ -218,56 +210,78 @@ void puncturing(const char* in, char* out, frame_param& frame, ofdm_param& ofdm)
     }
 }
 
-
-void interleave(
-    const char* in, char* out, frame_param& frame, ofdm_param& ofdm, bool reverse)
+void interleave(const char* in, char* out, frame_param& frame, ofdm_param& ofdm, bool reverse)
 {
+    const int n_cbps = ofdm.n_cbps;
+    const int s = std::max(ofdm.n_bpsc / 2, 1);
 
-    int n_cbps = ofdm.n_cbps;
-    int first[MAX_BITS_PER_SYM];
-    int second[MAX_BITS_PER_SYM];
-    int s = std::max(ofdm.n_bpsc / 2, 1);
+    int n_col = 0;
+    int n_row = 0;
 
-    for (int j = 0; j < n_cbps; j++) {
-        first[j] = s * (j / s) + ((j + int(floor(16.0 * j / n_cbps))) % s);
+    // legacy 48-carrier
+    if (n_cbps == 48 || n_cbps == 96 || n_cbps == 192 || n_cbps == 288) {
+        n_col = 16;
+        n_row = 3 * ofdm.n_bpsc;
+    }
+    // HT 20MHz 52-carrier
+    else if (n_cbps == 52 || n_cbps == 104 || n_cbps == 208 || n_cbps == 312) {
+        n_col = 13;
+        n_row = 4 * ofdm.n_bpsc;
+    } else {
+        assert(false);
     }
 
-    for (int i = 0; i < n_cbps; i++) {
-        second[i] = 16 * i - (n_cbps - 1) * int(floor(16.0 * i / n_cbps));
-    }
+    assert(n_row * n_col == n_cbps);
 
-    for (int i = 0; i < frame.n_sym; i++) {
-        for (int k = 0; k < n_cbps; k++) {
-            if (reverse) {
-                out[i * n_cbps + second[first[k]]] = in[i * n_cbps + k];
-            } else {
-                out[i * n_cbps + k] = in[i * n_cbps + second[first[k]]];
+    for (int sym = 0; sym < frame.n_sym; sym++) {
+        const char* in_sym = in + sym * n_cbps;
+        char* out_sym = out + sym * n_cbps;
+
+        if (!reverse) {
+            // interleaving
+            for (int k = 0; k < n_cbps; k++) {
+                const int i = n_row * (k % n_col) + (k / n_col);
+                const int j =
+                    s * (i / s) +
+                    ((i + n_cbps - ((n_col * i) / n_cbps)) % s);
+                out_sym[j] = in_sym[k];
+            }
+        } else {
+            // deinterleaving
+            for (int j = 0; j < n_cbps; j++) {
+                const int i =
+                    s * (j / s) +
+                    ((j + (n_col * j) / n_cbps) % s);
+                const int k =
+                    n_col * i - (n_cbps - 1) * (i / n_row);
+                out_sym[k] = in_sym[j];
             }
         }
     }
 }
 
-
 void split_symbols(const char* in, char* out, frame_param& frame, ofdm_param& ofdm)
 {
+    // 动态计算每个 OFDM symbol 的 data carriers 数
+    // legacy: 48, HT20: 52
+    const int data_carriers = ofdm.n_cbps / ofdm.n_bpsc;
+    const int total_symbols = frame.n_sym * data_carriers;
 
-    int symbols = frame.n_sym * 48;
+    for (int i = 0; i < total_symbols; i++) {
+        unsigned char sym = 0;
 
-    for (int i = 0; i < symbols; i++) {
-        out[i] = 0;
         for (int k = 0; k < ofdm.n_bpsc; k++) {
-            assert(*in == 1 || *in == 0);
-            out[i] |= (*in << k);
+            assert(*in == 0 || *in == 1);
+            sym |= ((*in) & 0x1) << k;
             in++;
         }
+
+        out[i] = sym;
     }
 }
 
-
 void generate_bits(const char* psdu, char* data_bits, frame_param& frame)
 {
-
-    // first 16 bits are zero (SERVICE/DATA field)
     memset(data_bits, 0, 16);
     data_bits += 16;
 

@@ -6,7 +6,7 @@
 #
 
 install(
-    FILES wifi_loopback.grc
+    FILES wifi_loopback1.grc
           wifi_phy_hier.grc
           wifi_rx.grc
           wifi_transceiver.grc

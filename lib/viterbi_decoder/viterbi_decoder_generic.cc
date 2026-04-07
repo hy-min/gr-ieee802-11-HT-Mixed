@@ -30,7 +30,7 @@
 #include "viterbi_decoder_generic.h"
 #include <cstring>
 #include <iostream>
-
+#error GENERIC_VITERBI_FILE_IS_BEING_COMPILED
 /* The basic Viterbi decoder operation, called a "butterfly"
  * operation because of the way it looks on a trellis diagram. Each
  * butterfly involves an Add-Compare-Select (ACS) operation on the two nodes
@@ -338,44 +338,55 @@ unsigned char viterbi_decoder::viterbi_get_output_generic(unsigned char* mm0,
 
 uint8_t* viterbi_decoder::decode(ofdm_param* ofdm, frame_param* frame, uint8_t* in)
 {
-
+    throw std::runtime_error("GENERIC_VITERBI_REACHED");
     d_ofdm = ofdm;
     d_frame = frame;
 
     reset();
     uint8_t* depunctured = depuncture(in);
 
+    const int total_data_bits = d_frame->n_data_bits;
+    const int total_bytes = (total_data_bits + 7) / 8;
+    const int total_depunctured_symbols = total_data_bits * 2;
+
     int in_count = 0;
     int out_count = 0;
-    int n_decoded = 0;
 
-    while (n_decoded < d_frame->n_data_bits) {
+    // 只处理真实有效的 mother-code 长度
+    while (in_count < total_depunctured_symbols) {
 
-        if ((in_count % 4) == 0) { // 0 or 3
+        if ((in_count % 4) == 0) {
             viterbi_butterfly2_generic(&depunctured[in_count & 0xfffffffc],
                                        d_metric0_generic,
                                        d_metric1_generic,
                                        d_path0_generic,
                                        d_path1_generic);
 
-            if ((in_count > 0) && (in_count % 16) == 8) { // 8 or 11
-                unsigned char c;
+            if ((in_count > 0) && ((in_count % 16) == 8)) {
+                unsigned char c = 0;
 
                 viterbi_get_output_generic(
                     d_metric0_generic, d_path0_generic, d_ntraceback, &c);
 
+                // 正常输出：前 d_ntraceback 个 byte 先延迟
                 if (out_count >= d_ntraceback) {
-                    for (int i = 0; i < 8; i++) {
-                        d_decoded[(out_count - d_ntraceback) * 8 + i] =
-                            (c >> (7 - i)) & 0x1;
-                        n_decoded++;
+                    const int byte_idx = out_count - d_ntraceback;
+                    if (byte_idx < total_bytes) {
+                        for (int i = 0; i < 8; i++) {
+                            d_decoded[byte_idx * 8 + i] = (c >> (7 - i)) & 0x1;
+                        }
                     }
                 }
+
                 out_count++;
             }
         }
+
         in_count++;
     }
+
+    // 这里先不做复杂 flush，先把前面链路跑到“只差尾部”这个状态
+    // 后面如果需要，我再按 generic 版本给你补最终 traceback flush。
 
     return d_decoded;
 }

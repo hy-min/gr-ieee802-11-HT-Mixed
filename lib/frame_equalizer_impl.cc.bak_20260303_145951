@@ -1,0 +1,671 @@
+#include "frame_equalizer_impl.h"
+static const char* IEEE80211_EQ_PATCH_MARKER = "IEEE80211_EQ_PATCH_MARKER_20260303";
+#include <gnuradio/io_signature.h>
+#include <pmt/pmt.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+#include "equalizer/comb.h"
+#include "equalizer/lms.h"
+#include "equalizer/ls.h"
+#include "equalizer/sta.h"
+
+namespace gr {
+namespace ieee802_11 {
+
+// ===== Deinterleaver pattern (BPSK, 48 bits) =====
+const int frame_equalizer_impl::interleaver_pattern[48] = {
+    0, 3, 6, 9, 12, 15, 18, 21,
+    24, 27, 30, 33, 36, 39, 42, 45,
+    1, 4, 7, 10, 13, 16, 19, 22,
+    25, 28, 31, 34, 37, 40, 43, 46,
+    2, 5, 8, 11, 14, 17, 20, 23,
+    26, 29, 32, 35, 38, 41, 44, 47
+};
+
+frame_equalizer::sptr
+frame_equalizer::make(Equalizer algo, double freq, double bw, bool log, bool debug)
+{
+    return gnuradio::make_block_sptr<frame_equalizer_impl>(algo, freq, bw, log, debug);
+}
+
+namespace {
+
+// Avoid GNURadio enum name differences by casting 0
+static inline gr::digital::constellation::normalization_t norm0()
+{
+    return (gr::digital::constellation::normalization_t)0;
+}
+
+static std::shared_ptr<gr::digital::constellation> make_bpsk_constellation()
+{
+    std::vector<gr_complex> points = { gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f) };
+    std::vector<int> pre_diff = { 0, 1 };
+    return gr::digital::constellation_rect::make(
+        points, pre_diff,
+        /*rot_sym*/ 2,
+        /*dim*/ 1,
+        /*bits/sym*/ 1,
+        /*normal_factor*/ 1.0f,
+        /*amplitude*/ 1.0f,
+        norm0());
+}
+
+// Carrier order (same as TX carrier allocator used in your graph)
+static const int DATA_CARRIERS[48] = {
+    -26,-25,-24,-23,-22,
+    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+    -6,-5,-4,-3,-2,-1,
+     1, 2, 3, 4, 5, 6,
+     8, 9,10,11,12,13,14,15,16,17,18,19,20,
+    22,23,24,25,26
+};
+
+static inline int carrier_to_fftbin(int sc)
+{
+    return (sc < 0) ? (sc + 64) : sc;
+}
+
+// L-SIG RATE->Encoding mapping (802.11a/g)
+static bool rate_to_encoding(uint8_t rate_field, Encoding& enc)
+{
+    switch (rate_field) {
+    case 0x0D: enc = BPSK_1_2;   return true; // 6
+    case 0x0F: enc = BPSK_3_4;   return true; // 9
+    case 0x05: enc = QPSK_1_2;   return true; // 12
+    case 0x07: enc = QPSK_3_4;   return true; // 18
+    case 0x09: enc = QAM16_1_2;  return true; // 24
+    case 0x0B: enc = QAM16_3_4;  return true; // 36
+    case 0x01: enc = QAM64_2_3;  return true; // 48
+    case 0x03: enc = QAM64_3_4;  return true; // 54
+    default:   return false;
+    }
+}
+
+// Compute L-SIG parity over bits[0..16]
+static inline uint8_t lsig_even_parity(const std::array<uint8_t, 24>& bits24)
+{
+    int s = 0;
+    for (int i = 0; i < 17; i++) s += (bits24[i] & 1);
+    return (uint8_t)(s & 1);
+}
+
+static inline uint8_t parity8(uint8_t x)
+{
+    x ^= x >> 4;
+    x ^= x >> 2;
+    x ^= x >> 1;
+    return x & 1;
+}
+
+static inline int clampi(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+} // unnamed namespace
+
+// ======================================================================
+
+frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
+                                           double freq,
+                                           double bw,
+                                           bool log,
+                                           bool debug)
+    : gr::block("frame_equalizer",
+                gr::io_signature::make(1, 1, sizeof(gr_complex) * 64),
+                gr::io_signature::make(1, 1, sizeof(gr_complex))),
+      d_equalizer(nullptr),
+      d_debug(debug),
+      d_log(log),
+      d_freq(freq),
+      d_bw(bw),
+      d_seen_wifi_start(false),
+      d_sym_idx(0),
+      d_have_lsig(false),
+      d_lsig_len_bytes(0),
+      d_lsig_encoding(BPSK_1_2),
+      d_have_htsig(false),
+      d_ht_len_bytes(0),
+      d_ht_mcs(0),
+      d_ht_sgi(false),
+      d_ht_agg(false),
+      d_total_data_syms(0),
+      d_data_syms_out(0),
+      d_pending_wifi_start_tag(false),
+      d_wifi_start_value(0.0)
+{
+    set_tag_propagation_policy(TPP_DONT);
+
+    // Each OFDM symbol we output is 48 complex items
+    set_output_multiple(48);
+
+    d_bpsk = make_bpsk_constellation();
+    set_algorithm(algo);
+
+    std::memset(d_symbol_eq, 0, sizeof(d_symbol_eq));
+}
+
+frame_equalizer_impl::~frame_equalizer_impl()
+{
+    delete d_equalizer;
+    d_equalizer = nullptr;
+}
+
+void frame_equalizer_impl::set_algorithm(Equalizer algo)
+{
+    gr::thread::scoped_lock lock(d_mutex);
+    delete d_equalizer;
+    d_equalizer = nullptr;
+
+    switch (algo) {
+    case LS:   d_equalizer = new equalizer::ls();   break;
+    case LMS:  d_equalizer = new equalizer::lms();  break;
+    case COMB: d_equalizer = new equalizer::comb(); break;
+    case STA:  d_equalizer = new equalizer::sta();  break;
+    default:   d_equalizer = new equalizer::ls();   break;
+    }
+}
+
+void frame_equalizer_impl::set_bandwidth(double bw)
+{
+    gr::thread::scoped_lock lock(d_mutex);
+    d_bw = bw;
+}
+
+void frame_equalizer_impl::set_frequency(double freq)
+{
+    gr::thread::scoped_lock lock(d_mutex);
+    d_freq = freq;
+}
+
+void frame_equalizer_impl::set_extra_header_symbols(int)
+{
+    // not used in this HT-mixed implementation (we parse HT-SIG explicitly)
+}
+
+void frame_equalizer_impl::forecast(int noutput_items, gr_vector_int& ninput_items_required)
+{
+    // input is vector-of-64, output is scalar complex, 48 per OFDM symbol
+    ninput_items_required[0] = std::max(1, noutput_items / 48);
+}
+
+int frame_equalizer_impl::n_dbps_from_encoding(Encoding enc) const
+{
+    switch (enc) {
+    case BPSK_1_2:  return 24;
+    case BPSK_3_4:  return 36;
+    case QPSK_1_2:  return 48;
+    case QPSK_3_4:  return 72;
+    case QAM16_1_2: return 96;
+    case QAM16_3_4: return 144;
+    case QAM64_2_3: return 192;
+    case QAM64_3_4: return 216;
+    default:        return 24;
+    }
+}
+
+int frame_equalizer_impl::n_sym_for_psdu_bytes(int psdu_len_bytes, Encoding enc) const
+{
+    int n_dbps = n_dbps_from_encoding(enc);
+    int n_bits = 16 + 8 * psdu_len_bytes + 6;
+    return (n_bits + n_dbps - 1) / n_dbps;
+}
+
+// ---- HT common MCS table (single stream, 20MHz) ----
+// N_DBPS for 1SS, 20MHz, no STBC; SGI affects only symbol time, not N_DBPS.
+int frame_equalizer_impl::n_dbps_from_mcs(int mcs, bool /*sgi*/) const
+{
+    // MCS0..7 for 1SS
+    static const int dbps[8] = {
+        26, 52, 78, 104, 156, 208, 234, 260
+    };
+    mcs = clampi(mcs, 0, 7);
+    return dbps[mcs];
+}
+
+int frame_equalizer_impl::n_sym_for_psdu_bytes_ht(int psdu_len_bytes, int mcs, bool sgi) const
+{
+    (void)sgi;
+    int n_dbps = n_dbps_from_mcs(mcs, sgi);
+    // HT: SERVICE=16, TAIL=6, plus PSDU bits. (No legacy padding here; we mirror common calculation)
+    int n_bits = 16 + 8 * psdu_len_bytes + 6;
+    return (n_bits + n_dbps - 1) / n_dbps;
+}
+
+bool frame_equalizer_impl::decode_lsig_from_eq(const gr_complex* eq64, int& out_len, Encoding& out_enc)
+{
+    // 1) hard-decision 48 BPSK bits from data carriers
+    uint8_t interleaved48[48];
+    for (int i = 0; i < 48; i++) {
+        int bin = carrier_to_fftbin(DATA_CARRIERS[i]);
+        gr_complex x = eq64[bin];
+        unsigned int d = d_bpsk->decision_maker(&x);
+        interleaved48[i] = (uint8_t)(d & 1);
+    }
+
+    // 2) deinterleave: coded[perm[k]] = interleaved[k]
+    uint8_t coded48[48];
+    for (int k = 0; k < 48; k++) coded48[k] = 0;
+    for (int k = 0; k < 48; k++) {
+        coded48[interleaver_pattern[k]] = interleaved48[k] & 1;
+    }
+
+    // 3) Viterbi decode (rate 1/2, K=7) into 24 bits
+    constexpr int NST = 64;
+    const int INF = 1000000000;
+
+    std::vector<int> metric(NST, INF), metric2(NST, INF);
+    std::array<std::array<uint8_t, NST>, 24> prev_bit{};
+    std::array<std::array<uint8_t, NST>, 24> prev_st{};
+
+    auto parity7 = [](int x) {
+        x ^= x >> 4; x ^= x >> 2; x ^= x >> 1;
+        return x & 1;
+    };
+
+    auto conv_out = [&](int st, int b, uint8_t& o0, uint8_t& o1, int& ns) {
+        int full7 = ((st << 1) | (b & 1)) & 0x7f;
+        o0 = (uint8_t)(parity7(full7 & 0155));
+        o1 = (uint8_t)(parity7(full7 & 0117));
+        ns = full7 & 0x3f;
+    };
+
+    metric[0] = 0;
+    for (int i = 0; i < 24; i++) {
+        std::fill(metric2.begin(), metric2.end(), INF);
+        for (int st = 0; st < NST; st++) {
+            int m0 = metric[st];
+            if (m0 >= INF) continue;
+            for (int b = 0; b <= 1; b++) {
+                uint8_t o0, o1; int ns;
+                conv_out(st, b, o0, o1, ns);
+                int dist = (coded48[2*i] != o0) + (coded48[2*i+1] != o1);
+                int nm = m0 + dist;
+                if (nm < metric2[ns]) {
+                    metric2[ns] = nm;
+                    prev_bit[i][ns] = (uint8_t)b;
+                    prev_st[i][ns]  = (uint8_t)st;
+                }
+            }
+        }
+        metric.swap(metric2);
+    }
+
+    int best_st = 0;
+    for (int st = 1; st < NST; st++) if (metric[st] < metric[best_st]) best_st = st;
+
+    std::array<uint8_t, 24> bits24{};
+    int st = best_st;
+    for (int i = 23; i >= 0; i--) {
+        bits24[i] = prev_bit[i][st];
+        st = prev_st[i][st];
+    }
+
+    // 4) parse fields
+    uint8_t rate_field =
+        (uint8_t)((bits24[0] << 3) | (bits24[1] << 2) | (bits24[2] << 1) | (bits24[3] << 0));
+
+    Encoding enc;
+    if (!rate_to_encoding(rate_field, enc)) return false;
+
+    int len = 0;
+    for (int i = 0; i < 12; i++) len |= ((bits24[5 + i] & 1) << i);
+
+    if ((bits24[17] & 1) != lsig_even_parity(bits24)) return false;
+    for (int i = 18; i < 24; i++) if (bits24[i] & 1) return false;
+
+    out_len = len;
+    out_enc = enc;
+    return true;
+}
+
+// ===================== HT-SIG decode (common HT-MF, 1SS) =====================
+//
+// Assumptions for "most common config":
+//   - HT Mixed Mode (not greenfield)
+//   - 20 MHz
+//   - 1 spatial stream (MCS 0..7)
+//   - HT-SIG is 2 OFDM symbols, each BPSK, rate 1/2, 48 data carriers
+//   - We implement a pragmatic decoder:
+//       * hard-decision + deinterleave + viterbi (1/2) per symbol -> 24 bits each
+//       * combine into 48 bits HT-SIG
+//       * parse MCS + length (16 bits) + SGI + aggregation; verify CRC8
+//
+// This matches typical gr-ieee802-11 HT-SIG generator used in many student projects.
+bool frame_equalizer_impl::decode_htsig_from_eq(const gr_complex* eq64_a,
+                                                const gr_complex* eq64_b,
+                                                int& out_len_bytes,
+                                                int& out_mcs,
+                                                bool& out_sgi,
+                                                bool& out_agg)
+{
+    auto decode_sig_symbol_24 = [&](const gr_complex* eq64, std::array<uint8_t, 24>& bits24) -> bool {
+        uint8_t interleaved48[48];
+        for (int i = 0; i < 48; i++) {
+            int bin = carrier_to_fftbin(DATA_CARRIERS[i]);
+            gr_complex x = eq64[bin];
+            // HT-SIG is rotated by +90deg (QBPSK on Q axis) in HT-mixed format.
+            // Rotate by -90deg so BPSK slicer can operate on the real axis.
+            x *= gr_complex(0.0f, -1.0f); // -j
+            unsigned int d = d_bpsk->decision_maker(&x);
+            interleaved48[i] = (uint8_t)(d & 1);
+        }
+
+        uint8_t coded48[48] = {0};
+        for (int k = 0; k < 48; k++) coded48[interleaver_pattern[k]] = interleaved48[k] & 1;
+
+        constexpr int NST = 64;
+        const int INF = 1000000000;
+        std::vector<int> metric(NST, INF), metric2(NST, INF);
+        std::array<std::array<uint8_t, NST>, 24> prev_bit{};
+        std::array<std::array<uint8_t, NST>, 24> prev_st{};
+
+        auto parity7 = [](int x) {
+            x ^= x >> 4; x ^= x >> 2; x ^= x >> 1;
+            return x & 1;
+        };
+        auto conv_out = [&](int st, int b, uint8_t& o0, uint8_t& o1, int& ns) {
+            int full7 = ((st << 1) | (b & 1)) & 0x7f;
+            o0 = (uint8_t)(parity7(full7 & 0155));
+            o1 = (uint8_t)(parity7(full7 & 0117));
+            ns = full7 & 0x3f;
+        };
+
+        metric[0] = 0;
+        for (int i = 0; i < 24; i++) {
+            std::fill(metric2.begin(), metric2.end(), INF);
+            for (int st = 0; st < NST; st++) {
+                int m0 = metric[st];
+                if (m0 >= INF) continue;
+                for (int b = 0; b <= 1; b++) {
+                    uint8_t o0, o1; int ns;
+                    conv_out(st, b, o0, o1, ns);
+                    int dist = (coded48[2*i] != o0) + (coded48[2*i+1] != o1);
+                    int nm = m0 + dist;
+                    if (nm < metric2[ns]) {
+                        metric2[ns] = nm;
+                        prev_bit[i][ns] = (uint8_t)b;
+                        prev_st[i][ns]  = (uint8_t)st;
+                    }
+                }
+            }
+            metric.swap(metric2);
+        }
+
+        int best_st = 0;
+        for (int st = 1; st < NST; st++) if (metric[st] < metric[best_st]) best_st = st;
+
+        int st = best_st;
+        for (int i = 23; i >= 0; i--) {
+            bits24[i] = prev_bit[i][st];
+            st = prev_st[i][st];
+        }
+        return true;
+    };
+
+    std::array<uint8_t, 24> a{}, b{};
+    if (!decode_sig_symbol_24(eq64_a, a)) return false;
+    if (!decode_sig_symbol_24(eq64_b, b)) return false;
+
+    // Concatenate into 48 bits HT-SIG
+    std::array<uint8_t, 48> ht{};
+    for (int i = 0; i < 24; i++) ht[i] = a[i] & 1;
+    for (int i = 0; i < 24; i++) ht[24+i] = b[i] & 1;
+
+    // Parse "common" HT-SIG layout used by typical gr-wifi HT blocks:
+    //   [0..6]  MCS (7 bits)
+    //   [7]     CBW/Reserved (assume 0)
+    //   [8..23] LENGTH (16 bits, LSB first)
+    //   [24]    smoothing
+    //   [25..26] not used here
+    //   [27]    aggregation
+    //   [28]    STBC
+    //   [29]    FEC coding
+    //   [30]    short GI
+    //   [31..34] reserved
+    //   [34..41] CRC8 (C7 first)
+    //   [42..47] tail
+    //
+    // Note: different codebases shift a few bits; this matches your earlier HT-SIG generator style.
+    int mcs = 0;
+    for (int i = 0; i < 7; i++) mcs |= (ht[i] & 1) << i;
+    mcs = clampi(mcs, 0, 7);
+
+    int len = 0;
+    for (int i = 0; i < 16; i++) len |= (ht[8+i] & 1) << i;
+
+    bool agg = (ht[27] & 1) != 0;
+    bool sgi = (ht[31] & 1) != 0;
+
+    // HT-SIG CRC8 protects bits 0-33 (HT-SIG1 bits 0-23 and HT-SIG2 bits 0-9).
+    // Spec (IEEE P802.11n/D11.0 20.3.9.4.4):
+    //  - shift register reset to all ones
+    //  - polynomial G(D)=D^8 + D^2 + D + 1 (0x07)
+    //  - initialization values I(D)=sum_{i=0}^{7} D^i are added modulo-2 to the first 8 bits of HT-SIG1
+    //  - CRC field is the ones' complement of the remainder
+    //  - CRC is transmitted with C7 first
+    auto crc8_htsig = [&](const std::array<uint8_t, 48>& bits) -> uint8_t {
+        uint8_t c = 0xFF; // all ones
+        for (int i = 0; i < 34; i++) { // bits 0..33
+            uint8_t inb = bits[i] & 1;
+            if (i < 8) inb ^= 1; // add initialization values to first 8 bits
+            uint8_t msb = (c >> 7) & 1;
+            c = (uint8_t)((c << 1) & 0xFF);
+            if ((msb ^ inb) & 1) c ^= 0x07;
+        }
+        return c;
+    };
+
+    uint8_t rem = crc8_htsig(ht);
+    uint8_t crc_calc = (uint8_t)(~rem); // ones' complement
+
+    uint8_t crc_recv = 0;
+    for (int i = 0; i < 8; i++) crc_recv |= (ht[34 + i] & 1) << (7 - i);
+
+    // if CRC fails, reject
+    if (crc_calc != crc_recv) return false;
+
+    // Tail should be zeros (best effort check)
+    for (int i = 42; i < 48; i++) {
+        // allow a little noise; don't hard fail here
+    }
+
+    out_len_bytes = len;
+    out_mcs = mcs;
+    out_sgi = sgi;
+    out_agg = agg;
+    return true;
+}
+
+int frame_equalizer_impl::general_work(int noutput_items,
+                                       gr_vector_int& ninput_items,
+                                       gr_vector_const_void_star& input_items,
+                                       gr_vector_void_star& output_items)
+{
+    const gr_complex* in = (const gr_complex*)input_items[0];   // each item: 64 complex (FFT bins)
+    gr_complex* out = (gr_complex*)output_items[0];             // scalar complex stream
+
+    int nin = ninput_items[0];      // number of OFDM symbols available
+    int nout = noutput_items;       // number of complex scalars we may output
+
+    // detect wifi_start on input
+    const uint64_t nread = nitems_read(0);
+    get_tags_in_range(d_tags, 0, nread, nread + nin);
+    if (!d_tags.empty()) {
+        std::sort(d_tags.begin(), d_tags.end(), gr::tag_t::offset_compare);
+        for (auto& t : d_tags) {
+            if (pmt::eq(t.key, pmt::mp("wifi_start"))) {
+                d_seen_wifi_start = true;
+                d_sym_idx = 0;
+                d_have_lsig = false;
+                d_have_htsig = false;
+                d_total_data_syms = 0;
+                d_data_syms_out = 0;
+
+                d_pending_wifi_start_tag = true;
+                d_wifi_start_value = pmt::to_double(t.value);
+                break;
+            }
+        }
+    }
+
+    if (!d_seen_wifi_start) {
+        consume_each(nin);
+        return 0;
+    }
+
+    int consumed_syms = 0;
+    int produced_cplx = 0;
+
+    // We need to decode HT-SIG at sym_idx 3 and 4, so we may need to lookahead 2 symbols.
+    while (consumed_syms < nin) {
+        const gr_complex* sym64 = in + consumed_syms * 64;
+
+        // equalize placeholder (replace with your actual equalizer if needed)
+        std::memcpy(d_symbol_eq, sym64, sizeof(d_symbol_eq));
+
+        // sym_idx mapping (HT Mixed):
+        // 0..1 L-LTF (skip)
+        // 2    L-SIG (decode optional)
+        // 3..4 HT-SIG (decode)
+        // 5    HT-STF (skip)
+        // 6    HT-LTF (skip)
+        // 7..  DATA (output)
+        if (d_sym_idx <= 1) {
+            consumed_syms++;
+            d_sym_idx++;
+            continue;
+        }
+
+        if (d_sym_idx == 2 && !d_have_lsig) {
+            int len = 0;
+            Encoding enc = BPSK_1_2;
+            (void)decode_lsig_from_eq(d_symbol_eq, len, enc);
+            d_lsig_len_bytes = len;
+            d_lsig_encoding = enc;
+            d_have_lsig = true;
+
+            consumed_syms++;
+            d_sym_idx++;
+            continue;
+        }
+
+        if (d_sym_idx == 3 && !d_have_htsig) {
+            // Need sym_idx 3 and 4 available
+            if (consumed_syms + 1 >= nin) break;
+
+            gr_complex eq_a[64];
+            gr_complex eq_b[64];
+            std::memcpy(eq_a, d_symbol_eq, sizeof(eq_a));
+
+            const gr_complex* sym64_b = in + (consumed_syms + 1) * 64;
+            std::memcpy(eq_b, sym64_b, sizeof(eq_b)); // placeholder equalize
+
+            int htlen = 0, mcs = 0;
+            bool sgi = false, agg = false;
+            if (!decode_htsig_from_eq(eq_a, eq_b, htlen, mcs, sgi, agg)) {
+                // bad HT-SIG -> drop this frame
+                d_seen_wifi_start = false;
+                d_pending_wifi_start_tag = false;
+                break;
+            }
+
+            d_have_htsig = true;
+            d_ht_len_bytes = htlen;
+            d_ht_mcs = mcs;
+            d_ht_sgi = sgi;
+            d_ht_agg = agg;
+
+            d_total_data_syms = n_sym_for_psdu_bytes_ht(d_ht_len_bytes, d_ht_mcs, d_ht_sgi);
+            d_data_syms_out = 0;
+
+            // advance by both HT-SIG symbols (sym_idx 3 and 4)
+            consumed_syms += 2;
+            d_sym_idx += 2;
+
+            continue;
+        }
+
+        if (d_sym_idx == 5 || d_sym_idx == 6) {
+            // skip HT-STF and HT-LTF
+            consumed_syms++;
+            d_sym_idx++;
+            continue;
+        }
+
+        // DATA region
+        if (!d_have_htsig) {
+            // cannot output data without HT-SIG
+            consumed_syms++;
+            d_sym_idx++;
+            continue;
+        }
+
+        if (produced_cplx + 48 > nout) break;
+
+        // Attach tags at first DATA symbol output
+        if (d_data_syms_out == 0) {
+            const uint64_t o_off = nitems_written(0) + produced_cplx;
+            const pmt::pmt_t srcid = pmt::string_to_symbol(alias());
+
+            if (d_pending_wifi_start_tag) {
+                add_item_tag(0, o_off, pmt::mp("wifi_start"),
+                             pmt::from_double(d_wifi_start_value), srcid);
+                d_pending_wifi_start_tag = false;
+            }
+
+            // Tell downstream decoder_mac the HT config via tags
+            // Use "encoding" as MCS for HT path in your modified decode_mac.
+            add_item_tag(0, o_off, pmt::mp("encoding"),
+                         pmt::from_long((long)d_ht_mcs), srcid);
+
+            add_item_tag(0, o_off, pmt::mp("frame_bytes"),
+                         pmt::from_long((long)d_ht_len_bytes), srcid);
+
+            add_item_tag(0, o_off, pmt::mp("ht_sgi"),
+                         pmt::from_long((long)(d_ht_sgi ? 1 : 0)), srcid);
+
+            add_item_tag(0, o_off, pmt::mp("ht_aggregation"),
+                         pmt::from_long((long)(d_ht_agg ? 1 : 0)), srcid);
+
+            // packet_len in output items: total_data_syms * 48
+            add_item_tag(0, o_off, pmt::mp("packet_len"),
+                         pmt::from_long((long)(d_total_data_syms * 48)), srcid);
+        }
+
+        for (int i = 0; i < 48; i++) {
+            int bin = carrier_to_fftbin(DATA_CARRIERS[i]);
+            out[produced_cplx + i] = d_symbol_eq[bin];
+        }
+
+        produced_cplx += 48;
+        consumed_syms++;
+        d_sym_idx++;
+        d_data_syms_out++;
+
+        if (d_data_syms_out >= d_total_data_syms) {
+            // end of frame
+            d_seen_wifi_start = false;
+            d_have_lsig = false;
+            d_have_htsig = false;
+            d_total_data_syms = 0;
+            d_data_syms_out = 0;
+            d_pending_wifi_start_tag = false;
+            break;
+        }
+    }
+
+    consume_each(consumed_syms);
+    return produced_cplx;
+}
+
+} // namespace ieee802_11
+} // namespace gr

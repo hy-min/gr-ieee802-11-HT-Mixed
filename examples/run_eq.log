@@ -1,0 +1,35 @@
+[RUN] snr_db=30.0  run=1.2s
+[RUN] psdu_len=100
+[RUN] mcs=0  pps=1.0
+[RUN] rx_log=True  rx_debug=True
+[FILES] tx=wifi_tx.cfile  rx=wifi_rx.cfile
+[FILES] rx_bins_vec64=wifi_rx_bins.vec64.cfile
+MAPPER: encoding: 0
+[TX][SIG] mapper        in/out=([], [1])
+[TX][SIG] ht_header     in/out=([1], [1])
+[TX][SIG] ht_len_merge  in/out=([1], [1])
+[TX][SIG] cts_header    in/out=([1], [8])
+[TX][SIG] cts_data      in/out=([1], [8])
+[TX][SIG] mux           in/out=([], [8])
+[TX][SIG] ca            in/out=([8], [512])
+[TX][SIG] insert_ht     in/out=([512], [512])
+[TX][SIG] ifft          in/out=([512], [512])
+[TX][SIG] cp            in/out=([512], [8])
+[RX] decode_mac is DISABLED for HT debug
+[RX][SIG] sync_long in/out=([8, 8], [8])
+[RX][SIG] eq        in/out=([512, 1], [384])
+[RX][SIG] v2s48     in/out=([384], [8])
+[MAPPER] meta=((encoding . 0) (mcs . 0) (len . 100) (psdu_len . 100))
+[MAPPER] meta fields: mcs=0 len=100 psdu_len=100
+[MAPPER] using MCS=0
+[OBS] msg_connect: message_strobe(strobe) -> mapper(in)
+[OBS] strobe period = 1000 ms
+[OBS] mapper.has_msg_port('in') = True
+Traceback (most recent call last):
+  File "wifi_loopback.py", line 159, in <module>
+    main()
+  File "wifi_loopback.py", line 142, in main
+    tb.start()
+  File "/home/hy/conda/envs/gnuradio/lib/python3.8/site-packages/gnuradio/gr/top_block.py", line 116, in start
+    top_block_start_unlocked(self._impl, max_noutput_items)
+RuntimeError: vector_to_stream(36): insufficient connected output ports (1 needed, 0 connected)

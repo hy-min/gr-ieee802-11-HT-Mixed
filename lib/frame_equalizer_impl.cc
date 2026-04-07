@@ -1859,6 +1859,42 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
             std::printf("[EQ][SYM_IDX] sym_idx=%d, type=%s\n", d_sym_idx, sym_type);
             std::fflush(stdout);
+
+            // ===== Legacy vs HT-Mixed frame type detection =====
+            // After L-SIG (rel_idx=2), detect if next symbol is Legacy Data or HT-SIG1
+            // QBPSK rotation: E_Q > E_I indicates HT-SIG (+90° rotation)
+            // Standard BPSK: E_I > E_Q indicates Legacy
+            // NOTE: This runs inside the symbol extraction loop when d_sym_idx == kHtSig0Rel
+            if (d_sym_idx == kHtSig0Rel && d_early_eqsym_valid[kLSigRel]) {
+                double E_I_ls, E_Q_ls, E_I_ht, E_Q_ht;
+
+                // Debug: print first few values of L-SIG and HT-SIG0
+                fprintf(stderr, "[FRAME_DETECT] DEBUG d_early_eqsym[2][0]=%.4f+%.4fi\n",
+                        d_early_eqsym[kLSigRel][0].real(), d_early_eqsym[kLSigRel][0].imag());
+                fprintf(stderr, "[FRAME_DETECT] DEBUG d_early_eqsym[3][0]=%.4f+%.4fi\n",
+                        d_early_eqsym[kHtSig0Rel][0].real(), d_early_eqsym[kHtSig0Rel][0].imag());
+
+                // Compute L-SIG energy distribution (baseline)
+                compute_subcarrier_energy(d_early_eqsym[kLSigRel], E_I_ls, E_Q_ls);
+
+                // Compute HT-SIG0 energy distribution
+                compute_subcarrier_energy(d_early_eqsym[kHtSig0Rel], E_I_ht, E_Q_ht);
+
+                double ratio_ls = (E_I_ls > 1e-10) ? E_Q_ls / E_I_ls : 0.0;
+                double ratio_ht = (E_I_ht > 1e-10) ? E_Q_ht / E_I_ht : 0.0;
+
+                fprintf(stderr, "[FRAME_DETECT] L-SIG: E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I_ls, E_Q_ls, ratio_ls);
+                fprintf(stderr, "[FRAME_DETECT] HT-SIG0: E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I_ht, E_Q_ht, ratio_ht);
+
+                // If HT-SIG0's E_Q/E_I ratio is significantly higher than L-SIG, it's HT-Mixed
+                if (ratio_ht > 2.0 && ratio_ht > ratio_ls * 2.0) {
+                    fprintf(stderr, "[FRAME_DETECT] Detected HT-Mixed frame (QBPSK rotation)\n");
+                    d_is_ht_frame = true;
+                } else {
+                    fprintf(stderr, "[FRAME_DETECT] Detected Legacy frame\n");
+                    d_is_ht_frame = false;
+                }
+            }
         }
 
         // ------------------------------------------------------------
@@ -2113,35 +2149,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                 if (lsig_enc != 0) {
                     continue;
-                }
-
-                // ===== Legacy vs HT-Mixed frame type detection =====
-                // After L-SIG (rel_idx=2), detect if next symbol is Legacy Data or HT-SIG1
-                // QBPSK rotation: E_Q > E_I indicates HT-SIG (+90° rotation)
-                // Standard BPSK: E_I > E_Q indicates Legacy
-                if (d_sym_idx == kHtSig0Rel && d_early_eqsym_valid[kLSigRel]) {
-                    double E_I_ls, E_Q_ls, E_I_ht, E_Q_ht;
-
-                    // Compute L-SIG energy distribution (baseline)
-                    compute_subcarrier_energy(d_early_eqsym[kLSigRel], E_I_ls, E_Q_ls);
-
-                    // Compute HT-SIG0 energy distribution
-                    compute_subcarrier_energy(d_early_eqsym[kHtSig0Rel], E_I_ht, E_Q_ht);
-
-                    double ratio_ls = (E_I_ls > 1e-10) ? E_Q_ls / E_I_ls : 0.0;
-                    double ratio_ht = (E_I_ht > 1e-10) ? E_Q_ht / E_I_ht : 0.0;
-
-                    fprintf(stderr, "[FRAME_DETECT] L-SIG: E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I_ls, E_Q_ls, ratio_ls);
-                    fprintf(stderr, "[FRAME_DETECT] HT-SIG0: E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I_ht, E_Q_ht, ratio_ht);
-
-                    // If HT-SIG0's E_Q/E_I ratio is significantly higher than L-SIG, it's HT-Mixed
-                    if (ratio_ht > 2.0 && ratio_ht > ratio_ls * 2.0) {
-                        fprintf(stderr, "[FRAME_DETECT] Detected HT-Mixed frame (QBPSK rotation)\n");
-                        d_is_ht_frame = true;
-                    } else {
-                        fprintf(stderr, "[FRAME_DETECT] Detected Legacy frame\n");
-                        d_is_ht_frame = false;
-                    }
                 }
 
                 // Detect HT-SIG QBPSK rotation

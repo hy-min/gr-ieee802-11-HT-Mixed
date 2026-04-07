@@ -12,9 +12,11 @@ install(FILES
     ieee802_11_ether_encap.block.yml
     ieee802_11_extract_csi.block.yml
     ieee802_11_frame_equalizer.block.yml
+    ieee802_11_ht_symbol_splitter.block.yml
     ieee802_11_mac.block.yml
     ieee802_11_mapper.block.yml
     ieee802_11_parse_mac.block.yml
     ieee802_11_sync_long.block.yml
-    ieee802_11_sync_short.block.yml DESTINATION share/gnuradio/grc/blocks
+    ieee802_11_sync_short.block.yml
+    ieee802_11_insert_ht_training.block.yml DESTINATION share/gnuradio/grc/blocks
 )

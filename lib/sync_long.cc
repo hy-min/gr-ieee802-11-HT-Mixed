@@ -48,6 +48,7 @@ public:
           d_debug(debug),
           d_offset(0),
           d_state(SYNC),
+          d_wifi_start_added(false),
           SYNC_LENGTH(sync_length)
     {
 
@@ -143,21 +144,20 @@ public:
 
                 int rel = d_offset - d_frame_start;
 
-                // Add wifi_start tag at d_frame_start (the start of L-LTF data)
-                if (rel == 0) {
+                // Add wifi_start tag at L-LTF0 DATA start (rel=0)
+                // Only add if we haven't already added one for this detection
+                if (rel == 0 && !d_wifi_start_added) {
                     add_item_tag(0,
                                  nitems_written(0),
                                  pmt::string_to_symbol("wifi_start"),
                                  pmt::from_double(d_freq_offset_short - d_freq_offset),
                                  pmt::string_to_symbol(name()));
+                    d_wifi_start_added = true;
                 }
 
-                if (rel >= 0 && (rel < 128 || ((rel - 128) % 80) > 15)) {
-                    // Debug: log COPY output for preamble and HT-SIG symbols
-                    if ((rel >= 0 && rel <= 7) || (rel >= 192 && rel <= 319)) {
-                        fprintf(stderr, "[COPY_OUT] rel=%d, d_offset=%d, d_frame_start=%d\n",
-                                rel, d_offset, d_frame_start);
-                    }
+                // Output all samples from d_frame_start onwards (1:1 mapping)
+                // CP removal is handled by ht_symbol_splitter downstream
+                if (rel >= 0) {
                     // CFO correction disabled for testing - threshold set to 100.0 to force no correction
                     if (std::abs(d_freq_offset) > 100.0) {
                         out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
@@ -175,9 +175,13 @@ public:
         }
 
         case RESET: {
+            // In RESET, we output zeros until we've output at least 1 sample
+            // and the modulo condition is met. This prevents immediate
+            // COPY → RESET → SYNC transition when d_count + o is exactly 64.
             while (o < noutput) {
-                if (((d_count + o) % 64) == 0) {
+                if (o > 0 && ((d_count + o) % 64) == 0) {
                     d_offset = 0;
+                    d_wifi_start_added = false;  // Reset so next detection can add tag
                     d_state = SYNC;
                     break;
                 } else {
@@ -326,6 +330,7 @@ private:
     int d_frame_start;
     float d_freq_offset;
     double d_freq_offset_short;
+    bool d_wifi_start_added;  // Prevent duplicate wifi_start tags
 
     gr_complex* d_correlation;
     list<pair<gr_complex, int>> d_cor;

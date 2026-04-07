@@ -32,14 +32,17 @@ list(APPEND ieee802_11_sources
     ether_encap_impl.cc
     extract_csi_impl.cc
     frame_equalizer_impl.cc
+    ht_symbol_splitter_impl.cc
     mac.cc
     mapper_impl.cc
     parse_mac.cc
     signal_field_impl.cc
+    ht_header_tagged_impl.cc
     sync_long.cc
     sync_short.cc
     utils.cc
     viterbi_decoder/base.cc
+    insert_ht_training_impl.cc
 )
 
 # use SSE2 optimized viterbi implementation if SSE2 is enabled

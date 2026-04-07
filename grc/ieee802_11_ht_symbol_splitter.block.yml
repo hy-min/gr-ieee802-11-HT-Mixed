@@ -1,0 +1,38 @@
+id: ieee802_11_ht_symbol_splitter
+label: HT Symbol Splitter
+category: '[IEEE802.11]'
+
+parameters:
+-   id: fft_size
+    label: FFT Size
+    dtype: int
+    default: '64'
+-   id: symbol_size
+    label: Symbol Size
+    dtype: int
+    default: '80'
+-   id: cp_size
+    label: CP Size
+    dtype: int
+    default: '16'
+
+inputs:
+-   domain: stream
+    dtype: complex
+    multiplicity: '1'
+
+outputs:
+-   domain: stream
+    dtype: complex
+    multiplicity: '1'
+
+asserts:
+- ${ fft_size > 0 }
+- ${ symbol_size > 0 }
+- ${ cp_size >= 0 }
+
+templates:
+    imports: import ieee802_11
+    make: ieee802_11.ht_symbol_splitter(${fft_size}, ${symbol_size}, ${cp_size})
+
+file_format: 1

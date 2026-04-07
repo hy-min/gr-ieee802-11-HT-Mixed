@@ -17,11 +17,14 @@ install(FILES
     ether_encap.h
     extract_csi.h
     frame_equalizer.h
+    ht_symbol_splitter.h
     mac.h
     mapper.h
     parse_mac.h
     signal_field.h
+    ht_header_tagged.h
     sync_long.h
     sync_short.h
+    insert_ht_training.h
     DESTINATION include/ieee802_11
 )

@@ -1,4 +1,4 @@
-/*
+ /*
  * Copyright 1995 Phil Karn, KA9Q
  * Copyright 2008 Free Software Foundation, Inc.
  * 2014 Added SSE2 implementation Bogdan Diaconescu
@@ -10,7 +10,6 @@
  * the Free Software Foundation; either version 3, or (at your option)
  * any later version.
  *
-
  * GNU Radio is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -23,13 +22,33 @@
  */
 
 /*
- * Viterbi decoder for K=7 rate=1/2 convolutional code
- * Some modifications from original Karn code by Matt Ettus
- * Major modifications by adding SSE2 code by Bogdan Diaconescu
+ * This file keeps the original x86 decoder file/class selection so the build
+ * path does not change, but decode() is replaced by an exact scalar
+ * bit-level Viterbi with final chainback.
+ *
+ * The old SSE byte-wise traceback path is preserved in the file, but decode()
+ * no longer depends on the byte-delayed flush logic that was corrupting the
+ * final FCS bytes.
+ *
+ * Trellis used here matches the convolutional encoder implied by the original
+ * branch polynomials in this project:
+ *   g0 = 0x6d
+ *   g1 = 0x4f
+ *
+ * State convention:
+ *   prev_state is 6 bits
+ *   reg = ((prev_state << 1) | input_bit)  // 7-bit encoder shift register
+ *   next_state = reg & 0x3f
+ *   out0 = parity(reg & 0x6d)
+ *   out1 = parity(reg & 0x4f)
  */
+
 #include "viterbi_decoder_x86.h"
 #include <cstring>
 #include <iostream>
+#include <vector>
+#include <algorithm>
+#include <limits>
 
 /* The basic Viterbi decoder operation, called a "butterfly"
  * operation because of the way it looks on a trellis diagram. Each
@@ -42,8 +61,8 @@
  * encoder state in the low two bits, such a code will have the following
  * identities for even 'n' < 64:
  *
- * 	encode_state(n) = encode_state(n+65)
- *	encode_state(n+1) = encode_state(n+64) = (3 ^ encode_state(n))
+ *  encode_state(n)   = encode_state(n+65)
+ *  encode_state(n+1) = encode_state(n+64) = (3 ^ encode_state(n))
  *
  * Any convolutional code you would actually want to use will have
  * these properties, so these assumptions aren't too limiting.
@@ -83,6 +102,32 @@
 
 using namespace gr::ieee802_11;
 
+namespace {
+
+static inline uint8_t parity_u8(uint8_t x)
+{
+    x ^= x >> 4;
+    x ^= x >> 2;
+    x ^= x >> 1;
+    return x & 1;
+}
+
+static inline int branch_metric_hard(uint8_t rx0, uint8_t rx1,
+                                     uint8_t ex0, uint8_t ex1)
+{
+    int m = 0;
+    if (rx0 != 2) {
+        m += (rx0 == ex0) ? 1 : -1;
+    }
+    if (rx1 != 2) {
+        m += (rx1 == ex1) ? 1 : -1;
+    }
+    return m;
+}
+
+} // namespace
+
+
 void viterbi_decoder::viterbi_butterfly2_sse2(
     unsigned char* symbols, __m128i* mm0, __m128i* mm1, __m128i* pp0, __m128i* pp1)
 {
@@ -97,7 +142,6 @@ void viterbi_decoder::viterbi_butterfly2_sse2(
     path1 = pp1;
 
     // Operate on 4 symbols (2 bits) at a time
-
     __m128i m0, m1, m2, m3, decision0, decision1, survivor0, survivor1;
     __m128i metsv, metsvm;
     __m128i shift0, shift1;
@@ -133,7 +177,7 @@ void viterbi_decoder::viterbi_butterfly2_sse2(
             _mm_or_si128(_mm_and_si128(decision1, m2), _mm_andnot_si128(decision1, m3));
 
         shift0 = _mm_slli_epi16(path0[i], 1);
-        shift1 = _mm_slli_epi16(path0[2 + i], 1);
+        shift1 = _mm_slli_epi16(path0[i + 2], 1);
         shift1 = _mm_add_epi8(shift1, _mm_set1_epi8(1));
 
         metric1[2 * i] = _mm_unpacklo_epi8(survivor0, survivor1);
@@ -160,11 +204,9 @@ void viterbi_decoder::viterbi_butterfly2_sse2(
         if (symbols[2] == 2) {
             metsvm = _mm_xor_si128(d_branchtab27_sse2[1].v[i], sym1v);
             metsv = _mm_sub_epi8(_mm_set1_epi8(1), metsvm);
-
         } else if (symbols[3] == 2) {
             metsvm = _mm_xor_si128(d_branchtab27_sse2[0].v[i], sym0v);
             metsv = _mm_sub_epi8(_mm_set1_epi8(1), metsvm);
-
         } else {
             metsvm = _mm_add_epi8(_mm_xor_si128(d_branchtab27_sse2[0].v[i], sym0v),
                                   _mm_xor_si128(d_branchtab27_sse2[1].v[i], sym1v));
@@ -184,7 +226,7 @@ void viterbi_decoder::viterbi_butterfly2_sse2(
             _mm_or_si128(_mm_and_si128(decision1, m2), _mm_andnot_si128(decision1, m3));
 
         shift0 = _mm_slli_epi16(path0[i], 1);
-        shift1 = _mm_slli_epi16(path0[2 + i], 1);
+        shift1 = _mm_slli_epi16(path0[i + 2], 1);
         shift1 = _mm_add_epi8(shift1, _mm_set1_epi8(1));
 
         metric1[2 * i] = _mm_unpacklo_epi8(survivor0, survivor1);
@@ -200,7 +242,6 @@ void viterbi_decoder::viterbi_butterfly2_sse2(
     }
 }
 
-//  Find current best path
 unsigned char viterbi_decoder::viterbi_get_output_sse2(__m128i* mm0,
                                                        __m128i* pp0,
                                                        int ntraceback,
@@ -211,7 +252,7 @@ unsigned char viterbi_decoder::viterbi_get_output_sse2(__m128i* mm0,
     int beststate = 0;
     int pos = 0;
 
-    // circular buffer with the last ntraceback paths
+    // 保留原函数，兼容其它潜在调用；decode() 已不再依赖它
     d_store_pos = (d_store_pos + 1) % ntraceback;
 
     for (i = 0; i < 4; i++) {
@@ -219,7 +260,6 @@ unsigned char viterbi_decoder::viterbi_get_output_sse2(__m128i* mm0,
         _mm_store_si128((__m128i*)&d_ppresult[d_store_pos][i * 16], pp0[i]);
     }
 
-    // Find out the best final state
     bestmetric = d_mmresult[beststate];
     minmetric = d_mmresult[beststate];
 
@@ -233,67 +273,95 @@ unsigned char viterbi_decoder::viterbi_get_output_sse2(__m128i* mm0,
         }
     }
 
-    // Trace back
     for (i = 0, pos = d_store_pos; i < (ntraceback - 1); i++) {
-        // Obtain the state from the output bits
-        // by clocking in the output bits in reverse order.
-        // The state has only 6 bits
         beststate = d_ppresult[pos][beststate] >> 2;
         pos = (pos - 1 + ntraceback) % ntraceback;
     }
 
-    // Store output byte
     *outbuf = d_ppresult[pos][beststate];
 
-    // Zero out the path variable
-    // and prevent metric overflow
     for (i = 0; i < 4; i++) {
         pp0[i] = _mm_setzero_si128();
-        mm0[i] = _mm_sub_epi8(mm0[i], _mm_set1_epi8(minmetric));
+        mm0[i] = _mm_sub_epi8(mm0[i], _mm_set1_epi8((char)minmetric));
     }
 
-    return bestmetric;
+    return (unsigned char)bestmetric;
 }
-
 
 uint8_t* viterbi_decoder::decode(ofdm_param* ofdm, frame_param* frame, uint8_t* in)
 {
-
     d_ofdm = ofdm;
     d_frame = frame;
 
     reset();
     uint8_t* depunctured = depuncture(in);
 
-    int in_count = 0;
-    int out_count = 0;
-    int n_decoded = 0;
+    const int n_data_bits = d_frame->n_data_bits;
+    const int n_states = 64;
+    const int neg_inf = std::numeric_limits<int>::min() / 4;
 
-    while (n_decoded < d_frame->n_data_bits) {
+    // depunctured mother code has exactly 2 coded bits per data bit
+    const int n_mother_bits = 2 * n_data_bits;
 
-        if ((in_count % 4) == 0) { // 0 or 3
-            viterbi_butterfly2_sse2(&depunctured[in_count & 0xfffffffc],
-                                    d_metric0,
-                                    d_metric1,
-                                    d_path0,
-                                    d_path1);
+    std::vector<int> metric_prev(n_states, neg_inf);
+    std::vector<int> metric_next(n_states, neg_inf);
+    std::vector<uint8_t> pred_state((size_t)n_data_bits * n_states, 0);
+    std::vector<uint8_t> pred_input((size_t)n_data_bits * n_states, 0);
 
-            if ((in_count > 0) && (in_count % 16) == 8) { // 8 or 11
-                unsigned char c;
+    // known initial state
+    metric_prev[0] = 0;
 
-                viterbi_get_output_sse2(d_metric0, d_path0, d_ntraceback, &c);
+    for (int t = 0; t < n_data_bits; t++) {
+        const uint8_t rx0 = (2 * t + 0 < n_mother_bits) ? depunctured[2 * t + 0] : 2;
+        const uint8_t rx1 = (2 * t + 1 < n_mother_bits) ? depunctured[2 * t + 1] : 2;
 
-                if (out_count >= d_ntraceback) {
-                    for (int i = 0; i < 8; i++) {
-                        d_decoded[(out_count - d_ntraceback) * 8 + i] =
-                            (c >> (7 - i)) & 0x1;
-                        n_decoded++;
-                    }
+        std::fill(metric_next.begin(), metric_next.end(), neg_inf);
+
+        for (int prev_state = 0; prev_state < n_states; prev_state++) {
+            const int prev_metric = metric_prev[prev_state];
+            if (prev_metric == neg_inf) {
+                continue;
+            }
+
+            for (int input_bit = 0; input_bit <= 1; input_bit++) {
+                const uint8_t reg = uint8_t(((prev_state << 1) | input_bit) & 0x7f);
+                const int next_state = reg & 0x3f;
+
+                const uint8_t ex0 = parity_u8(uint8_t(reg & 0x6d));
+                const uint8_t ex1 = parity_u8(uint8_t(reg & 0x4f));
+
+                const int cand = prev_metric + branch_metric_hard(rx0, rx1, ex0, ex1);
+
+                if (cand > metric_next[next_state]) {
+                    metric_next[next_state] = cand;
+                    pred_state[(size_t)t * n_states + next_state] = (uint8_t)prev_state;
+                    pred_input[(size_t)t * n_states + next_state] = (uint8_t)input_bit;
                 }
-                out_count++;
             }
         }
-        in_count++;
+
+        metric_prev.swap(metric_next);
+    }
+
+    // 802.11 encoder is terminated to zero state by tail bits
+    int state = 0;
+
+    // safety fallback
+    if (metric_prev[state] == neg_inf) {
+        int best_state = 0;
+        int best_metric = metric_prev[0];
+        for (int s = 1; s < n_states; s++) {
+            if (metric_prev[s] > best_metric) {
+                best_metric = metric_prev[s];
+                best_state = s;
+            }
+        }
+        state = best_state;
+    }
+
+    for (int t = n_data_bits - 1; t >= 0; t--) {
+        d_decoded[t] = pred_input[(size_t)t * n_states + state];
+        state = pred_state[(size_t)t * n_states + state];
     }
 
     return d_decoded;
@@ -301,7 +369,6 @@ uint8_t* viterbi_decoder::decode(ofdm_param* ofdm, frame_param* frame, uint8_t* 
 
 void viterbi_decoder::reset()
 {
-
     viterbi_chunks_init_sse2();
 
     switch (d_ofdm->encoding) {
@@ -312,11 +379,13 @@ void viterbi_decoder::reset()
         d_depuncture_pattern = PUNCTURE_1_2;
         d_k = 1;
         break;
+
     case QAM64_2_3:
         d_ntraceback = 9;
         d_depuncture_pattern = PUNCTURE_2_3;
         d_k = 2;
         break;
+
     case BPSK_3_4:
     case QPSK_3_4:
     case QAM16_3_4:
@@ -325,10 +394,16 @@ void viterbi_decoder::reset()
         d_depuncture_pattern = PUNCTURE_3_4;
         d_k = 3;
         break;
+
+    default:
+        std::cerr << "Warning: puncturing not supported!" << std::endl;
+        d_ntraceback = 5;
+        d_depuncture_pattern = PUNCTURE_1_2;
+        d_k = 1;
+        break;
     }
 }
 
-// Initialize starting metrics to prefer 0 state
 void viterbi_decoder::viterbi_chunks_init_sse2()
 {
     int i, j;
@@ -352,4 +427,6 @@ void viterbi_decoder::viterbi_chunks_init_sse2()
             d_ppresult[j][i] = 0;
         }
     }
+
+    d_store_pos = 0;
 }

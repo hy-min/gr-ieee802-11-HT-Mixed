@@ -1,0 +1,33 @@
+id: ieee802_11_insert_ht_training
+label: Insert HT Training (HT-STF/LTF)
+category: '[ieee802_11]'
+
+templates:
+  imports: |-
+    import ieee802_11
+  make: |-
+    ieee802_11.insert_ht_training(${tag_key})
+
+parameters:
+  - id: tag_key
+    label: Length Tag Key
+    dtype: string
+    default: packet_len
+
+inputs:
+  - label: in
+    domain: stream
+    dtype: complex
+    vlen: 64
+
+outputs:
+  - label: out
+    domain: stream
+    dtype: complex
+    vlen: 64
+
+documentation: |-
+  Inserts HT training symbols (HT-STF/HT-LTF) into the OFDM symbol stream.
+  This block's current C++ API only accepts the length tag key.
+  Place it after OFDM Carrier Allocator (vlen=64) and before IFFT/CP.
+

@@ -5,14 +5,6 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "base.h"
@@ -39,12 +31,15 @@ const gr_complex base::POLARITY[127] = {
 std::vector<gr_complex> base::get_csi()
 {
     std::vector<gr_complex> csi;
-    csi.reserve(52);
+    csi.reserve(56);
+
+    // HT 20MHz occupied carriers: 4..60 except DC=32  => 56 tones
     for (int i = 0; i < 64; i++) {
-        if ((i == 32) || (i < 6) || (i > 58)) {
+        if ((i == 32) || (i < 4) || (i > 60)) {
             continue;
         }
         csi.push_back(d_H[i]);
     }
+
     return csi;
 }

@@ -1,23 +1,15 @@
 /*
- * Copyright (C) 2013 Bastian Bloessl <bloessl@ccs-labs.org>
+ * Copyright (C) 2013 Bastian Bloessl
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * GPLv3+
  */
 #include "chunks_to_symbols_impl.h"
 #include "utils.h"
+
 #include <gnuradio/io_signature.h>
-#include <assert.h>
+#include <cassert>
+#include <stdexcept>
+#include <vector>
 
 using namespace gr::ieee802_11;
 
@@ -32,7 +24,6 @@ chunks_to_symbols_impl::chunks_to_symbols_impl()
                           io_signature::make(1, 1, sizeof(gr_complex)),
                           "packet_len")
 {
-
     d_bpsk = constellation_bpsk::make();
     d_qpsk = constellation_qpsk::make();
     d_16qam = constellation_16qam::make();
@@ -43,54 +34,70 @@ chunks_to_symbols_impl::chunks_to_symbols_impl()
 
 chunks_to_symbols_impl::~chunks_to_symbols_impl() {}
 
-
 int chunks_to_symbols_impl::work(int noutput_items,
                                  gr_vector_int& ninput_items,
                                  gr_vector_const_void_star& input_items,
                                  gr_vector_void_star& output_items)
 {
+    (void)noutput_items;
 
-    const unsigned char* in = (unsigned char*)input_items[0];
+    const unsigned char* in = (const unsigned char*)input_items[0];
     gr_complex* out = (gr_complex*)output_items[0];
 
-    std::vector<tag_t> tags;
-    get_tags_in_range(
-        tags, 0, nitems_read(0), nitems_read(0) + ninput_items[0], pmt::mp("encoding"));
-    if (tags.size() != 1) {
-        throw std::runtime_error("no encoding in input stream");
+    // packet_len for this tagged stream item
+    const int pkt_len = ninput_items[0];
+
+    // Try to read encoding tag (payload encoding). Header mapping is forced to BPSK anyway.
+    Encoding encoding = BPSK_1_2;
+    {
+        std::vector<tag_t> tags;
+        get_tags_in_range(tags,
+                          0,
+                          nitems_read(0),
+                          nitems_read(0) + ninput_items[0],
+                          pmt::mp("encoding"));
+        if (!tags.empty()) {
+            encoding = (Encoding)pmt::to_long(tags[0].value);
+        }
     }
 
-    Encoding encoding = (Encoding)pmt::to_long(tags[0].value);
+    const bool is_header = (pkt_len == 48 || pkt_len == 144);
 
-    switch (encoding) {
-    case BPSK_1_2:
-    case BPSK_3_4:
+    if (is_header) {
+        // L-SIG and HT-SIG are always BPSK mapped
         d_mapping = d_bpsk;
-        break;
-
-    case QPSK_1_2:
-    case QPSK_3_4:
-        d_mapping = d_qpsk;
-        break;
-
-    case QAM16_1_2:
-    case QAM16_3_4:
-        d_mapping = d_16qam;
-        break;
-
-    case QAM64_2_3:
-    case QAM64_3_4:
-        d_mapping = d_64qam;
-        break;
-
-    default:
-        throw std::invalid_argument("wrong encoding");
-        break;
+    } else {
+        // DATA mapping uses payload encoding
+        switch (encoding) {
+        case BPSK_1_2:
+        case BPSK_3_4:
+            d_mapping = d_bpsk;
+            break;
+        case QPSK_1_2:
+        case QPSK_3_4:
+            d_mapping = d_qpsk;
+            break;
+        case QAM16_1_2:
+        case QAM16_3_4:
+            d_mapping = d_16qam;
+            break;
+        case QAM64_2_3:
+        case QAM64_3_4:
+            d_mapping = d_64qam;
+            break;
+        default:
+            throw std::invalid_argument("wrong encoding");
+        }
     }
 
-    for (int i = 0; i < ninput_items[0]; i++) {
+    for (int i = 0; i < pkt_len; i++) {
         d_mapping->map_to_points(in[i], out + i);
+
+        // For HT header (144 bits): bits[0..47]=L-SIG on I axis, bits[48..143]=HT-SIG on Q axis.
+        if (pkt_len == 144 && i >= 48) {
+            out[i] *= gr_complex(0.0f, 1.0f); // +90 deg rotation: (±1,0)->(0,±1)
+        }
     }
 
-    return ninput_items[0];
+    return pkt_len;
 }

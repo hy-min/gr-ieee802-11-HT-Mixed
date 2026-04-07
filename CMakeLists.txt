@@ -155,6 +155,14 @@ else(ENABLE_PYTHON)
 endif(ENABLE_PYTHON)
 
 ########################################################################
+# Install public headers
+########################################################################
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/ieee802_11/
+    DESTINATION ${GR_INCLUDE_DIR}
+    FILES_MATCHING PATTERN "*.h"
+)
+
+########################################################################
 # Install cmake search helper for this library
 ########################################################################
 
@@ -165,3 +173,5 @@ install(FILES cmake/Modules/ieee802_11Config.cmake
 install(FILES MANIFEST.yml
     RENAME MANIFEST-${VERSION_MAJOR}.${VERSION_API}.${VERSION_ABI}${VERSION_PATCH}.yml
     DESTINATION share/gnuradio/manifests/ieee802_11)
+
+

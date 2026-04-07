@@ -1,0 +1,11 @@
+===== tb.dump() =====
+[OBS] tb.dump(): (no string returned)
+
+
+===== tb.tx.dump() =====
+[OBS] tb.tx.dump() failed: 'wifi_phy_tx_hier' object has no attribute 'dump'
+
+
+===== tb.rx.dump() =====
+[OBS] tb.rx.dump() failed: 'wifi_phy_rx_hier' object has no attribute 'dump'
+

@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2013, 2016 Bastian Bloessl <bloessl@ccs-labs.org>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
 #include <ieee802_11/mac.h>
 
 #include <gnuradio/block_detail.h>
@@ -43,8 +27,11 @@ public:
     mac_impl(std::vector<uint8_t> src_mac,
              std::vector<uint8_t> dst_mac,
              std::vector<uint8_t> bss_mac)
-        : block("mac", gr::io_signature::make(0, 0, 0), gr::io_signature::make(0, 0, 0)),
-          d_seq_nr(0)
+        : block("mac",
+                gr::io_signature::make(0, 0, 0),
+                gr::io_signature::make(0, 0, 0)),
+          d_seq_nr(0),
+          d_encoding(BPSK_1_2)   // 默认编码：BPSK 1/2
     {
 
         message_port_register_out(pmt::mp("phy out"));
@@ -58,6 +45,11 @@ public:
         set_msg_handler(pmt::mp("phy in"),
                         boost::bind(&mac_impl::phy_in, this, boost::placeholders::_1));
 
+        // 新增：接收 rate_control 等模块输出的 MCS（Encoding）
+        message_port_register_in(pmt::mp("mcs in"));
+        set_msg_handler(pmt::mp("mcs in"),
+                        boost::bind(&mac_impl::mcs_in, this, boost::placeholders::_1));
+
         if (!check_mac(src_mac))
             throw std::invalid_argument("wrong mac address size");
         if (!check_mac(dst_mac))
@@ -70,6 +62,18 @@ public:
             d_dst_mac[i] = dst_mac[i];
             d_bss_mac[i] = bss_mac[i];
         }
+    }
+
+    // 新增：用于接收自适应算法选出来的 Encoding
+    void mcs_in(pmt::pmt_t msg)
+    {
+        if (!pmt::is_integer(msg)) {
+            std::cerr << "MAC: mcs_in expects integer Encoding" << std::endl;
+            return;
+        }
+
+        d_encoding = (Encoding)pmt::to_long(msg);
+        std::cout << "MAC: set encoding to " << (int)d_encoding << std::endl;
     }
 
     void phy_in(pmt::pmt_t msg)
@@ -123,6 +127,10 @@ public:
         // dict
         pmt::pmt_t dict = pmt::make_dict();
         dict = pmt::dict_add(dict, pmt::mp("crc_included"), pmt::PMT_T);
+        // 新增：把当前要用的 PHY Encoding 写进 meta，交给 mapper 使用
+        dict = pmt::dict_add(dict,
+                             pmt::mp("encoding"),
+                             pmt::from_long((int)d_encoding));
 
         // blob
         pmt::pmt_t mac = pmt::make_blob(d_psdu, psdu_length);
@@ -178,6 +186,7 @@ public:
 
 private:
     uint16_t d_seq_nr;
+    Encoding d_encoding;          // 新增：当前使用的 PHY 编码方式
     uint8_t d_src_mac[6];
     uint8_t d_dst_mac[6];
     uint8_t d_bss_mac[6];

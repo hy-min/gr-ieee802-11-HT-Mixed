@@ -1,256 +1,869 @@
-/*
- * Copyright (C) 2013, 2016 Bastian Bloessl <bloessl@ccs-labs.org>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
 #include <ieee802_11/decode_mac.h>
-
 #include "utils.h"
 #include "viterbi_decoder/viterbi_decoder.h"
 
 #include <gnuradio/io_signature.h>
+#include <gnuradio/gr_complex.h>
+#include <pmt/pmt.h>
+
 #include <boost/crc.hpp>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <iomanip>
+#include <fstream>
+#include <cstdio>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <cmath>
 
 using namespace gr::ieee802_11;
 
-#define LINKTYPE_IEEE802_11 105 /* http://www.tcpdump.org/linktypes.html */
+#define LINKTYPE_IEEE802_11 105
+
+namespace {
+
+static inline uint8_t hard_bpsk_bit(const gr_complex& x)
+{
+    return (x.real() >= 0.0f) ? 1 : 0;
+}
+
+static int ht_n_bpsc_from_mcs(int mcs)
+{
+    switch (mcs) {
+    case 0: return 1;
+    case 1: return 2;
+    case 2: return 2;
+    case 3: return 4;
+    case 4: return 4;
+    case 5: return 6;
+    case 6: return 6;
+    case 7: return 6;
+    default: return 1;
+    }
+}
+
+static int ht_n_cbps_from_mcs(int mcs)
+{
+    switch (mcs) {
+    case 0: return 52;
+    case 1: return 104;
+    case 2: return 104;
+    case 3: return 208;
+    case 4: return 208;
+    case 5: return 312;
+    case 6: return 312;
+    case 7: return 312;
+    default: return 52;
+    }
+}
+
+static int ht_n_dbps_from_mcs(int mcs)
+{
+    switch (mcs) {
+    case 0: return 26;
+    case 1: return 52;
+    case 2: return 78;
+    case 3: return 104;
+    case 4: return 156;
+    case 5: return 208;
+    case 6: return 234;
+    case 7: return 260;
+    default: return 26;
+    }
+}
+
+static int ht_n_sym_from_mcs_len(int mcs, int len_bytes)
+{
+    const int n_dbps = ht_n_dbps_from_mcs(mcs);
+    return (16 + 8 * len_bytes + 6 + n_dbps - 1) / n_dbps;
+}
+
+static int ht_n_sym_mcs0_only(int len_bytes)
+{
+    const int n_dbps = 26; // HT MCS0
+    return (16 + 8 * len_bytes + 6 + n_dbps - 1) / n_dbps;
+}
+
+// HT 20MHz / 1SS / BPSK(MCS0) 去交织逆变换
+static void ht_bpsk_deinterleave_52(const uint8_t* in52, uint8_t* out52)
+{
+    const int n_cbps = 52;
+    const int n_bpsc = 1;
+    const int s = std::max(n_bpsc / 2, 1);
+    const int n_col = 13;
+    const int n_row = n_cbps / n_col; // = 4
+
+    std::memset(out52, 0, 52);
+
+    for (int j = 0; j < n_cbps; j++) {
+        const int first = (s * (j / s)) + ((j + ((n_col * j) / n_cbps)) % s);
+        const int k = n_col * first - (n_cbps - 1) * (first / n_row);
+        out52[k] = in52[j];
+    }
+}
+
+// Generic HT deinterleaving for 52 subcarriers
+static void ht_deinterleave(const uint8_t* in, uint8_t* out, int n_sym, int mcs)
+{
+    const int n_bpsc = ht_n_bpsc_from_mcs(mcs);
+    const int n_cbps = ht_n_cbps_from_mcs(mcs);
+    const int s = std::max(n_bpsc / 2, 1);
+    const int n_col = 13;  // HT 20MHz: 13 columns
+    const int n_row = n_cbps / n_col;  // 4 * n_bpsc
+
+    // Verify dimensions
+    if (n_row * n_col != n_cbps) {
+        // Should not happen for valid HT MCS
+        std::memset(out, 0, n_sym * n_cbps);
+        return;
+    }
+
+    for (int sym = 0; sym < n_sym; sym++) {
+        const uint8_t* in_sym = in + sym * n_cbps;
+        uint8_t* out_sym = out + sym * n_cbps;
+
+        // Deinterleaving (reverse operation of interleaving)
+        // Based on utils.cc interleave() function with reverse=true
+        for (int j = 0; j < n_cbps; j++) {
+            const int i = s * (j / s) + ((j + (n_col * j) / n_cbps) % s);
+            const int k = n_col * i - (n_cbps - 1) * (i / n_row);
+            out_sym[k] = in_sym[j];
+        }
+    }
+}
+
+static std::string bits_to_string(const uint8_t* bits, int n)
+{
+    std::string s;
+    s.reserve((size_t)n);
+    for (int i = 0; i < n; i++) {
+        s.push_back(bits[i] ? '1' : '0');
+    }
+    return s;
+}
+
+static std::string bytes_to_hex(const uint8_t* buf, int n)
+{
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (int i = 0; i < n; i++) {
+        if (i) {
+            oss << ' ';
+        }
+        oss << std::setw(2) << int(buf[i]);
+    }
+    return oss.str();
+}
+
+static inline uint32_t read_le_u32(const uint8_t* p)
+{
+    return (uint32_t(p[0])      ) |
+           (uint32_t(p[1]) <<  8) |
+           (uint32_t(p[2]) << 16) |
+           (uint32_t(p[3]) << 24);
+}
+
+static inline void write_le_u32(uint32_t v, uint8_t out[4])
+{
+    out[0] = uint8_t(v & 0xFF);
+    out[1] = uint8_t((v >> 8) & 0xFF);
+    out[2] = uint8_t((v >> 16) & 0xFF);
+    out[3] = uint8_t((v >> 24) & 0xFF);
+}
+
+
+static void dump_bits_to_file(const char* path, const uint8_t* bits, int n)
+{
+    std::ofstream ofs(path, std::ios::out | std::ios::trunc | std::ios::binary);
+    if (!ofs) {
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        ofs.put(bits[i] ? '1' : '0');
+    }
+    ofs.put('\n');
+}
+
+static bool read_bits_from_file(const char* path, std::vector<uint8_t>& bits)
+{
+    std::ifstream ifs(path, std::ios::in | std::ios::binary);
+    if (!ifs) {
+        return false;
+    }
+
+    bits.clear();
+    char ch = 0;
+    while (ifs.get(ch)) {
+        if (ch == '0' || ch == '1') {
+            bits.push_back(uint8_t(ch - '0'));
+        }
+    }
+    return !bits.empty();
+}
+
+
+static bool read_bits_prefer_last(const char* last_path,
+                                  const char* fallback_path,
+                                  std::vector<uint8_t>& bits,
+                                  std::string& used_path)
+{
+    if (read_bits_from_file(last_path, bits)) {
+        used_path = last_path;
+        return true;
+    }
+    if (read_bits_from_file(fallback_path, bits)) {
+        used_path = fallback_path;
+        return true;
+    }
+    used_path.clear();
+    return false;
+}
+
+// Map HT MCS to Encoding
+static Encoding mcs_to_encoding(int mcs)
+{
+    switch (mcs) {
+    case 0: return BPSK_1_2;
+    case 1: return QPSK_1_2;
+    case 2: return QPSK_3_4;
+    case 3: return QAM16_1_2;
+    case 4: return QAM16_3_4;
+    case 5: return QAM64_2_3;
+    case 6: return QAM64_3_4;
+    case 7: return QAM64_5_6;
+    default: return BPSK_1_2;
+    }
+}
+
+// Hard demodulation for QPSK (2 bits per subcarrier)
+// Returns two bits: [bit0, bit1] where bit0 is LSB (real>0), bit1 is MSB (imag>0)
+static void hard_qpsk_bits(const gr_complex& x, uint8_t bits[2])
+{
+    bits[0] = (x.real() >= 0.0f) ? 1 : 0;
+    bits[1] = (x.imag() >= 0.0f) ? 1 : 0;
+}
+
+// Hard demodulation for 16-QAM (4 bits per subcarrier)
+// Based on constellation_16qam_impl::decision_maker
+static void hard_16qam_bits(const gr_complex& x, uint8_t bits[4])
+{
+    const float level = sqrtf(0.1f);
+    float re = x.real();
+    float im = x.imag();
+
+    // Bit 0: real > 0
+    bits[0] = (re > 0) ? 1 : 0;
+    // Bit 1: |real| < 2*level
+    bits[1] = (std::abs(re) < (2 * level)) ? 1 : 0;
+    // Bit 2: imag > 0
+    bits[2] = (im > 0) ? 1 : 0;
+    // Bit 3: |imag| < 2*level
+    bits[3] = (std::abs(im) < (2 * level)) ? 1 : 0;
+}
+
+// Hard demodulation for 64-QAM (6 bits per subcarrier)
+// Based on constellation_64qam_impl::decision_maker
+static void hard_64qam_bits(const gr_complex& x, uint8_t bits[6])
+{
+    const float level = sqrtf(1.0f / 42.0f);
+    float re = x.real();
+    float im = x.imag();
+
+    // Bit 0: real > 0
+    bits[0] = (re > 0) ? 1 : 0;
+    // Bit 1: |real| < 4*level
+    bits[1] = (std::abs(re) < (4 * level)) ? 1 : 0;
+    // Bit 2: |real| < 6*level && |real| > 2*level
+    bits[2] = (std::abs(re) < (6 * level) && std::abs(re) > (2 * level)) ? 1 : 0;
+    // Bit 3: imag > 0
+    bits[3] = (im > 0) ? 1 : 0;
+    // Bit 4: |imag| < 4*level
+    bits[4] = (std::abs(im) < (4 * level)) ? 1 : 0;
+    // Bit 5: |imag| < 6*level && |imag| > 2*level
+    bits[5] = (std::abs(im) < (6 * level) && std::abs(im) > (2 * level)) ? 1 : 0;
+}
+
+} // anonymous namespace
+
 
 class decode_mac_impl : public decode_mac
 {
-
 public:
     decode_mac_impl(bool log, bool debug)
         : block("decode_mac",
-                gr::io_signature::make(1, 1, 48),
+                gr::io_signature::make(1, 1, sizeof(gr_complex)),
                 gr::io_signature::make(0, 0, 0)),
           d_log(log),
           d_debug(debug),
+          d_in_frame(false),
+          d_items_copied(0),
+          d_items_expected(0),
+          d_frame_seq(0),
+          d_ht_mcs(-1),
+          d_ht_len(0),
+          d_ht_n_sym(0),
+          d_ht_n_cbps(52),
           d_ofdm(BPSK_1_2),
-          d_frame(d_ofdm, 0),
-          d_frame_complete(true)
+          d_frame(d_ofdm, 0)
     {
         message_port_register_out(pmt::mp("out"));
     }
 
-    int general_work(int noutput_items,
+    ~decode_mac_impl() override { log_incomplete("destructor"); }
+
+    bool stop() override
+    {
+        log_incomplete("stop");
+        return block::stop();
+    }
+
+    int general_work(int,
                      gr_vector_int& ninput_items,
                      gr_vector_const_void_star& input_items,
-                     gr_vector_void_star& output_items)
+                     gr_vector_void_star&)
     {
-
-        const uint8_t* in = (const uint8_t*)input_items[0];
-
+        const gr_complex* in = (const gr_complex*)input_items[0];
         int i = 0;
-
-        std::vector<gr::tag_t> tags;
-        const uint64_t nread = this->nitems_read(0);
-
-        dout << "Decode MAC: input " << ninput_items[0] << std::endl;
+        const uint64_t nread = nitems_read(0);
 
         while (i < ninput_items[0]) {
-
+            std::vector<gr::tag_t> tags;
             get_tags_in_range(tags, 0, nread + i, nread + i + 1);
 
-            if (tags.size()) {
-                if (d_frame_complete == false) {
-                    dout << "Warning: starting to receive new frame before old frame was "
-                            "complete"
+            const pmt::pmt_t k_frame_bytes_sp = pmt::mp("frame bytes");
+            const pmt::pmt_t k_frame_bytes_us = pmt::mp("frame_bytes");
+            const pmt::pmt_t k_mcs            = pmt::mp("mcs");
+
+            for (auto& t : tags) {
+                if (pmt::eq(t.key, k_frame_bytes_sp) || pmt::eq(t.key, k_frame_bytes_us)) {
+
+                    if (d_in_frame && d_items_copied < d_items_expected) {
+                        log_incomplete("new_frame_tag_before_complete");
+                    }
+
+                    d_meta = pmt::make_dict();
+                    for (auto& tt : tags) {
+                        d_meta = pmt::dict_add(d_meta, tt.key, tt.value);
+                    }
+
+                    const bool has_mcs = pmt::dict_has_key(d_meta, k_mcs);
+                    if (!has_mcs) {
+                        if (d_debug) {
+                            dout << "[decode_mac] skip non-HT frame (this build only restores strict HT MCS0)"
+                                 << std::endl;
+                        }
+                        d_in_frame = false;
+                        break;
+                    }
+
+                    d_ht_mcs = (int)pmt::to_uint64(
+                        pmt::dict_ref(d_meta, k_mcs, pmt::from_uint64(0)));
+
+                    uint64_t len = 0;
+                    if (pmt::dict_has_key(d_meta, k_frame_bytes_us)) {
+                        len = pmt::to_uint64(
+                            pmt::dict_ref(d_meta, k_frame_bytes_us, pmt::from_uint64(0)));
+                    } else {
+                        len = pmt::to_uint64(
+                            pmt::dict_ref(d_meta, k_frame_bytes_sp, pmt::from_uint64(0)));
+                    }
+                    d_ht_len = (int)len;
+
+                    // 检查MCS范围是否有效
+                    if (d_ht_mcs < 0 || d_ht_mcs > 7) {
+                        if (d_debug) {
+                            dout << "[decode_mac] skip HT frame: invalid MCS=" << d_ht_mcs << std::endl;
+                        }
+                        d_in_frame = false;
+                        break;
+                    }
+
+                    d_ht_n_sym = ht_n_sym_from_mcs_len(d_ht_mcs, d_ht_len);
+                    if (d_ht_n_sym <= 0) {
+                        if (d_debug) {
+                            dout << "[decode_mac] invalid HT n_sym, mcs=" << d_ht_mcs << " len=" << d_ht_len << std::endl;
+                        }
+                        d_in_frame = false;
+                        break;
+                    }
+
+                    d_ht_n_cbps = ht_n_cbps_from_mcs(d_ht_mcs);
+                    // Each OFDM symbol has 52 subcarriers for HT mode
+                    const int n_sc = 52;
+                    d_items_expected = (uint64_t)d_ht_n_sym * (uint64_t)n_sc;
+                    d_items_copied   = 0;
+                    d_in_frame       = true;
+                    d_frame_seq++;
+
+                    d_rx_eq.assign((size_t)d_items_expected, gr_complex(0.0f, 0.0f));
+
+                    dout << "[decode_mac] capture HT frame"
+                         << " mcs=" << d_ht_mcs
+                         << " frame_seq=" << d_frame_seq
+                         << " len=" << d_ht_len
+                         << " n_sym=" << d_ht_n_sym
+                         << " items_expected=" << d_items_expected
                          << std::endl;
-                    dout << "Already copied " << copied << " out of " << d_frame.n_sym
-                         << " symbols of last frame" << std::endl;
-                }
-                d_frame_complete = false;
-
-                // Enter tags into metadata dictionary
-                d_meta = pmt::make_dict();
-                for (auto tag : tags)
-                    d_meta = pmt::dict_add(d_meta, tag.key, tag.value);
-
-                int len_data = pmt::to_uint64(pmt::dict_ref(
-                    d_meta, pmt::mp("frame bytes"), pmt::from_uint64(MAX_PSDU_SIZE + 1)));
-                int encoding = pmt::to_uint64(
-                    pmt::dict_ref(d_meta, pmt::mp("encoding"), pmt::from_uint64(0)));
-
-                ofdm_param ofdm = ofdm_param((Encoding)encoding);
-                frame_param frame = frame_param(ofdm, len_data);
-
-                // check for maximum frame size
-                if (frame.n_sym <= MAX_SYM && frame.psdu_size <= MAX_PSDU_SIZE) {
-                    d_ofdm = ofdm;
-                    d_frame = frame;
-                    copied = 0;
-                    dout << "Decode MAC: frame start -- len " << len_data << "  symbols "
-                         << frame.n_sym << "  encoding " << encoding << std::endl;
-                } else {
-                    dout << "Dropping frame which is too large (symbols or bits)"
-                         << std::endl;
-                }
-            }
-
-            if (copied < d_frame.n_sym) {
-                dout << "copy one symbol, copied " << copied << " out of "
-                     << d_frame.n_sym << std::endl;
-                std::memcpy(d_rx_symbols + (copied * 48), in, 48);
-                copied++;
-
-                if (copied == d_frame.n_sym) {
-                    dout << "received complete frame - decoding" << std::endl;
-                    decode();
-                    in += 48;
-                    i++;
-                    d_frame_complete = true;
                     break;
                 }
             }
 
-            in += 48;
-            i++;
+            if (!d_in_frame) {
+                ++i;
+                continue;
+            }
+
+            if (d_items_copied < d_items_expected) {
+                d_rx_eq[(size_t)d_items_copied] = in[i];
+                d_items_copied++;
+
+                if ((d_items_copied % (uint64_t)d_ht_n_cbps) == 0ULL || d_items_copied == d_items_expected) {
+                    dout << "[decode_mac][CAPTURE] frame_seq=" << d_frame_seq
+                         << " copied=" << d_items_copied
+                         << "/" << d_items_expected
+                         << " syms=" << (d_items_copied / (uint64_t)d_ht_n_cbps)
+                         << "/" << d_ht_n_sym
+                         << std::endl;
+                }
+
+                if (d_items_copied == d_items_expected) {
+                    dout << "[decode_mac][COMPLETE] frame_seq=" << d_frame_seq
+                         << " got_full_frame=1" << std::endl;
+                    decode_and_publish();
+                    d_in_frame = false;
+                }
+            }
+
+            ++i;
         }
 
         consume(0, i);
-
         return 0;
     }
 
-    void decode()
+private:
+    void log_incomplete(const char* where)
     {
-
-        for (int i = 0; i < d_frame.n_sym * 48; i++) {
-            for (int k = 0; k < d_ofdm.n_bpsc; k++) {
-                d_rx_bits[i * d_ofdm.n_bpsc + k] = !!(d_rx_symbols[i] & (1 << k));
-            }
-        }
-
-        deinterleave();
-        uint8_t* decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deinterleaved_bits);
-        descramble(decoded);
-        print_output();
-
-        // skip service field
-        boost::crc_32_type result;
-        result.process_bytes(out_bytes + 2, d_frame.psdu_size);
-        if (result.checksum() != 558161692) {
-            dout << "checksum wrong -- dropping" << std::endl;
+        if (!d_in_frame || d_items_expected == 0) {
             return;
         }
 
-        mylog("encoding: {} - length: {} - symbols: {}",
-              d_ofdm.encoding,
-              d_frame.psdu_size,
-              d_frame.n_sym);
+        const uint64_t full_syms = d_items_copied / 52ULL;
+        const uint64_t rem_items = d_items_copied % 52ULL;
+        const uint64_t missing_items = (d_items_expected > d_items_copied) ?
+                                       (d_items_expected - d_items_copied) : 0ULL;
+        const uint64_t missing_syms_floor = missing_items / 52ULL;
+        const uint64_t missing_items_tail = missing_items % 52ULL;
 
-        // create PDU
-        pmt::pmt_t blob = pmt::make_blob(out_bytes + 2, d_frame.psdu_size - 4);
-        d_meta =
-            pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
+        dout << "[decode_mac][INCOMPLETE] where=" << where
+             << " frame_seq=" << d_frame_seq
+             << " len=" << d_ht_len
+             << " n_sym=" << d_ht_n_sym
+             << " expected=" << d_items_expected
+             << " got=" << d_items_copied
+             << " full_syms=" << full_syms
+             << " rem_items=" << rem_items
+             << " missing_items=" << missing_items
+             << " missing_syms_floor=" << missing_syms_floor
+             << " missing_items_tail=" << missing_items_tail
+             << std::endl;
+    }
+
+    void decode_and_publish()
+    {
+        if (d_rx_eq.empty() || d_ht_n_sym <= 0) {
+            dout << "[decode_mac] no data captured" << std::endl;
+            return;
+        }
+
+        const int n_sym  = d_ht_n_sym;
+        const int n_cbps = d_ht_n_cbps;
+        const int n_dbps = ht_n_dbps_from_mcs(d_ht_mcs);
+
+        d_rx_bits.assign((size_t)(n_sym * n_cbps), 0);
+        d_deintl_bits.assign((size_t)(n_sym * n_cbps), 0);
+
+        // 1) hard demap
+        const int n_bpsc = ht_n_bpsc_from_mcs(d_ht_mcs);
+        size_t bit_idx = 0;
+        for (size_t k = 0; k < d_rx_eq.size(); k++) {
+            const gr_complex& sym = d_rx_eq[k];
+            switch (n_bpsc) {
+            case 1: // BPSK
+                d_rx_bits[bit_idx++] = hard_bpsk_bit(sym);
+                break;
+            case 2: // QPSK
+                {
+                    uint8_t bits[2];
+                    hard_qpsk_bits(sym, bits);
+                    d_rx_bits[bit_idx++] = bits[0];
+                    d_rx_bits[bit_idx++] = bits[1];
+                }
+                break;
+            case 4: // 16-QAM
+                {
+                    uint8_t bits[4];
+                    hard_16qam_bits(sym, bits);
+                    for (int i = 0; i < 4; i++) {
+                        d_rx_bits[bit_idx++] = bits[i];
+                    }
+                }
+                break;
+            case 6: // 64-QAM
+                {
+                    uint8_t bits[6];
+                    hard_64qam_bits(sym, bits);
+                    for (int i = 0; i < 6; i++) {
+                        d_rx_bits[bit_idx++] = bits[i];
+                    }
+                }
+                break;
+            default:
+                // fallback to BPSK
+                d_rx_bits[bit_idx++] = hard_bpsk_bit(sym);
+                break;
+            }
+        }
+        // Sanity check
+        if (bit_idx != (size_t)(n_sym * n_cbps)) {
+            dout << "[decode_mac] demodulation bit count mismatch: expected "
+                 << (n_sym * n_cbps) << " got " << bit_idx << std::endl;
+        }
+
+        if (d_debug) {
+            const int first_n = std::min<int>(64, (int)d_rx_bits.size());
+            const int last_n  = std::min<int>(64, (int)d_rx_bits.size());
+
+            dout << "[decode_mac] hard bits first64: "
+                 << bits_to_string(d_rx_bits.data(), first_n)
+                 << std::endl;
+
+            dout << "[decode_mac] hard bits last64:  "
+                 << bits_to_string(d_rx_bits.data() + ((int)d_rx_bits.size() - last_n), last_n)
+                 << std::endl;
+        }
+
+        // 2) 每个 OFDM symbol 做 HT 去交织
+        ht_deinterleave(d_rx_bits.data(), d_deintl_bits.data(), n_sym, d_ht_mcs);
+
+        if (d_debug) {
+            const int first_n = std::min<int>(64, (int)d_deintl_bits.size());
+            const int last_n  = std::min<int>(64, (int)d_deintl_bits.size());
+
+            dout << "[decode_mac] deintl bits first64: "
+                 << bits_to_string(d_deintl_bits.data(), first_n)
+                 << std::endl;
+
+            dout << "[decode_mac] deintl bits last64:  "
+                 << bits_to_string(d_deintl_bits.data() + ((int)d_deintl_bits.size() - last_n), last_n)
+                 << std::endl;
+        }
+
+
+        dump_bits_to_file("/tmp/wifi_rx_hard_all_bits.last.txt",
+                          d_rx_bits.data(),
+                          (int)d_rx_bits.size());
+        dump_bits_to_file("/tmp/wifi_rx_deintl_all_bits.last.txt",
+                          d_deintl_bits.data(),
+                          (int)d_deintl_bits.size());
+
+        static bool wrote_hard_ref = false;
+        if (!wrote_hard_ref) {
+            dump_bits_to_file("/tmp/wifi_rx_hard_all_bits.txt",
+                              d_rx_bits.data(),
+                              (int)d_rx_bits.size());
+            wrote_hard_ref = true;
+        }
+
+        static bool wrote_deintl_ref = false;
+        if (!wrote_deintl_ref) {
+            dump_bits_to_file("/tmp/wifi_rx_deintl_all_bits.txt",
+                              d_deintl_bits.data(),
+                              (int)d_deintl_bits.size());
+            wrote_deintl_ref = true;
+        }
+
+        dout << "[decode_mac][HARD-ALL] nbits=" << d_rx_bits.size()
+             << " first64="
+             << bits_to_string(d_rx_bits.data(), std::min<int>(64, (int)d_rx_bits.size()))
+             << " last64="
+             << bits_to_string(d_rx_bits.data() + ((int)d_rx_bits.size() - std::min<int>(64, (int)d_rx_bits.size())),
+                               std::min<int>(64, (int)d_rx_bits.size()))
+             << std::endl;
+
+        dout << "[decode_mac][DEINTL-ALL] nbits=" << d_deintl_bits.size()
+             << " first64="
+             << bits_to_string(d_deintl_bits.data(), std::min<int>(64, (int)d_deintl_bits.size()))
+             << " last64="
+             << bits_to_string(d_deintl_bits.data() + ((int)d_deintl_bits.size() - std::min<int>(64, (int)d_deintl_bits.size())),
+                               std::min<int>(64, (int)d_deintl_bits.size()))
+             << std::endl;
+
+        {
+            std::vector<uint8_t> tx_interleaved_all;
+            std::string used_interleaved_path;
+            const bool have_tx_interleaved =
+                read_bits_prefer_last("/tmp/wifi_tx_interleaved_all_bits.last.txt",
+                                      "/tmp/wifi_tx_interleaved_all_bits.txt",
+                                      tx_interleaved_all,
+                                      used_interleaved_path);
+
+            if (have_tx_interleaved && (int)tx_interleaved_all.size() >= n_sym * n_cbps) {
+                int first_bad_sym = -1;
+                int total_mism = 0;
+                for (int sym = 0; sym < n_sym; sym++) {
+                    int mism = 0;
+                    const uint8_t* tx52 = tx_interleaved_all.data() + sym * n_cbps;
+                    const uint8_t* rx52 = d_rx_bits.data() + sym * n_cbps;
+                    for (int k = 0; k < n_cbps; k++) {
+                        if (tx52[k] != rx52[k]) {
+                            mism++;
+                        }
+                    }
+                    total_mism += mism;
+                    dout << "[decode_mac][SYM " << std::setw(2) << std::setfill('0') << sym
+                         << "] hard-vs-TX-interleaved mismatches=" << std::setfill(' ') << mism
+                         << std::endl;
+                    if (mism > 0 && first_bad_sym < 0) {
+                        first_bad_sym = sym;
+                        dout << "[decode_mac][FIRST-BAD-HARD-SYM] sym=" << sym
+                             << " tx52=" << bits_to_string(tx52, n_cbps)
+                             << std::endl;
+                        dout << "[decode_mac][FIRST-BAD-HARD-SYM] sym=" << sym
+                             << " rx52=" << bits_to_string(rx52, n_cbps)
+                             << std::endl;
+                    }
+                }
+                dout << "[decode_mac][HARD-vs-TX-INTERLEAVED] total_mismatches=" << total_mism
+                     << " first_bad_sym=" << first_bad_sym
+                     << " ref=" << used_interleaved_path
+                     << std::endl;
+            } else {
+                dout << "[decode_mac][HARD-vs-TX-INTERLEAVED] TX reference unavailable or too short"
+                     << " ref_bits=" << tx_interleaved_all.size()
+                     << " need_bits=" << (n_sym * n_cbps)
+                     << std::endl;
+            }
+        }
+
+        {
+            std::vector<uint8_t> tx_punctured_all;
+            std::string used_punctured_path;
+            const bool have_tx_ref =
+                read_bits_prefer_last("/tmp/wifi_tx_punctured_all_bits.last.txt",
+                                      "/tmp/wifi_tx_punctured_all_bits.txt",
+                                      tx_punctured_all,
+                                      used_punctured_path);
+            if (have_tx_ref && (int)tx_punctured_all.size() >= n_sym * n_cbps) {
+                int first_bad_sym = -1;
+                int total_mism = 0;
+                for (int sym = 0; sym < n_sym; sym++) {
+                    int mism = 0;
+                    const uint8_t* tx52 = tx_punctured_all.data() + sym * n_cbps;
+                    const uint8_t* rx52 = d_deintl_bits.data() + sym * n_cbps;
+                    for (int k = 0; k < n_cbps; k++) {
+                        if (tx52[k] != rx52[k]) {
+                            mism++;
+                        }
+                    }
+                    total_mism += mism;
+                    dout << "[decode_mac][SYM " << std::setw(2) << std::setfill('0') << sym
+                         << "] deintl-vs-TX-punctured mismatches=" << std::setfill(' ') << mism
+                         << std::endl;
+                    if (mism > 0 && first_bad_sym < 0) {
+                        first_bad_sym = sym;
+                        dout << "[decode_mac][FIRST-BAD-DEINTL-SYM] sym=" << sym
+                             << " tx52=" << bits_to_string(tx52, n_cbps)
+                             << std::endl;
+                        dout << "[decode_mac][FIRST-BAD-DEINTL-SYM] sym=" << sym
+                             << " rx52=" << bits_to_string(rx52, n_cbps)
+                             << std::endl;
+                    }
+                }
+                dout << "[decode_mac][DEINTL-vs-TX-PUNCTURED] total_mismatches=" << total_mism
+                     << " first_bad_sym=" << first_bad_sym
+                     << " ref=" << used_punctured_path
+                     << std::endl;
+            } else {
+                dout << "[decode_mac][DEINTL-vs-TX-PUNCTURED] TX reference unavailable or too short"
+                     << " ref_bits=" << tx_punctured_all.size()
+                     << " need_bits=" << (n_sym * n_cbps)
+                     << std::endl;
+            }
+        }
+
+        // 3) 准备 decoder 参数
+        d_ofdm = ofdm_param(mcs_to_encoding(d_ht_mcs));
+        d_frame = frame_param(d_ofdm, d_ht_len);
+
+        d_frame.psdu_size      = d_ht_len;
+        d_frame.n_sym          = n_sym;
+        d_frame.n_data_bits    = n_sym * n_dbps;
+        d_frame.n_encoded_bits = n_sym * n_cbps;
+        d_frame.n_pad          = d_frame.n_data_bits - (16 + 8 * d_ht_len + 6);
+
+        if (d_frame.n_pad < 0) {
+            dout << "[decode_mac] invalid HT frame params: n_pad=" << d_frame.n_pad << std::endl;
+            return;
+        }
+
+        if (d_debug) {
+            dout << "[decode_mac] decoder params"
+                 << " psdu_size=" << d_frame.psdu_size
+                 << " n_sym=" << d_frame.n_sym
+                 << " n_data_bits=" << d_frame.n_data_bits
+                 << " n_encoded_bits=" << d_frame.n_encoded_bits
+                 << " n_pad=" << d_frame.n_pad
+                 << std::endl;
+        }
+
+        // 4) Viterbi
+        uint8_t* decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deintl_bits.data());
+        if (!decoded) {
+            dout << "[decode_mac] decoder returned null" << std::endl;
+            return;
+        }
+
+        if (d_debug) {
+            const int first_n = std::min(64, d_frame.n_data_bits);
+            const int last_n  = std::min(64, d_frame.n_data_bits);
+
+            dout << "[decode_mac] viterbi bits first64: "
+                 << bits_to_string(decoded, first_n)
+                 << std::endl;
+
+            dout << "[decode_mac] viterbi bits last64:  "
+                 << bits_to_string(decoded + (d_frame.n_data_bits - last_n), last_n)
+                 << std::endl;
+        }
+
+        // 5) descramble
+        descramble(decoded);
+
+        const uint8_t* psdu = d_out_bytes.data() + 2; // 跳过 16-bit SERVICE
+        if (d_ht_len < 4) {
+            dout << "[decode_mac] invalid psdu len for FCS: " << d_ht_len << std::endl;
+            return;
+        }
+
+        // 6) strict FCS check
+        const uint32_t rx_fcs = read_le_u32(psdu + d_ht_len - 4);
+
+        boost::crc_32_type crc;
+        crc.process_bytes(psdu, d_ht_len - 4);
+        const uint32_t calc_fcs = crc.checksum();
+
+        uint8_t calc_fcs_le[4];
+        write_le_u32(calc_fcs, calc_fcs_le);
+
+        if (d_debug) {
+            const int head_n = std::min(16, d_ht_len);
+            const int tail_n = std::min(8,  d_ht_len);
+
+            dout << "[decode_mac] descramble bytes first16: "
+                 << bytes_to_hex(psdu, head_n)
+                 << std::endl;
+
+            dout << "[decode_mac] descramble bytes last" << tail_n << ":  "
+                 << bytes_to_hex(psdu + d_ht_len - tail_n, tail_n)
+                 << std::endl;
+
+            dout << "[decode_mac] body last4:            "
+                 << bytes_to_hex(psdu + d_ht_len - 8, 4)
+                 << std::endl;
+
+            dout << "[decode_mac] calc_fcs bytes(le):    "
+                 << bytes_to_hex(calc_fcs_le, 4)
+                 << std::endl;
+
+            dout << "[decode_mac] rx_fcs bytes(le):      "
+                 << bytes_to_hex(psdu + d_ht_len - 4, 4)
+                 << std::endl;
+
+            dout << "[decode_mac] tail compare:          "
+                 << "body4=[" << bytes_to_hex(psdu + d_ht_len - 8, 4) << "] "
+                 << "calc=[" << bytes_to_hex(calc_fcs_le, 4) << "] "
+                 << "rx=["   << bytes_to_hex(psdu + d_ht_len - 4, 4) << "]"
+                 << std::endl;
+        }
+
+        if (calc_fcs != rx_fcs) {
+            dout << "[decode_mac] FCS error"
+                 << " calc=0x" << std::hex << calc_fcs
+                 << " rx=0x"   << rx_fcs
+                 << std::dec << std::endl;
+            return;
+        }
+
+        if (d_debug) {
+            dout << "[decode_mac] FCS OK"
+                 << " calc=0x" << std::hex << calc_fcs
+                 << " rx=0x"   << rx_fcs
+                 << std::dec << std::endl;
+        }
+
+        // 7) 发消息
+        pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
+
+        d_meta = pmt::dict_add(d_meta,
+                               pmt::mp("dlt"),
+                               pmt::from_long(LINKTYPE_IEEE802_11));
 
         message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
     }
 
-    void deinterleave()
+    void descramble(uint8_t* decoded)
     {
+        const int psdu_size = d_ht_len;
 
-        int n_cbps = d_ofdm.n_cbps;
-        int first[MAX_BITS_PER_SYM];
-        int second[MAX_BITS_PER_SYM];
-        int s = std::max(d_ofdm.n_bpsc / 2, 1);
-
-        for (int j = 0; j < n_cbps; j++) {
-            first[j] = s * (j / s) + ((j + int(floor(16.0 * j / n_cbps))) % s);
-        }
-
-        for (int i = 0; i < n_cbps; i++) {
-            second[i] = 16 * i - (n_cbps - 1) * int(floor(16.0 * i / n_cbps));
-        }
-
-        int count = 0;
-        for (int i = 0; i < d_frame.n_sym; i++) {
-            for (int k = 0; k < n_cbps; k++) {
-                d_deinterleaved_bits[i * n_cbps + second[first[k]]] =
-                    d_rx_bits[i * n_cbps + k];
-            }
-        }
-    }
-
-
-    void descramble(uint8_t* decoded_bits)
-    {
+        d_out_bytes.assign((size_t)psdu_size + 2U, 0);
 
         int state = 0;
-        std::memset(out_bytes, 0, d_frame.psdu_size + 2);
-
         for (int i = 0; i < 7; i++) {
-            if (decoded_bits[i]) {
+            if (decoded[i]) {
                 state |= 1 << (6 - i);
             }
         }
-        out_bytes[0] = state;
 
-        int feedback;
-        int bit;
+        d_out_bytes[0] = (uint8_t)state;
 
-        for (int i = 7; i < d_frame.psdu_size * 8 + 16; i++) {
-            feedback = ((!!(state & 64))) ^ (!!(state & 8));
-            bit = feedback ^ (decoded_bits[i] & 0x1);
-            out_bytes[i / 8] |= bit << (i % 8);
+        for (int i = 7; i < psdu_size * 8 + 16; i++) {
+            const int feedback = ((state & 64) != 0) ^ ((state & 8) != 0);
+            const int bit = feedback ^ decoded[i];
+            d_out_bytes[(size_t)i / 8] |= (uint8_t)((bit & 1) << (i % 8));
             state = ((state << 1) & 0x7e) | feedback;
         }
     }
 
-    void print_output()
-    {
-
-        dout << std::endl;
-        dout << "psdu size" << d_frame.psdu_size << std::endl;
-        for (int i = 2; i < d_frame.psdu_size + 2; i++) {
-            dout << std::setfill('0') << std::setw(2) << std::hex
-                 << ((unsigned int)out_bytes[i] & 0xFF) << std::dec << " ";
-            if (i % 16 == 15) {
-                dout << std::endl;
-            }
-        }
-        dout << std::endl;
-        for (int i = 2; i < d_frame.psdu_size + 2; i++) {
-            if ((out_bytes[i] > 31) && (out_bytes[i] < 127)) {
-                dout << ((char)out_bytes[i]);
-            } else {
-                dout << ".";
-            }
-        }
-        dout << std::endl;
-    }
-
 private:
-    bool d_debug;
     bool d_log;
+    bool d_debug;
+
+    bool d_in_frame;
+    uint64_t d_items_copied;
+    uint64_t d_items_expected;
+    uint64_t d_frame_seq;
 
     pmt::pmt_t d_meta;
 
-    frame_param d_frame;
-    ofdm_param d_ofdm;
+    int d_ht_mcs;
+    int d_ht_len;
+    int d_ht_n_sym;
+    int d_ht_n_cbps;
 
+    ofdm_param d_ofdm;
+    frame_param d_frame;
     viterbi_decoder d_decoder;
 
-    uint8_t d_rx_symbols[48 * MAX_SYM];
-    uint8_t d_rx_bits[MAX_ENCODED_BITS];
-    uint8_t d_deinterleaved_bits[MAX_ENCODED_BITS];
-    uint8_t out_bytes[MAX_PSDU_SIZE + 2]; // 2 for signal field
-
-    int copied;
-    bool d_frame_complete;
+    std::vector<gr_complex> d_rx_eq;
+    std::vector<uint8_t> d_rx_bits;
+    std::vector<uint8_t> d_deintl_bits;
+    std::vector<uint8_t> d_out_bytes;
 };
+
 
 decode_mac::sptr decode_mac::make(bool log, bool debug)
 {

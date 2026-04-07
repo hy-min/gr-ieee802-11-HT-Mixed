@@ -9,9 +9,9 @@ echo "repetition;encoding;snr;received" > ${outfile}
 
 for f in ${files}
 do
-	repetition=`python -c "print \"${f}\".split(\"_\")[1]"`
-	encoding=`python -c "print \"${f}\".split(\"_\")[2]"`
-	snr=`python -c "print \"${f}\".split(\"_\")[3]"`
+	repetition=`python3 -c "print(\"${f}\".split(\"_\")[1]"`)
+	encoding=`python3 -c "print(\"${f}\".split(\"_\")[2]"`)
+	snr=`python3 -c "print(\"${f}\".split(\"_\")[3]"`)
 	echo "file ${f}  repetition ${repetition}  encoding ${encoding}  snr ${snr}"
 	rcvd=`tshark -r ${f} | wc -l | tr -d " "`
 	echo "${repetition};${encoding};${snr};${rcvd}"

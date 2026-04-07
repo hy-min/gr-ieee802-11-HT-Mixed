@@ -1,24 +1,16 @@
-#
-# Copyright 2008,2009 Free Software Foundation, Inc.
-#
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
 
-# The presence of this file turns this directory into a Python package
+"""
+GNU Radio IEEE802_11 Python package.
+"""
 
-'''
-This is the GNU Radio IEEE802_11 module. Place your Python package
-description here (python/__init__.py).
-'''
-import os
+# 关键：先导入这些，确保 gr::block / gr::digital::constellation 等 pybind 基类已注册
+from gnuradio import gr as _gr  # noqa: F401
+from gnuradio import digital as _digital  # noqa: F401
 
-# import pybind11 generated symbols into the ieee802_11 namespace
-try:
-    # this might fail if the module is python-only
-    from .ieee802_11_python import *
-except ModuleNotFoundError:
-    pass
+# 再导入本模块的 pybind 扩展
+from . import ieee802_11_python as _p  # noqa: F401
+from .ieee802_11_python import *       # noqa: F401,F403
 
-# import any pure python here
-from .utils import *
-#
+# 可选：整理 __all__
+__all__ = [n for n in dir(_p) if not n.startswith("_")]
