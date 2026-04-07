@@ -656,8 +656,8 @@ static bool viterbi_decode_133_171(const uint8_t* rx_bits,
 
             for (int b = 0; b <= 1; b++) {
                 const int reg = ((s << 1) | b) & 0x7f;
-                const uint8_t o0 = ones8_local(reg & 0155) & 0x1;
-                const uint8_t o1 = ones8_local(reg & 0117) & 0x1;
+                const uint8_t o0 = ones8_local(reg & 0133) & 0x1;
+                const uint8_t o1 = ones8_local(reg & 0171) & 0x1;
                 const int ns = reg & 0x3f;
 
                 const int bm = ((o0 != r0) ? 1 : 0) + ((o1 != r1) ? 1 : 0);
@@ -1305,6 +1305,183 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
     return true;
 }
 
+// Simplified HT-SIG decode for QBPSK-rotated symbols
+// Skips CPE rotation since QBPSK already compensates for phase
+static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
+                                       const gr_complex* rx52_b,
+                                       const gr_complex* H52,
+                                       bool invert_a,
+                                       bool invert_b,
+                                       int& out_len_bytes,
+                                       int& out_mcs,
+                                       bool& out_sgi,
+                                       bool& out_agg)
+{
+    uint8_t eqbits48_a[48];
+    uint8_t eqbits48_b[48];
+    uint8_t deintl48_a[48];
+    uint8_t deintl48_b[48];
+    uint8_t enc96[96];
+
+    // Simple equalization WITHOUT CPE rotation for QBPSK-compensated symbols
+    for (int i = 0; i < 48; i++) {
+        float h_mag = std::abs(H52[i]);
+        gr_complex eq;
+        if (h_mag < 0.1f) {
+            eq = gr_complex(0.0f, 0.0f);
+        } else {
+            eq = safe_div(rx52_a[i], H52[i]);
+        }
+        eqbits48_a[i] = (eq.real() >= 0.0f) ? 1 : 0;
+    }
+
+    for (int i = 0; i < 48; i++) {
+        float h_mag = std::abs(H52[i]);
+        gr_complex eq;
+        if (h_mag < 0.1f) {
+            eq = gr_complex(0.0f, 0.0f);
+        } else {
+            eq = safe_div(rx52_b[i], H52[i]);
+        }
+        eqbits48_b[i] = (eq.real() >= 0.0f) ? 1 : 0;
+    }
+
+    if (invert_a) {
+        for (int i = 0; i < 48; i++) {
+            eqbits48_a[i] ^= 0x1;
+        }
+    }
+    if (invert_b) {
+        for (int i = 0; i < 48; i++) {
+            eqbits48_b[i] ^= 0x1;
+        }
+    }
+
+    // Legacy deinterleaving for HT-SIG: n_row=3, n_col=16, s=1 (BPSK)
+    // HT-SIG uses Legacy OFDM parameters (n_cbps=48) per ofdm_param constructor
+    // Reverse formula: k = n_col * (j % n_row) + (j / n_row)
+    for (int j = 0; j < 48; j++) {
+        const int k = 16 * (j % 3) + (j / 3);
+        deintl48_a[j] = eqbits48_a[k] & 0x1;
+    }
+    for (int j = 0; j < 48; j++) {
+        const int k = 16 * (j % 3) + (j / 3);
+        deintl48_b[j] = eqbits48_b[k] & 0x1;
+    }
+
+    for (int i = 0; i < 48; i++) {
+        enc96[i]      = deintl48_a[i];
+        enc96[48 + i] = deintl48_b[i];
+    }
+
+    // Debug: print first 24 encoded bits before Viterbi
+    std::fprintf(stderr, "[VITERBI_IN] enc96[0:24] = ");
+    for (int i = 0; i < 24; i++) {
+        std::fprintf(stderr, "%d", enc96[i]);
+    }
+    std::fprintf(stderr, "\n");
+
+    std::vector<uint8_t> dec48;
+    if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+        std::fprintf(stderr, "[VITERBI_HT_SIG] decode failed!\n");
+        return false;
+    }
+    if ((int)dec48.size() != 48) {
+        return false;
+    }
+
+    const uint8_t* decoded_bits = dec48.data();
+
+    // Debug: print first 10 decoded bits
+    std::fprintf(stderr, "[VITERBI_OUT] dec48[0:10] = ");
+    for (int i = 0; i < 10; i++) {
+        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    }
+    std::fprintf(stderr, "\n");
+
+    int mcs = 0;
+    int psdu_length = 0;
+    bool aggregation = false;
+    bool short_gi = false;
+
+    for (int i = 0; i < 7; i++) {
+        mcs |= ((decoded_bits[i] & 1) << i);
+    }
+
+    const int bw40 = decoded_bits[7] & 1;
+
+    for (int i = 0; i < 16; i++) {
+        psdu_length |= ((decoded_bits[8 + i] & 1) << i);
+    }
+
+    const int rsv0 = decoded_bits[24] & 1;
+    const int rsv1 = decoded_bits[25] & 1;
+    const int rsv2 = decoded_bits[26] & 1;
+
+    aggregation = ((decoded_bits[27] & 1) != 0);
+
+    const int stbc =
+        ((decoded_bits[28] & 1) << 0) |
+        ((decoded_bits[29] & 1) << 1);
+
+    const int adv_coding = decoded_bits[30] & 1;
+    short_gi = ((decoded_bits[31] & 1) != 0);
+
+    const int num_ht_ltf =
+        ((decoded_bits[32] & 1) << 0) |
+        ((decoded_bits[33] & 1) << 1);
+
+    uint8_t crc_rx = 0;
+    for (int i = 0; i < 8; i++) {
+        crc_rx |= ((decoded_bits[34 + i] & 1) << i);
+    }
+
+    const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
+
+    for (int i = 42; i < 48; i++) {
+        if (decoded_bits[i] != 0) {
+            std::fprintf(stderr, "[PARSE_HT_SIG] Tail bit %d not zero: %d\n", i, decoded_bits[i] & 1);
+            return false;
+        }
+    }
+
+    if (crc_rx != crc_calc) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] CRC mismatch\n");
+        return false;
+    }
+
+    if (bw40 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] BW40 flag set (should be 0 for 20MHz)\n");
+        return false;
+    }
+    if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Reserved bits not zero: rsv0=%d, rsv1=%d, rsv2=%d\n", rsv0, rsv1, rsv2);
+        return false;
+    }
+    if (adv_coding != 0) {
+        std::fprintf(stderr, "[PARSE_HT_SIG] Advanced coding flag set (should be 0)\n");
+        return false;
+    }
+
+    std::fprintf(stderr, "[PARSE_HT_SIG] Parsed values: mcs=%d, len=%d, agg=%d, sgi=%d, stbc=%d, nltf=%d\n",
+                mcs, psdu_length, aggregation ? 1 : 0, short_gi ? 1 : 0, stbc, num_ht_ltf);
+
+    if (mcs < 0 || mcs > 7) {
+        return false;
+    }
+    if (psdu_length <= 0) {
+        return false;
+    }
+
+    out_len_bytes = psdu_length;
+    out_mcs = mcs;
+    out_sgi = short_gi;
+    out_agg = aggregation;
+    return true;
+}
+
 } // anonymous namespace
 
 // ======================================================================
@@ -1334,14 +1511,14 @@ int frame_equalizer_impl::vote_qbpsk_rotation(const gr_complex* eq_data)
     compute_subcarrier_energy(eq_data, E_I, E_Q);
 
     // Epsilon 1e-10: prevents division by zero when E_I is negligible
-    // Threshold 2.0: derived from HT-SIG QBPSK constellation analysis
-    //   - QBPSK rotation moves I-axis energy to Q-axis, giving E_Q/E_I > 2.0
-    //   - Legacy BPSK has E_Q/E_I < 0.5
+    // Threshold 1.0: QBPSK should have E_Q > E_I (ratio > 1.0)
+    //   - HT-SIG with QBPSK rotation: E_Q > E_I
+    //   - Legacy BPSK: E_I > E_Q
     double ratio = (E_I > 1e-10) ? E_Q / E_I : 0.0;
 
     fprintf(stderr, "[QBPSK_VOTE] E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I, E_Q, ratio);
 
-    return (ratio > 2.0) ? 1 : 0;
+    return (ratio > 1.0) ? 1 : 0;
 }
 
 frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
@@ -2029,7 +2206,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // This handles the case where L-SIG validation happens later than expected.
         const bool ht_parse_condition =
             !d_have_ht_header &&
-            d_is_ht_frame &&     // Only parse HT-SIG for HT-Mixed frames
+            // d_is_ht_frame &&     // Temporarily disabled - ratio threshold too strict
             d_sym_idx >= kHtSig1Rel &&
             d_early_eqsym_valid[kLltf0Rel] &&
             d_early_eqsym_valid[kLltf1Rel] &&
@@ -2182,19 +2359,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             bool parsed_sgi = false;
                             bool parsed_agg = false;
 
-                            if (!decode_htsig_direct_from_header52(rot_htsig0,
-                                                                   rot_htsig1,
-                                                                   Hhdr52,
-                                                                   inv_a != 0,
-                                                                   inv_b != 0,
-                                                                   parsed_len,
-                                                                   parsed_mcs,
-                                                                   parsed_sgi,
-                                                                   parsed_agg,
-                                                                   nullptr,
-                                                                   nullptr,
-                                                                   nullptr,
-                                                                   nullptr)) {
+                            if (!decode_htsig_from_rotated(rot_htsig0,
+                                                           rot_htsig1,
+                                                           Hhdr52,
+                                                           inv_a != 0,
+                                                           inv_b != 0,
+                                                           parsed_len,
+                                                           parsed_mcs,
+                                                           parsed_sgi,
+                                                           parsed_agg)) {
                                 continue;
                             }
 
