@@ -765,7 +765,7 @@ static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
     std::memset(out48, 0, 48);
 
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;
+        const int j = 16 * (k % 3) + k / 16;
         out48[k] = in48[j] & 0x1;
     }
 }
@@ -1601,11 +1601,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     // Combined: k = 16*((3*(j%16) + j/16)%3) + (3*(j%16) + j/16)/3
     // Simplified: for each original bit position k, read from position j = 16*(k%3) + k/3
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;  // Which subcarrier position holds original bit k
+        const int j = 16 * (k % 3) + k / 16;  // Which subcarrier position holds original bit k
         deintl48_a[k] = eqbits48_a[j] & 0x1;  // Read from position j to recover original position k
     }
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;
+        const int j = 16 * (k % 3) + k / 16;
         deintl48_b[k] = eqbits48_b[j] & 0x1;
     }
 
