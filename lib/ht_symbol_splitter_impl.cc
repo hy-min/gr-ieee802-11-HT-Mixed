@@ -86,8 +86,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     // Get absolute position of first input item
     uint64_t start_abs_idx = nitems_read(0);
 
-    // Look for wifi_start tag
-    if (!d_frame_start_known) {
+    // Look for wifi_start tag - always check for new frames
+    // If we see wifi_start at a position significantly beyond our current d_frame_start_abs,
+    // it indicates a new frame has started and we should update our reference.
+    if (true) {
         std::vector<gr::tag_t> tags;
         get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
 
@@ -162,9 +164,19 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // We want rel_idx=0 to correspond to L-LTF0 DATA start.
                 // d_frame_start_abs = d_frame_start;
 
+                // Check if this is a NEW frame
+                // If d_frame_start_known is already true and we see another wifi_start,
+                // it means a new frame has started (we don't re-use wifi_start within a frame)
+                bool is_new_frame = d_frame_start_known;
+
                 d_frame_start_abs = tag_abs_pos;  // FIXED: wifi_start appears at tag_abs_pos in ht_symbol_splitter input, which IS LTF0 DATA start
 
                 d_frame_start_known = true;
+
+                // Debug: print when wifi_start is detected
+                fprintf(stderr, "[HT_SPLITTER] %s wifi_start detected at abs_pos=%llu\n",
+                        is_new_frame ? "NEW_FRAME" : "FIRST",
+                        (unsigned long long)tag_abs_pos);
                 fprintf(stderr, "[HT_SPLITTER] d_frame_start_abs=%llu\n",
                         (unsigned long long)d_frame_start_abs);
                 // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
