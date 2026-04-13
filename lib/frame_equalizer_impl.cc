@@ -1793,6 +1793,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_have_ht_header(false),
       d_is_ht(false),
       d_sym_idx(0),
+      d_internal_symbol_counter(0),
       d_first_valid_symbol(-1),
       d_in_frame(false),
       d_have_lsig(false),
@@ -1870,6 +1871,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_have_ht_header = false;
     d_is_ht = false;
     d_sym_idx = 0;
+    d_internal_symbol_counter = 0;
     d_first_valid_symbol = -1;
 
     d_chan_est_mode = 0;
@@ -2247,28 +2249,34 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // d_early_eqsym[rel][0..47] : 48 header data carriers
         // d_early_eqsym[rel][48..51]: 4 pilots
         // ------------------------------------------------------------
-        std::fprintf(stderr, "[EQ][PRE_EXTRACT] d_sym_idx=%d, in_frame=%d\n", d_sym_idx, d_in_frame ? 1 : 0);
+        // Use d_internal_symbol_counter for symbol type determination
+        // d_sym_idx may be out of sync due to 'continue' path skipping its increment
+        std::fprintf(stderr, "[EQ][PRE_EXTRACT] d_sym_idx=%d d_internal_counter=%d in_frame=%d\n",
+                     d_sym_idx, d_internal_symbol_counter, d_in_frame ? 1 : 0);
         std::fflush(stderr);
-        std::printf("[EQ][IDX_CHECK] d_sym_idx=%d, condition=%d\n", d_sym_idx, (d_sym_idx >= 0 && d_sym_idx < 8) ? 1 : 0);
-        if (d_sym_idx >= 0 && d_sym_idx < 8) {
-            // 调试：记录提取时的符号索引
-            std::fprintf(stderr, "[EXTRACT_CALL] sym_idx=%d, type=%s\n", d_sym_idx,
-                       d_sym_idx == kLltf0Rel ? "L-LTF0" :
-                       d_sym_idx == kLltf1Rel ? "L-LTF1" :
-                       d_sym_idx == kLSigRel ? "L-SIG" :
-                       d_sym_idx == kHtSig0Rel ? "HT-SIG0" :
-                       d_sym_idx == kHtSig1Rel ? "HT-SIG1" : "OTHER");
+        std::printf("[EQ][IDX_CHECK] d_sym_idx=%d d_internal_counter=%d condition=%d\n",
+                    d_sym_idx, d_internal_symbol_counter,
+                    (d_internal_symbol_counter >= 0 && d_internal_symbol_counter < 8) ? 1 : 0);
+        if (d_internal_symbol_counter >= 0 && d_internal_symbol_counter < 8) {
+            // 调试：记录提取时的符号索引 - use internal counter for type
+            std::fprintf(stderr, "[EXTRACT_CALL] internal_counter=%d, type=%s\n", d_internal_symbol_counter,
+                       d_internal_symbol_counter == kLltf0Rel ? "L-LTF0" :
+                       d_internal_symbol_counter == kLltf1Rel ? "L-LTF1" :
+                       d_internal_symbol_counter == kLSigRel ? "L-SIG" :
+                       d_internal_symbol_counter == kHtSig0Rel ? "HT-SIG0" :
+                       d_internal_symbol_counter == kHtSig1Rel ? "HT-SIG1" : "OTHER");
             std::fflush(stderr);
-            extract_header52_from_sym64(sym64, d_early_eqsym[d_sym_idx]);
+            // Use d_internal_symbol_counter for array indexing - it tracks actual symbol count
+            extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             // DEBUG: Print raw FFT bins for HT-SIG verification
-            std::fprintf(stderr, "[EXTRACT_HT_SIG] rel=%d, sym64[6-10] = ", d_sym_idx);
+            std::fprintf(stderr, "[EXTRACT_HT_SIG] internal_counter=%d, sym64[6-10] = ", d_internal_symbol_counter);
             for (int i = 6; i < 10; i++) {
                 std::fprintf(stderr, "%.3f+%.3fi ", sym64[i].real(), sym64[i].imag());
             }
             std::fprintf(stderr, "\n");
             std::fflush(stderr);
             // DEBUG: Compare LTF0 vs LTF1 after both are extracted
-            if (d_sym_idx == kLltf1Rel && d_early_eqsym_valid[kLltf0Rel]) {
+            if (d_internal_symbol_counter == kLltf1Rel && d_early_eqsym_valid[kLltf0Rel]) {
                 std::fprintf(stderr, "[LTF0_vs_LTF1] Direct comparison:\n");
                 for (int i = 0; i < 10; i++) {
                     gr_complex l0 = d_early_eqsym[kLltf0Rel][i];
@@ -2279,27 +2287,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 std::fflush(stderr);
             }
-            d_early_eqsym_valid[d_sym_idx] = true;
-            std::printf("[EQ][VALID_SET] d_sym_idx=%d, valid=%d\n", d_sym_idx, d_early_eqsym_valid[d_sym_idx] ? 1 : 0);
+            d_early_eqsym_valid[d_internal_symbol_counter] = true;
+            std::printf("[EQ][VALID_SET] internal_counter=%d, valid=%d\n",
+                        d_internal_symbol_counter, d_early_eqsym_valid[d_internal_symbol_counter] ? 1 : 0);
 
-            // 符号索引调试
+            // 符号索引调试 - use internal counter for type determination
             const char* sym_type = "UNKNOWN";
-            if (d_sym_idx == kLltf0Rel) sym_type = "L-LTF0";
-            else if (d_sym_idx == kLltf1Rel) sym_type = "L-LTF1";
-            else if (d_sym_idx == kLSigRel) sym_type = "L-SIG";
-            else if (d_sym_idx == kHtSig0Rel) sym_type = "HT-SIG0";
-            else if (d_sym_idx == kHtSig1Rel) sym_type = "HT-SIG1";
-            else if (d_sym_idx >= kDataStartRel) sym_type = "DATA";
+            if (d_internal_symbol_counter == kLltf0Rel) sym_type = "L-LTF0";
+            else if (d_internal_symbol_counter == kLltf1Rel) sym_type = "L-LTF1";
+            else if (d_internal_symbol_counter == kLSigRel) sym_type = "L-SIG";
+            else if (d_internal_symbol_counter == kHtSig0Rel) sym_type = "HT-SIG0";
+            else if (d_internal_symbol_counter == kHtSig1Rel) sym_type = "HT-SIG1";
+            else if (d_internal_symbol_counter >= kDataStartRel) sym_type = "DATA";
 
-            std::printf("[EQ][SYM_IDX] sym_idx=%d, type=%s\n", d_sym_idx, sym_type);
+            std::printf("[EQ][SYM_IDX] internal_counter=%d, type=%s\n", d_internal_symbol_counter, sym_type);
             std::fflush(stdout);
 
             // ===== Legacy vs HT-Mixed frame type detection =====
             // After L-SIG (rel_idx=2), detect if next symbol is Legacy Data or HT-SIG1
             // QBPSK rotation: E_Q > E_I indicates HT-SIG (+90° rotation)
             // Standard BPSK: E_I > E_Q indicates Legacy
-            // NOTE: This runs inside the symbol extraction loop when d_sym_idx == kHtSig0Rel
-            if (d_sym_idx == kHtSig0Rel && d_early_eqsym_valid[kLSigRel]) {
+            // NOTE: This runs inside the symbol extraction loop when d_internal_symbol_counter == kHtSig0Rel
+            if (d_internal_symbol_counter == kHtSig0Rel && d_early_eqsym_valid[kLSigRel]) {
                 double E_I_ls, E_Q_ls, E_I_ht, E_Q_ht;
 
                 // Debug: print first few values of L-SIG and HT-SIG0
@@ -2421,12 +2430,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
         std::fflush(stderr);
         std::printf("[EQ][BEFORE_GATE] Reached before gate check\n");
         std::fflush(stdout);
-        // gate 状态打印，只用于观察
+        // gate 状态打印，只用于观察 - use internal counter for type
         if (!d_have_ht_header &&
-            (d_sym_idx >= kLSigRel && d_sym_idx <= kHtSig1Rel + 1)) {
+            (d_internal_symbol_counter >= kLSigRel && d_internal_symbol_counter <= kHtSig1Rel + 1)) {
             std::printf(
-                "[EQ][GATE] sym=%d want_htsig1=%d valid={lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d} have_ht=%d\n",
-                d_sym_idx,
+                "[EQ][GATE] sym=%d (internal=%d) want_htsig1=%d valid={lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d} have_ht=%d\n",
+                d_sym_idx, d_internal_symbol_counter,
                 kHtSig1Rel,
                 d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
                 d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
@@ -2462,10 +2471,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // FIX: Allow HT-SIG parse to trigger when L-SIG validation completes,
         // not just at the exact symbol index kHtSig1Rel.
         // This handles the case where L-SIG validation happens later than expected.
+        // Use d_internal_symbol_counter for type determination (not d_sym_idx)
         const bool ht_parse_condition =
             !d_have_ht_header &&
             // d_is_ht_frame &&     // Temporarily disabled - ratio threshold too strict
-            d_sym_idx >= kHtSig1Rel &&
+            d_internal_symbol_counter >= kHtSig1Rel &&
             d_early_eqsym_valid[kLltf0Rel] &&
             d_early_eqsym_valid[kLltf1Rel] &&
             d_early_eqsym_valid[kLSigRel] &&
@@ -2862,6 +2872,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
         consumed++;
         d_current_symbol++;
         d_sym_idx++;
+        d_internal_symbol_counter++;  // Track actual symbol count per FFT output
 
         if (d_have_ht_header && d_frame_symbols > 0) {
             const int end_rel = d_data_start_rel + d_frame_symbols;
