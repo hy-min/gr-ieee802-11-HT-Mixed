@@ -204,6 +204,19 @@ static void generate_ht_sig_header(char* out,
     char encoded[96];
     convolutional_encoding(ht_bits, encoded, ht_frame);
     interleave(encoded, out, ht_frame, sig_ofdm);
+
+    // Debug: print TX HT-SIG encoded bits before interleave
+    // These are what RX should see after deinterleaving
+    fprintf(stderr, "[TX_HT_SIG] encoded[0:48] = ");
+    for (int i = 0; i < 48; i++) fprintf(stderr, "%d", encoded[i] & 0x1);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[TX_HT_SIG] encoded[48:96] = ");
+    for (int i = 48; i < 96; i++) fprintf(stderr, "%d", encoded[i] & 0x1);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[TX_HT_SIG] ht_bits[0:24] = ");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", ht_bits[i] & 0x1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 }
 
 } // namespace

@@ -395,8 +395,8 @@ static constexpr int kLltf48Sign[48] = {
 };
 
 // L-LTF TX values for 48 data subcarriers (kHeader48Sc order)
-// CORRECTED: From ieee80211_ofdm_refs.py ltf_52 BPSK sequence
-// These are pure real BPSK ±1 values, matching actual TX L-LTF
+// These are BPSK ±1 values (REAL axis), which is what the TX actually transmits
+// The wifi_phy_hier.py uses digital.chunks_to_symbols_bc([-1, 1]) for preamble
 // H = RX / TX gives proper channel estimate
 static constexpr gr_complex kLltf48TX[48] = {
     gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),  // sc -26 to -20
@@ -765,7 +765,7 @@ static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
     std::memset(out48, 0, 48);
 
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 16;
+        const int j = 16 * (k % 3) + k / 3;
         out48[k] = in48[j] & 0x1;
     }
 }
@@ -1481,84 +1481,20 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     uint8_t deintl48_b[48];
     uint8_t enc96[96];
 
-    // Debug: print RAW subcarrier bits BEFORE deinterleaving (Naked Bit Test)
-    std::fprintf(stderr, "[RX_RAW] rx52_a[0:8]: ");
-    for (int i = 0; i < 8; i++) {
-        std::fprintf(stderr, "%.3f+%.3fi ", rx52_a[i].real(), rx52_a[i].imag());
+    // Probe: print first 5 values of rx52_a, H52, and eq to see rotation-compensated symbols
+    static int s_call_id = 0;
+    fprintf(stderr, "[DECODE_HT] call_id=%d rx52_a[0:5]=", s_call_id++);
+    for (int i = 0; i < 5; i++) {
+        fprintf(stderr, "%.3f+%.3fi ", rx52_a[i].real(), rx52_a[i].imag());
     }
-    std::fprintf(stderr, "\n");
-    std::fprintf(stderr, "[RX_RAW] rx52_b[0:8]: ");
-    for (int i = 0; i < 8; i++) {
-        std::fprintf(stderr, "%.3f+%.3fi ", rx52_b[i].real(), rx52_b[i].imag());
-    }
-    std::fprintf(stderr, "\n");
-    std::fprintf(stderr, "[RX_RAW] H[0:8]: ");
-    for (int i = 0; i < 8; i++) {
-        std::fprintf(stderr, "%.3f+%.3fi ", H52[i].real(), H52[i].imag());
-    }
-    std::fprintf(stderr, "\n");
-    fflush(stderr);
-
-    // Debug: print RAW subcarrier bits BEFORE deinterleaving (Naked Bit Test)
-    // These are the bits as they appear on each subcarrier, with QBPSK rotation undone
-    // BPSK: real < 0 → bit 1, real >= 0 → bit 0
-    std::fprintf(stderr, "[RX_RAW] HT-SIG0 bits: ");
-    for (int i = 0; i < 48; i++) {
-        float h_mag = std::abs(H52[i]);
-        gr_complex eq;
-        if (h_mag < 0.1f) {
-            eq = gr_complex(0.0f, 0.0f);
-        } else {
-            eq = safe_div(rx52_a[i], H52[i]);
-        }
-        int bit = (eq.real() < 0.0f) ? 1 : 0;
-        std::fprintf(stderr, "%d", bit);
-    }
-    std::fprintf(stderr, "\n");
-    std::fprintf(stderr, "[RX_RAW] HT-SIG1 bits: ");
-    for (int i = 0; i < 48; i++) {
-        float h_mag = std::abs(H52[i]);
-        gr_complex eq;
-        if (h_mag < 0.1f) {
-            eq = gr_complex(0.0f, 0.0f);
-        } else {
-            eq = safe_div(rx52_b[i], H52[i]);
-        }
-        int bit = (eq.real() < 0.0f) ? 1 : 0;
-        std::fprintf(stderr, "%d", bit);
-    }
-    std::fprintf(stderr, "\n");
-    fflush(stderr);
-
-    // Simple equalization WITHOUT CPE rotation for QBPSK-compensated symbols
-    // DEBUG: Print equalized HT-SIG0 constellation AND pilots
-    fprintf(stderr, "[EQ_HT0] Equalized HT-SIG0 constellation (first 12 subcarriers):\n");
-    for (int i = 0; i < 12; i++) {
-        float h_mag = std::abs(H52[i]);
-        gr_complex eq;
-        if (h_mag < 0.1f) {
-            eq = gr_complex(0.0f, 0.0f);
-        } else {
-            eq = safe_div(rx52_a[i], H52[i]);
-        }
-        fprintf(stderr, "  i=%2d: eq=%.3f+%.3fi mag=%.3f phase=%+.1fdeg\n",
-                i, eq.real(), eq.imag(), std::abs(eq), std::arg(eq) * 180 / M_PI);
-    }
-    // DEBUG: Print pilots (indices 48-51) BEFORE derotation
-    fprintf(stderr, "[EQ_HT0] Pilots BEFORE derotation (indices 48-51):\n");
-    for (int i = 48; i < 52; i++) {
-        float h_mag = std::abs(H52[i]);
-        gr_complex eq;
-        if (h_mag < 0.1f) {
-            eq = gr_complex(0.0f, 0.0f);
-        } else {
-            eq = safe_div(rx52_a[i], H52[i]);
-        }
-        fprintf(stderr, "  i=%2d: eq=%.3f+%.3fi mag=%.3f phase=%+.1fdeg (H_mag=%.3f)\n",
-                i, eq.real(), eq.imag(), std::abs(eq), std::arg(eq) * 180 / M_PI, h_mag);
+    fprintf(stderr, "\n  H52[0:5]=");
+    for (int i = 0; i < 5; i++) {
+        fprintf(stderr, "%.3f+%.3fi ", H52[i].real(), H52[i].imag());
     }
     fprintf(stderr, "\n");
+    fflush(stderr);
 
+    // Extract bits from HT-SIG0 (rx52_a)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
@@ -1566,12 +1502,23 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52_a[i], H52[i]);
+        }
+        // Probe eq phase
+        if (i < 5) {
+            fprintf(stderr, "[DECODE_HT]   i=%d eq=%.3f+%.3fi phase=%+.1fdeg imag>=0?%d\n",
+                    i, eq.real(), eq.imag(), std::arg(eq)*180/M_PI, (eq.imag() >= 0.0f) ? 1 : 0);
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → +j (imag >= 0), bit 1 → -j (imag < 0)
         eqbits48_a[i] = (eq.imag() >= 0.0f) ? 0 : 1;
     }
+    // Probe: print eqbits48_a before deinterleave
+    fprintf(stderr, "[EQ_BITS] eqbits48_a[0:24]=");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", eqbits48_a[i]);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 
+    // Extract bits from HT-SIG1 (rx52_b)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
@@ -1595,17 +1542,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         }
     }
 
-    // HT-SIG Deinterleaving: undo the two-step 802.11 permutation
-    // Step 1: k_i = 3*(j%16) + j/16 (first permutation inverse)
-    // Step 2: k = 16*(k_i%3) + k_i/3 (second permutation inverse)
-    // Combined: k = 16*((3*(j%16) + j/16)%3) + (3*(j%16) + j/16)/3
-    // Simplified: for each original bit position k, read from position j = 16*(k%3) + k/3
+    // HT-SIG Deinterleaving: undo the 802.11 permutation
+    // Forward interleaver: j = 3*(k%16) + k/16
+    // Inverse (deinterleaver): j = 16*(k%3) + k/3
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 16;  // Which subcarrier position holds original bit k
-        deintl48_a[k] = eqbits48_a[j] & 0x1;  // Read from position j to recover original position k
+        const int j = 16 * (k % 3) + k / 3;
+        deintl48_a[k] = eqbits48_a[j] & 0x1;
     }
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 16;
+        const int j = 16 * (k % 3) + k / 3;
         deintl48_b[k] = eqbits48_b[j] & 0x1;
     }
 
@@ -2633,7 +2578,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
 
                 // Try all rotations (0, 90°, 180°, 270°) and 180° ambiguity on each symbol
-                for (int rot = start_rot; rot <= 3 && !found; rot++) {
+                // Note: try ALL rotations, not just from start_rot, to avoid missing correct rotation
+                for (int rot = 0; rot <= 3 && !found; rot++) {
                     // Apply rotation compensation
                     gr_complex rot_htsig0[52];
                     gr_complex rot_htsig1[52];

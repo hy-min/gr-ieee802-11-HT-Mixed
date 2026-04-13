@@ -157,11 +157,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // rel_idx = current_idx - 176. At current_idx = 1166976 (where tag was found),
                 // rel_idx = 1166800, which is way off.
                 //
-                // The fix: d_frame_start_abs should be tag.offset (the absolute position
-                // of the first sample in our input stream), since that sample IS L-LTF DATA.
-                // d_frame_start_abs = tag.offset;
+                // The fix: d_frame_start_abs should be d_frame_start, not tag.offset.
+                // sync_long sets d_frame_start=176 (L-LTF0 DATA start in original input).
+                // We want rel_idx=0 to correspond to L-LTF0 DATA start.
+                // d_frame_start_abs = d_frame_start;
 
-                d_frame_start_abs = tag_abs_pos;  // L-LTF DATA starts at position 0 in our input
+                d_frame_start_abs = tag_abs_pos;  // FIXED: wifi_start appears at tag_abs_pos in ht_symbol_splitter input, which IS LTF0 DATA start
 
                 d_frame_start_known = true;
                 fprintf(stderr, "[HT_SPLITTER] d_frame_start_abs=%llu\n",
@@ -266,26 +267,40 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // rel_idx 384-399: HT-STF CP (input 560-575) - SKIP
             // rel_idx 400-463: HT-STF DATA (input 576-639)
             // rel_idx 464+: HT-DATA (each symbol 80 samples: 16 CP + 64 data)
-            // HT-Mixed 20MHz preamble with CORRECT boundaries:
-            // L-LTF: 128 samples continuous (32 GI + 64 LTF0 + 64 LTF1) - NO CP between symbols!
-            // From rel_idx 128 onwards: 80-sample symbols (16 CP + 64 Data)
+            // ============================================================
+            // HT-Mixed 20MHz Preamble Structure (CORRECTED):
             //
-            // Correct boundaries:
-            // rel_idx 0-63: L-LTF0 DATA (input 176-239)
-            // rel_idx 64-127: L-LTF1 DATA (input 240-303) - continuous, no CP skip!
-            // rel_idx 128-191: L-SIG CP (input 304-319) - SKIP
-            // rel_idx 192-255: L-SIG DATA (input 336-399)
-            // rel_idx 256-319: HT-SIG0 CP (input 432-447) - SKIP
-            // rel_idx 320-383: HT-SIG0 DATA (input 448-511)
-            // rel_idx 384-447: HT-SIG1 CP (input 560-575) - SKIP
-            // rel_idx 448-511: HT-SIG1 DATA (input 576-639)
-            // rel_idx 512+: HT-STF and HT-DATA (80-sample symbols: 16 CP + 64 Data)
+            // L-LTF: 160 samples = 32 GI2 + 64 LTF0 + 64 LTF1
+            //   - rel_idx 0-63:   LTF0 DATA (input d_frame_start to d_frame_start+63)
+            //   - rel_idx 64-127: LTF1 DATA (continuous, NO CP between LTF0 and LTF1!)
+            //   - rel_idx 128-143: L-SIG CP (16 samples) -> SKIP
+            //   - rel_idx 144-207: L-SIG DATA (64 samples) -> BUFFER
+            //   - rel_idx 208-223: HT-SIG0 CP (16 samples) -> SKIP
+            //   - rel_idx 224-287: HT-SIG0 DATA (64 samples) -> BUFFER
+            //   - rel_idx 288-303: HT-SIG1 CP (16 samples) -> SKIP
+            //   - rel_idx 304-367: HT-SIG1 DATA (64 samples) -> BUFFER
+            //   - rel_idx 368-383: HT-STF CP (16 samples) -> SKIP
+            //   - rel_idx 384-447: HT-STF DATA (64 samples) -> BUFFER
+            //   - rel_idx 448+: HT-DATA (80-sample period: 16 CP + 64 Data)
+            // ============================================================
             if (rel_idx < 128) {
-                // Stage 1: L-LTF is continuous 128 samples - buffer all (no CP skip!)
+                // Stage 1: L-LTF continuous 128 samples (NO CP skip!)
                 should_buffer = true;
+            } else if (rel_idx < 208) {
+                // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA)
+                should_buffer = (rel_idx >= 144);
+            } else if (rel_idx < 288) {
+                // Stage 3: HT-SIG0 (rel_idx 208-223 CP, 224-287 DATA)
+                should_buffer = (rel_idx >= 224);
+            } else if (rel_idx < 368) {
+                // Stage 4: HT-SIG1 (rel_idx 288-303 CP, 304-367 DATA)
+                should_buffer = (rel_idx >= 304);
+            } else if (rel_idx < 448) {
+                // Stage 5: HT-STF (rel_idx 368-383 CP, 384-447 DATA)
+                should_buffer = (rel_idx >= 384);
             } else {
-                // Stage 2: L-SIG and subsequent symbols (80-sample period: 16 CP + 64 Data)
-                uint64_t sym_rel_idx = rel_idx - 128;
+                // Stage 6: HT-DATA and beyond (80-sample period)
+                uint64_t sym_rel_idx = rel_idx - 448;
                 uint64_t sym_offset = sym_rel_idx % 80;
                 if (sym_offset >= 16) {
                     should_buffer = true;  // Skip CP, buffer Data
@@ -294,6 +309,31 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             if (should_buffer) {
                 d_buffer[d_buffer_count++] = in[i];
+                // TIME DOMAIN DEBUG: Print LTF0 and LTF1 time-domain samples for comparison
+                static int td_debug_count = 0;
+                static int ltf0_sample_count = 0;
+                static int ltf1_sample_count = 0;
+                if (td_debug_count < 3) {
+                    // Print LTF0 samples (rel_idx 0-63)
+                    if (rel_idx < 64 && ltf0_sample_count < 10) {
+                        fprintf(stderr, "[TIME_DOMAIN_LTF0] rel_idx=%llu, sample[%d]=%.4f+%.4fi\n",
+                                (unsigned long long)rel_idx, ltf0_sample_count,
+                                in[i].real(), in[i].imag());
+                        ltf0_sample_count++;
+                    }
+                    // Print LTF1 samples (rel_idx 64-127)
+                    if (rel_idx >= 64 && rel_idx < 128 && ltf1_sample_count < 10) {
+                        fprintf(stderr, "[TIME_DOMAIN_LTF1] rel_idx=%llu, sample[%d]=%.4f+%.4fi\n",
+                                (unsigned long long)rel_idx, ltf1_sample_count,
+                                in[i].real(), in[i].imag());
+                        ltf1_sample_count++;
+                    }
+                    if (rel_idx >= 127) {
+                        td_debug_count++;
+                        ltf0_sample_count = 0;
+                        ltf1_sample_count = 0;
+                    }
+                }
 
                 // When buffer is full, output FFT block
                 if (d_buffer_count == d_fft_size) {
