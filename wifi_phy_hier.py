@@ -67,7 +67,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.ieee802_11_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 48 * 8))
         self.ht_symbol_splitter_0 = ieee802_11.ht_symbol_splitter(64, 80, 16)
         self.fft_vxx_0_1 = fft.fft_vcc(64, True, window.rectangular(64), False, 1)
-        self.fft_vxx_0_0 = fft.fft_vcc(64, False, tuple([1/52**.5] * 64), True, 1)
+        self.fft_vxx_0_0 = fft.fft_vcc(64, False, tuple([1/52**.5] * 64), False, 1)
         self.fft_vxx_0_0.set_min_output_buffer((max_symbols * 48 * 8 * 10))
         self.digital_packet_headergenerator_bb_0 = digital.packet_headergenerator_bb(header_formatter.formatter(), "packet_len")
         self.digital_ofdm_cyclic_prefixer_0_0 = digital.ofdm_cyclic_prefixer(
