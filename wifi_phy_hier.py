@@ -17,6 +17,8 @@ import sys
 import signal
 import ieee802_11
 import threading
+import numpy as np
+import pmt
 
 
 
@@ -80,6 +82,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.digital_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 48 * 8 * 2))
         self.blocks_tagged_stream_mux_0 = blocks.tagged_stream_mux(gr.sizeof_gr_complex*1, "packet_len", 1)
         self.blocks_tagged_stream_mux_0.set_min_output_buffer((max_symbols * 48 * 8))
+        self.ht_sig_rotator_0 = ht_sig_rotator()
         self.blocks_stream_to_vector_0 = blocks.stream_to_vector(gr.sizeof_gr_complex*1, 64)
         self.blocks_multiply_xx_0 = blocks.multiply_vcc(1)
         self.blocks_moving_average_xx_1 = blocks.moving_average_ff((window_size  + 16), 1, 4000, 1)
@@ -111,7 +114,8 @@ class wifi_phy_hier(gr.hier_block2):
         self.connect((self.blocks_multiply_xx_0, 0), (self.blocks_moving_average_xx_0, 0))
         self.connect((self.blocks_stream_to_vector_0, 0), (self.fft_vxx_0_1, 0))
         self.connect((self.blocks_tagged_stream_mux_0, 0), (self.digital_ofdm_carrier_allocator_cvc_0_0_0, 0))
-        self.connect((self.digital_chunks_to_symbols_xx_0, 0), (self.blocks_tagged_stream_mux_0, 0))
+        self.connect((self.digital_chunks_to_symbols_xx_0, 0), (self.ht_sig_rotator_0, 0))
+        self.connect((self.ht_sig_rotator_0, 0), (self.blocks_tagged_stream_mux_0, 0))
         self.connect((self.digital_ofdm_carrier_allocator_cvc_0_0_0, 0), (self.fft_vxx_0_0, 0))
         self.connect((self.digital_ofdm_cyclic_prefixer_0_0, 0), (self, 0))
         self.connect((self.digital_packet_headergenerator_bb_0, 0), (self.digital_chunks_to_symbols_xx_0, 0))
@@ -190,4 +194,64 @@ class wifi_phy_hier(gr.hier_block2):
 
     def set_header_formatter(self, header_formatter):
         self.header_formatter = header_formatter
+
+
+# ============================================================================
+# HT-SIG Rotator Block
+# Rotates HT-SIG complex symbols by j (QBPSK rotation) while leaving L-SIG unchanged
+# Inserted between chunks_to_symbols_bc and tagged_stream_mux
+# ============================================================================
+import numpy as np
+from gnuradio import gr
+import pmt
+
+class ht_sig_rotator(gr.sync_block):
+    """
+    HT-SIG Rotator for 802.11n HT-Mixed mode TX
+
+    L-SIG: first 48 complex symbols (indices 0-47) → pass through unchanged (BPSK on real axis)
+    HT-SIG: next 96 complex symbols (indices 48-143) → multiply by 1j (QBPSK on imaginary axis)
+    """
+
+    def __init__(self):
+        gr.sync_block.__init__(
+            self,
+            name="HT-SIG Rotator",
+            in_sig=[np.complex64],
+            out_sig=[np.complex64]
+        )
+        self.header_pos = 0  # position within header stream (0-143)
+        print('[HT-SIG-ROTATOR] Created', flush=True)
+
+    def work(self, input_items, output_items):
+        inp = input_items[0]
+        out = output_items[0]
+        n_in = len(inp)
+        n_out = len(out)
+        n = min(n_in, n_out)
+
+        produced = 0
+        for i in range(n):
+            # Check for packet_len tag at this input position
+            tags = self.get_tags_in_window(0, i, i + 1)
+            for tag in tags:
+                if pmt.eq(tag.key, pmt.intern("packet_len")):
+                    self.header_pos = 0
+                    break
+
+            # Apply rotation based on header_pos BEFORE incrementing
+            if self.header_pos < 48:
+                # L-SIG: pass through unchanged (BPSK ±1 on real axis)
+                out[i] = inp[i]
+            elif self.header_pos < 144:
+                # HT-SIG: rotate by j (QBPSK ±j on imaginary axis)
+                out[i] = inp[i] * 1j
+            else:
+                # Beyond header: pass through unchanged
+                out[i] = inp[i]
+
+            self.header_pos += 1
+            produced += 1
+
+        return produced
 
