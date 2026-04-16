@@ -200,6 +200,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         if (d_frame_start_known && current_idx >= d_frame_start_abs) {
             uint64_t rel_idx = current_idx - d_frame_start_abs;
             bool should_buffer = false;
+            // DEBUG: confirm we're in the processing block
+            if (rel_idx >= 64 && rel_idx < 80) {
+                fprintf(stderr, "[HT_SPLITTER] DEBUG: in block rel_idx=%llu d_buffer_count=%llu\n",
+                        (unsigned long long)rel_idx, (unsigned long long)d_buffer_count);
+            }
 
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
             // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
@@ -295,18 +300,25 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //   - rel_idx 384-447: HT-STF DATA (64 samples) -> BUFFER
             //   - rel_idx 448+: HT-DATA (80-sample period: 16 CP + 64 Data)
             // ============================================================
-            if (rel_idx < 128) {
-                // Stage 1: L-LTF continuous 128 samples (NO CP skip!)
+            if (rel_idx < 64) {
+                // Stage 1: L-LTF0 DATA (rel_idx 0-63)
+                should_buffer = true;
+            } else if (rel_idx < 128) {
+                // Stage 1b: L-LTF1 DATA (rel_idx 64-127) - 64 samples, NO CP between LTF0 and LTF1!
+                // FIX: TX outputs LTF0 and LTF1 back-to-back without CP gap
                 should_buffer = true;
             } else if (rel_idx < 208) {
-                // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA)
+                // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA) - 80 points total
                 should_buffer = (rel_idx >= 144);
             } else if (rel_idx < 288) {
-                // Stage 3: HT-SIG0 (rel_idx 208-223 CP, 224-287 DATA)
+                // Stage 3: HT-SIG0 (rel_idx 208-223 CP, 224-287 DATA) - 80 points total
                 should_buffer = (rel_idx >= 224);
+            } else if (rel_idx < 304) {
+                // Stage 3b: HT-SIG1 CP (rel_idx 288-303) - SKIP these 16 points!
+                should_buffer = false;
             } else if (rel_idx < 368) {
-                // Stage 4: HT-SIG1 (rel_idx 288-303 CP, 304-367 DATA)
-                should_buffer = (rel_idx >= 304);
+                // Stage 4: HT-SIG1 DATA (rel_idx 304-367) - 64 points
+                should_buffer = true;
             } else if (rel_idx < 448) {
                 // Stage 5: HT-STF (rel_idx 368-383 CP, 384-447 DATA)
                 should_buffer = (rel_idx >= 384);
@@ -317,6 +329,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 if (sym_offset >= 16) {
                     should_buffer = true;  // Skip CP, buffer Data
                 }
+            }
+
+            // DEBUG: Print rel_idx 64-79 to see if they're being buffered
+            if (rel_idx >= 64 && rel_idx < 80) {
+                fprintf(stderr, "[HT_SPLITTER] rel_idx=%llu should_buffer=%d d_buffer_count=%llu\n",
+                        (unsigned long long)rel_idx, should_buffer, (unsigned long long)d_buffer_count);
             }
 
             if (should_buffer) {

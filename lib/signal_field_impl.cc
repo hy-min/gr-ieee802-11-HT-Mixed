@@ -144,6 +144,18 @@ static void generate_l_sig_header(char* out,
     char encoded[48];
     convolutional_encoding(signal_header, encoded, sig_frame);
     interleave(encoded, out, sig_frame, sig_ofdm);
+
+    // Debug: print TX L-SIG info
+    fprintf(stderr, "[TX_LSIG] signal_header[0:24]=");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", signal_header[i] & 0x1);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[TX_LSIG] encoded[0:48]=");
+    for (int i = 0; i < 48; i++) fprintf(stderr, "%d", encoded[i] & 0x1);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[TX_LSIG] interleaved[0:48]=");
+    for (int i = 0; i < 48; i++) fprintf(stderr, "%d", out[i] & 0x1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 }
 
 // Generate 96 coded+interleaved bits for HT-SIG (2 OFDM symbols, each 48 coded bits).
@@ -248,8 +260,14 @@ void signal_field_impl::generate_signal_field(char* out,
                                               frame_param& frame,
                                               ofdm_param& ofdm)
 {
+    fprintf(stderr, "[SIGNAL_GEN] generate_signal_field called\n");
+    fflush(stderr);
     // L-SIG for HT-mixed
+    fprintf(stderr, "[SIGNAL_GEN] about to call generate_l_sig_header\n");
+    fflush(stderr);
     generate_l_sig_header(out, frame, ofdm);
+    fprintf(stderr, "[SIGNAL_GEN] generate_l_sig_header returned\n");
+    fflush(stderr);
 
     // HT-SIG (2 symbols)
     generate_ht_sig_header(out + 48, frame, ofdm);
@@ -286,11 +304,14 @@ bool signal_field_impl::header_formatter(long packet_len,
     }
 
     std::fprintf(stderr, "[SIGNAL_FORMATTER] encoding=%d len=%d\n", encoding, len);
+    fflush(stderr);
 
     ofdm_param ofdm((Encoding)encoding);
     frame_param frame(ofdm, len);
 
     generate_signal_field((char*)out, frame, ofdm);
+    fprintf(stderr, "[SIGNAL_FORMATTER] generate_signal_field returned\n");
+    fflush(stderr);
     return true;
 }
 

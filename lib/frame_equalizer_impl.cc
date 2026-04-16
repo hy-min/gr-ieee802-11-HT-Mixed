@@ -52,10 +52,19 @@ static constexpr int kMaxFrameRel = 128;
 //   FFT bin 27 to 37   = guard band / nulls
 //   FFT bin 38 to 63   = negative frequencies (subcarriers -26 to -1)
 //
+// FFT bin mapping for shift=True (DC at bin 32):
+// IEEE 802.11 OFDM 64-point FFT shifted order:
+//   FFT bin  0 to 31  = negative frequencies (subcarriers -32 to -1)
+//   FFT bin 32        = DC (subcarrier 0)
+//   FFT bin 33 to 63  = positive frequencies (subcarriers +1 to +31)
+//
 // Input: subcarrier index sc (-32 to +31)
 // Output: FFT bin index (0 to 63)
 static inline int sc_to_fft_bin(int sc)
 {
+    // FFT with shift=True (DC at bin 32):
+    // For SC in [-32, +31], the bin mapping is (sc + 64) % 64
+    // This maps: SC{-26}→38, SC{-21}→43, SC{+7}→7, SC{+21}→21
     return (sc + 64) % 64;
 }
 
@@ -206,10 +215,6 @@ static constexpr int kCandC52[52] = {
 
 static constexpr int kPilot4Sc[4] = { -21, -7, 7, 21 };
 
-// EXPLICIT FFT bin mapping for pilots: SC → bin
-// SC -21 → bin 43, SC -7 → bin 57, SC +7 → bin 7, SC +21 → bin 21
-static constexpr int kPilot4Bin[4] = { 43, 57, 7, 21 };
-
 static constexpr int kHtPilotPolarity127[127] = {
     1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, -1, 1, 1, -1, 1, -1, -1, 1, 1,
     -1, 1, 1, -1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, -1, -1, 1, 1, 1,
@@ -231,7 +236,7 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64, int da
 {
     gr_complex acc(0.0f, 0.0f);
     for (int i = 0; i < 4; i++) {
-        const gr_complex rx = sym64[kPilot4Bin[i]];  // EXPLICIT bin mapping!
+        const gr_complex rx = sym64[sc_to_fft_bin(kPilot4Sc[i])];
         acc += rx * std::conj(ht_expected_pilot(data_sym_idx, i));
     }
     if (std::abs(acc) < 1e-9f) {
@@ -370,19 +375,6 @@ static constexpr int kHeader48Sc[48] = {
     22,23,24,25,26
 };
 
-// EXPLICIT FFT bin indices corresponding to kHeader48Sc order
-// This ensures TX and RX use the EXACT same bin mapping!
-static constexpr int kHeader48Bin[48] = {
-    // Negative freq (SC -26 to -1): bins 38-63
-    38, 39, 40, 41, 42,         // SC -26 to -22
-    44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, // SC -20 to -8 (skip -7 pilot)
-    58, 59, 60, 61, 62, 63,     // SC -6 to -1
-    // Positive freq (SC +1 to +26): bins 1-26
-    1, 2, 3, 4, 5, 6,           // SC +1 to +6
-    8, 9,10,11,12,13,14,15,16,17,18,19,20,  // SC +8 to +20 (skip +7 pilot)
-    22,23,24,25,26              // SC +22 to +26
-};
-
 // legacy L-LTF known signs on the 48 data carriers above
 // These are just ±1 real values - used for sign check only
 static constexpr int kLltf48Sign[48] = {
@@ -483,7 +475,7 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     if (call_count < 10) {
         std::fprintf(stderr, "[EXTRACT] called, first 5 subcarriers:\n");
         for (int i = 0; i < 5 && i < 48; i++) {
-            int fft_bin = kHeader48Bin[i];  // EXPLICIT bin mapping!
+            int fft_bin = sc_to_fft_bin(kHeader48Sc[i]);
             gr_complex val = sym64[fft_bin];
             std::fprintf(stderr, "  i=%d, sc=%d, bin=%d, val=%.3f+%.3fi\n",
                         i, kHeader48Sc[i], fft_bin,
@@ -512,10 +504,10 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     }
 
     for (int i = 0; i < 48; i++) {
-        out52[i] = sym64[kHeader48Bin[i]];  // EXPLICIT bin mapping!
+        out52[i] = sym64[sc_to_fft_bin(kHeader48Sc[i])];
     }
     for (int i = 0; i < 4; i++) {
-        out52[48 + i] = sym64[kPilot4Bin[i]];  // EXPLICIT bin mapping!
+        out52[48 + i] = sym64[sc_to_fft_bin(kPilot4Sc[i])];
     }
 }
 
@@ -605,9 +597,11 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                         kHeader48Sc[i], i, lltf0.real(), lltf0.imag(), lltf1.real(), lltf1.imag(), dot_product);
         }
 
+        // DEBUG: Force H=1 for all subcarriers to test if channel estimation is the problem
         // Channel estimation using LTF0 only (avoid averaging opposite signs)
         if (std::abs(tx) > 0.001f) {
-            H52[i] = lltf0 / tx;
+            H52[i] = lltf0 / tx;  // ORIGINAL
+            // H52[i] = gr_complex(1.0f, 0.0f);  // DEBUG: force perfect channel
         } else {
             H52[i] = lltf0;  // fallback for null subcarriers
         }
@@ -672,9 +666,13 @@ static float estimate_header_cpe_rad(const gr_complex* rx52,
 {
     gr_complex acc(0.0f, 0.0f);
 
+    // Pilots are at indices 48, 49, 50, 51 in the 52-element array
+    // L-SIG and HT-SIG pilots use the same subcarrier positions {-21,-7,+7,+21}
+    // TX pilot values are kLltfPilotTX (complex), not just ±1
     for (int i = 0; i < 4; i++) {
         const gr_complex eqp = safe_div(rx52[48 + i], H52[48 + i]);
-        const gr_complex expect = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+        // Use actual complex TX pilot values as expected
+        const gr_complex expect = kLltfPilotTX[i];
         acc += eqp * std::conj(expect);
     }
 
@@ -691,7 +689,9 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
                                                uint8_t* out_bits48)
 {
     const float cpe = estimate_header_cpe_rad(rx52, H52);
-    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
+    // Use actual CPE for rotation correction
+    const float cpe_to_use = cpe;
+    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe_to_use));
 
     std::fprintf(stderr, "[EQ_HEADER] CPE estimate: %.3f rad, rot=%.3f+%.3fi\n",
                 cpe, rot.real(), rot.imag());
@@ -716,6 +716,12 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
         out_eq48[i] = eq;
         eq_mag_sum += std::abs(eq);
         out_bits48[i] = hard_bit_from_complex(eq);
+
+        // DEBUG: Print H[i] for first 5 subcarriers
+        if (i < 5) {
+            std::fprintf(stderr, "[EQ_HEADER][DEBUG] i=%d, H=%.3f+%.3fi, rx=%.3f+%.3fi, eq=%.3f+%.3fi\n",
+                        i, H52[i].real(), H52[i].imag(), rx52[i].real(), rx52[i].imag(), eq.real(), eq.imag());
+        }
     }
 
     std::fprintf(stderr, "[EQ_HEADER] Zero-magnitude H subcarriers: %d/48\n", zero_H_count);
@@ -760,12 +766,14 @@ static void equalize_header52_to_bits48(const gr_complex* rx52,
 //
 // RX inverse:
 //   out[i] = in[k]
+// Correct deinterleave formula: k = 16*(j%3) + j/3
+// This correctly inverts the interleave: j = 3*(k%16) + k/16
 static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
 {
     std::memset(out48, 0, 48);
 
-    for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;
+    for (int j = 0; j < 48; j++) {
+        const int k = 16 * (j % 3) + j / 3;
         out48[k] = in48[j] & 0x1;
     }
 }
@@ -969,7 +977,10 @@ static bool decode_lsig_candidate(const uint8_t* raw_bits52,
     for (int i = 0; i < 18; i++) {
         parity_sum ^= (decoded_bits[i] & 1);
     }
-    if (parity_sum != 0) {
+    // Correct 802.11 parity check: parity_sum XOR parity_bit should be 0 (even parity)
+    if ((parity_sum ^ (decoded_bits[18] & 1)) != 0) {
+        fprintf(stderr, "[LSIG_DECODE_OLD] Parity check failed! parity_sum=%d, parity_bit=%d\n",
+                parity_sum, decoded_bits[18] & 1);
         return false;
     }
 
@@ -1163,12 +1174,15 @@ static inline gr_complex get_htsig_rotation_factor(int rotation)
 }
 
 // Detect HT-SIG QBPSK rotation by analyzing pilot phases
-// HT-SIG pilots are at indices 48-51 (subcarriers -21, -7, +7, +21)
+// In the 52-element array structure used by this code:
+//   out52[0..47] = 48 data subcarriers
+//   out52[48..51] = 4 pilots (SC{-21,-7,+7,+21} in that order)
 static int detect_htsig_rotation(const gr_complex* ht_sig_eq52)
 {
     gr_complex pilot_sum(0.0f, 0.0f);
     int pilot_count = 0;
 
+    // Pilots are at indices 48, 49, 50, 51 in the 52-element array
     for (int i = 0; i < 4; i++) {
         const gr_complex pilot = ht_sig_eq52[48 + i];
         pilot_sum += pilot;
@@ -1216,10 +1230,23 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
                                              uint8_t* dbg_deintl48 = nullptr)
 {
     fprintf(stderr, "[LSIG_DECODE] FUNCTION CALLED! invert_bits=%d\n", invert_bits ? 1 : 0);
+    fflush(stderr);
     uint8_t eqbits48[48];
     uint8_t deintl48[48];
 
+    // ============================================================
+    // PROBE 1: Demapper polarity check - uses existing function
+    // ============================================================
+    fprintf(stderr, "[PROBE0_BEFORE_EQUALIZE] about to call equalize_header52_to_bits48\n");
+    fflush(stderr);
     equalize_header52_to_bits48(rx52, H52, eqbits48, nullptr);
+    fprintf(stderr, "[PROBE0_AFTER_EQUALIZE] returned from equalize_header52_to_bits48\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[PROBE1_DEMAP] eqbits48[0:24]=");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", eqbits48[i] & 1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 
     if (invert_bits) {
         for (int i = 0; i < 48; i++) {
@@ -1231,13 +1258,24 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         std::memcpy(dbg_eqbits48, eqbits48, 48);
     }
 
+    // ============================================================
+    // PROBE 2: Deinterleave array fingerprint
+    // ============================================================
     deinterleave_bpsk_48(eqbits48, deintl48);
+
+    fprintf(stderr, "[PROBE2_DEINT] deintl48[0:48]=");
+    for (int i = 0; i < 48; i++) fprintf(stderr, "%d", deintl48[i] & 1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 
     if (dbg_deintl48) {
         std::memcpy(dbg_deintl48, deintl48, 48);
     }
 
     std::vector<uint8_t> dec24;
+    // ============================================================
+    // PROBE 3: Viterbi decoder output (see below after decode)
+    // ============================================================
     if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
         fprintf(stderr, "[LSIG_DECODE] Viterbi decode failed!\n");
         return false;
@@ -1248,6 +1286,11 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     }
 
     const uint8_t* decoded_bits = dec24.data();
+
+    // Debug: print decoded bits before parity check
+    fprintf(stderr, "[LSIG_DECODE] decoded24[0:24]=");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", decoded_bits[i] & 1);
+    fprintf(stderr, "\n");
 
     const int rate_field =
         ((decoded_bits[0] & 1) << 3) |
@@ -1264,8 +1307,11 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     for (int i = 0; i < 18; i++) {
         parity_sum ^= (decoded_bits[i] & 1);
     }
-    if (parity_sum != 0) {
-        fprintf(stderr, "[LSIG_DECODE] Parity check failed! parity_sum=%d\n", parity_sum);
+    // Correct 802.11 parity check: parity_sum XOR parity_bit should be 0 (even parity)
+    // XOR with bit 18 (parity bit) should equal 0
+    if ((parity_sum ^ (decoded_bits[18] & 1)) != 0) {
+        fprintf(stderr, "[LSIG_DECODE] Parity check failed! parity_sum=%d, parity_bit=%d\n",
+                parity_sum, decoded_bits[18] & 1);
         return false;
     }
 
@@ -1495,12 +1541,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     fflush(stderr);
 
     // Extract bits from HT-SIG0 (rx52_a)
+    // rx52_a is already rotation-compensated by apply_htsig_rotation()
+    // So we just need to do channel equalization (divide by H)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
         if (h_mag < 0.1f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
+            // Channel equalization: eq = rx / H
             eq = safe_div(rx52_a[i], H52[i]);
         }
         // Probe eq phase
@@ -1543,14 +1592,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     }
 
     // HT-SIG Deinterleaving: undo the 802.11 permutation
-    // Forward interleaver: j = 3*(k%16) + k/16
-    // Inverse (deinterleaver): j = 16*(k%3) + k/3
-    for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;
+    // Forward interleaver: j = 3*(k%16) + k/16 (maps k -> j)
+    // Inverse (deinterleaver): k = 16*(j%3) + j/3 (maps j -> k)
+    // Correct formula: deintl[k] = in[j] where k = 16*(j%3) + j/3
+    for (int j = 0; j < 48; j++) {
+        const int k = 16 * (j % 3) + j / 3;
         deintl48_a[k] = eqbits48_a[j] & 0x1;
     }
-    for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;
+    for (int j = 0; j < 48; j++) {
+        const int k = 16 * (j % 3) + j / 3;
         deintl48_b[k] = eqbits48_b[j] & 0x1;
     }
 
@@ -1560,16 +1610,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     }
 
     // Debug: print full 96 encoded bits before Viterbi
-    std::fprintf(stderr, "[VITERBI_IN] enc96[0:48] = ");
-    for (int i = 0; i < 48; i++) {
-        std::fprintf(stderr, "%d", enc96[i]);
+    fprintf(stderr, "[VITERBI_IN] call_id=%d enc96[0:24]=", s_call_id);
+    for (int i = 0; i < 24; i++) {
+        fprintf(stderr, "%d", enc96[i]);
     }
-    std::fprintf(stderr, "\n");
-    std::fprintf(stderr, "[VITERBI_IN] enc96[48:96] = ");
-    for (int i = 48; i < 96; i++) {
-        std::fprintf(stderr, "%d", enc96[i]);
-    }
-    std::fprintf(stderr, "\n");
+    fprintf(stderr, "\n");
+    std::fflush(stderr);
 
     std::vector<uint8_t> dec48;
     if (!viterbi_decode_133_171(enc96, 96, dec48)) {
@@ -1582,9 +1628,9 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     const uint8_t* decoded_bits = dec48.data();
 
-    // Debug: print first 10 decoded bits
-    std::fprintf(stderr, "[VITERBI_OUT] dec48[0:10] = ");
-    for (int i = 0; i < 10; i++) {
+    // Debug: print first 24 decoded bits (MCS + reserved + length)
+    std::fprintf(stderr, "[VITERBI_OUT] dec48[0:24] = ");
+    for (int i = 0; i < 24; i++) {
         std::fprintf(stderr, "%d", decoded_bits[i] & 1);
     }
     std::fprintf(stderr, "\n");
@@ -1669,6 +1715,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     out_mcs = mcs;
     out_sgi = short_gi;
     out_agg = aggregation;
+
+    // HT-SIG decode SUCCESS - this is the only return true in decode_htsig_from_rotated
+    fprintf(stderr, "[DECODE_SUCCESS] mcs=%d len=%d agg=%d agg2=%d\n", mcs, psdu_length, aggregation ? 1 : 0, (int)out_agg);
+    fflush(stderr);
     return true;
 }
 
@@ -1748,7 +1798,16 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_htsig0_rel(-1),
       d_htsig1_rel(-1),
       d_data_start_rel(kDataStartRel),
-      d_is_ht_frame(false)
+      d_is_ht_frame(false),
+      d_wifi_start_processed(false)
+#if ENABLE_FRAME_COUNTERS
+      ,
+      d_frames_total(0),
+      d_frames_ht_parse_ok(0),
+      d_frames_ht_parse_failed(0),
+      d_frames_lsig_parse_ok(0),
+      d_frames_lsig_parse_failed(0)
+#endif
 {
     d_bpsk = make_bpsk_constellation();
     d_qpsk = make_qpsk_constellation();
@@ -1769,7 +1828,17 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     std::fflush(stderr);
 }
 
-frame_equalizer_impl::~frame_equalizer_impl() {}
+frame_equalizer_impl::~frame_equalizer_impl() {
+#if ENABLE_FRAME_COUNTERS
+    std::fprintf(stderr, "[EQ][STATS] frames_total=%llu lsig_ok=%llu lsig_fail=%llu htsig_ok=%llu htsig_fail=%llu\n",
+                 (unsigned long long)d_frames_total,
+                 (unsigned long long)d_frames_lsig_parse_ok,
+                 (unsigned long long)d_frames_lsig_parse_failed,
+                 (unsigned long long)d_frames_ht_parse_ok,
+                 (unsigned long long)d_frames_ht_parse_failed);
+    std::fflush(stderr);
+#endif
+}
 
 void frame_equalizer_impl::set_algorithm(Equalizer algo)
 {
@@ -1832,6 +1901,8 @@ void frame_equalizer_impl::reset_frame_state(void)
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
+
+    d_wifi_start_processed = false;
 }
 
 bool frame_equalizer_impl::parse_signal(const uint8_t* decoded_bits,
@@ -2141,6 +2212,25 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
         const bool wifi_start = (wifi_offsets.count(abs_in_off) != 0);
 
+        // Check if current frame is complete BEFORE processing this symbol
+        // This ensures we reset state before treating the next symbol as part of current frame
+#if DEBUG_FRAME_FLOW
+        if (d_in_frame && d_have_ht_header && d_frame_symbols > 0) {
+            const int end_rel = d_data_start_rel + d_frame_symbols;
+            std::printf("[EQ][FLOW] frame_complete_check abs=%llu sym_idx=%d end_rel=%d in_frame=%d have_ht=%d symbols=%d\n",
+                        (unsigned long long)abs_in_off, d_sym_idx, end_rel,
+                        d_in_frame ? 1 : 0, d_have_ht_header ? 1 : 0, d_frame_symbols);
+            if (d_sym_idx >= end_rel - 1) {
+                // Frame is complete - reset before processing next symbol
+                // Using end_rel - 1 to trigger one symbol earlier, before the first "out-of-frame" symbol is processed
+                std::printf("[EQ][FLOW] frame_complete_reset abs=%llu sym_idx=%d end_rel=%d\n",
+                            (unsigned long long)abs_in_off, d_sym_idx, end_rel);
+                fflush(stdout);
+                reset_frame_state();
+                d_in_frame = false;
+            }
+        }
+
         if (consumed < 12 || wifi_start) {
             std::printf("[EQ][FLOW] abs=%llu wifi_start=%d in_frame=%d sym_idx=%d consumed=%d produced=%d\n",
                         (unsigned long long)abs_in_off,
@@ -2151,6 +2241,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         produced);
             std::fflush(stdout);
         }
+#endif
 
         if (!d_in_frame) {
             if (!wifi_start) {
@@ -2162,31 +2253,53 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_in_frame = true;
             reset_frame_state();
 
+#if DEBUG_FRAME_FLOW
             std::printf("[EQ][FLOW] enter-frame abs=%llu\n",
                         (unsigned long long)abs_in_off);
             std::fflush(stdout);
+#endif
 
         } else if (wifi_start) {
-            bool allow_takeover = false;
+            // A wifi_start tag indicates the START of a new frame.
+            bool should_takeover = false;
 
             if (!d_have_ht_header) {
-                allow_takeover = true;
-            } else {
-                const int end_rel = d_data_start_rel + d_frame_symbols - 1;
-                if (d_sym_idx > end_rel) {
-                    allow_takeover = true;
+                // No valid HT header parsed yet - this is definitely a new frame
+                should_takeover = true;
+            } else if (d_frame_symbols > 0) {
+                // We have a valid HT header with known frame length
+                // Only take over if we've passed the end of the expected frame
+                const int end_rel = d_data_start_rel + d_frame_symbols;
+                if (d_sym_idx >= end_rel - 1) {
+                    should_takeover = true;
                 }
             }
+            // If d_have_ht_header=1 but d_frame_symbols=0, don't take over
+            // (this shouldn't normally happen in well-formed frames)
 
-            if (allow_takeover) {
+            if (should_takeover) {
                 reset_frame_state();
                 d_in_frame = true;
 
-                std::printf("[EQ][FLOW] frame-takeover abs=%llu allow=%d\n",
+#if DEBUG_FRAME_FLOW
+                std::printf("[EQ][FLOW] frame-takeover abs=%llu (d_have_ht_header=%d, frame_symbols=%d, sym_idx=%d)\n",
                             (unsigned long long)abs_in_off,
-                            allow_takeover ? 1 : 0);
-                std::fflush(stdout);
+                            d_have_ht_header ? 1 : 0,
+                            d_frame_symbols,
+                            d_sym_idx);
+                fflush(stdout);
+#endif
             }
+#if DEBUG_FRAME_FLOW
+            else {
+                std::printf("[EQ][FLOW] ignoring_wifi_start_during_active_frame abs=%llu (d_have_ht_header=%d, frame_symbols=%d, sym_idx=%d)\n",
+                            (unsigned long long)abs_in_off,
+                            d_have_ht_header ? 1 : 0,
+                            d_frame_symbols,
+                            d_sym_idx);
+                fflush(stdout);
+            }
+#endif
         }
 
         // ------------------------------------------------------------
@@ -2405,8 +2518,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
         std::fflush(stdout);
 
         // 真正的 HT-SIG 解析门条件，必须保留
-        std::printf("[EQ][GATE_DETAIL] d_sym_idx=%d, kHtSig1Rel=%d, d_have_ht_header=%d\n",
-                   d_sym_idx, kHtSig1Rel, d_have_ht_header ? 1 : 0);
+        std::printf("[EQ][GATE_DETAIL] d_sym_idx=%d, d_int_counter=%d, kHtSig1Rel=%d, d_have_ht_header=%d\n",
+                   d_sym_idx, d_internal_symbol_counter, kHtSig1Rel, d_have_ht_header ? 1 : 0);
         std::printf("[EQ][GATE_DETAIL] valid flags: lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d\n",
                    d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
                    d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
@@ -2554,11 +2667,24 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     fprintf(stderr, "%.3f+%.3fi ", d_early_eqsym[3][i].real(), d_early_eqsym[3][i].imag());
                 }
                 fprintf(stderr, "\n");
-                // DEBUG: Print actual pilot values (indices 48-51) to verify they're correct
+                // DEBUG: Print actual pilot values (indices 48-51)
                 fprintf(stderr, "[DEBUG2] HT-SIG0 PILOTS (indices 48-51): ");
                 for (int i = 48; i < 52; i++) {
                     fprintf(stderr, "idx[%d]=%.3f+%.3fi ", i,
                             d_early_eqsym[3][i].real(), d_early_eqsym[3][i].imag());
+                }
+                fprintf(stderr, "\n");
+                // DEBUG: Print HT-SIG1 data (d_early_eqsym[4])
+                fprintf(stderr, "[DEBUG2] d_early_eqsym[4][0:4] HT-SIG1 = ");
+                for (int i = 0; i < 4; i++) {
+                    fprintf(stderr, "%.3f+%.3fi ", d_early_eqsym[4][i].real(), d_early_eqsym[4][i].imag());
+                }
+                fprintf(stderr, "\n");
+                fprintf(stderr, "[DEBUG2] HT-SIG1 valid=%d PILOTS (indices 48-51): ",
+                        d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
+                for (int i = 48; i < 52; i++) {
+                    fprintf(stderr, "idx[%d]=%.3f+%.3fi ", i,
+                            d_early_eqsym[4][i].real(), d_early_eqsym[4][i].imag());
                 }
                 fprintf(stderr, "\n");
                 fflush(stderr);
@@ -2604,8 +2730,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            parsed_mcs,
                                                            parsed_sgi,
                                                            parsed_agg)) {
+                                std::fprintf(stderr, "[DEBUG] decode returned FALSE, continuing\n");
+                                fflush(stderr);
                                 continue;
                             }
+
+                            std::fprintf(stderr, "[DEBUG] decode returned TRUE! parsed_mcs=%d parsed_len=%d\n", parsed_mcs, parsed_len);
+                            fflush(stderr);
 
                             d_have_lsig = true;
                             d_lsig_rel = kLSigRel;
@@ -2618,12 +2749,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                             set_ht_frame_params_from_mcs_len(parsed_mcs, parsed_len);
 
+#if ENABLE_FRAME_COUNTERS
+                            d_frames_total++;
+                            d_frames_lsig_parse_ok++;
+                            d_frames_ht_parse_ok++;
+#endif
                             std::printf("[EQ][L-SIG] parsed OK: rel=%d inv=%d len=%d\n",
                                         kLSigRel, inv_lsig, lsig_len);
                             std::printf("[EQ][HT-SIG] parsed OK: lsig=%d htsig=%d/%d rot=%d invA=%d invB=%d mcs=%d len=%d sgi=%d agg=%d data_start=%d n_sym=%d\n",
                                         kLSigRel,
                                     kHtSig0Rel,
                                     kHtSig1Rel,
+                                    rot,
                                     inv_a,
                                     inv_b,
                                     parsed_mcs,
@@ -2641,6 +2778,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             if (!found) {
+#if ENABLE_FRAME_COUNTERS
+                d_frames_total++;
+                d_frames_lsig_parse_failed++;
+                d_frames_ht_parse_failed++;
+#endif
                 std::printf("[EQ][HT-SIG] parse failed: lsig=%d htsig=%d/%d\n",
                             kLSigRel, kHtSig0Rel, kHtSig1Rel);
                 // 调试：打印L-SIG和HT-SIG比特
@@ -2820,15 +2962,21 @@ int frame_equalizer_impl::general_work(int noutput_items,
         d_sym_idx++;
         d_internal_symbol_counter++;  // Track actual symbol count per FFT output
 
+        // Check if frame is complete BEFORE reset (since reset clears d_have_ht_header)
+        bool should_reset = false;
         if (d_have_ht_header && d_frame_symbols > 0) {
             const int end_rel = d_data_start_rel + d_frame_symbols;
-            if (d_sym_idx >= end_rel) {
-                reset_frame_state();
-                d_in_frame = false;
+            if (d_sym_idx >= end_rel - 1) {
+                // Using end_rel - 1 to trigger one symbol earlier
+                should_reset = true;
             }
         }
 
         if (d_in_frame && d_sym_idx > kMaxFrameRel) {
+            should_reset = true;
+        }
+
+        if (should_reset) {
             reset_frame_state();
             d_in_frame = false;
         }

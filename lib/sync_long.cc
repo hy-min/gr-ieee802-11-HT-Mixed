@@ -257,9 +257,10 @@ public:
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
                     d_frame_start = lower_peak + 2;
-                    // Force to 192 for proper FFT window alignment
-                    // NOTE: This is known to work; the correlation detector is unreliable
-                    d_frame_start = 192;
+                    // Force to 176 for L-LTF0 DATA start (IEEE standard)
+                    // L-STF ends at 160, L-LTF0 DATA starts at 176
+                    fprintf(stderr, "[SYNC_LONG] HT-mode detected=%d, forcing to 176\n", d_frame_start);
+                    d_frame_start = 176;
                     fprintf(stderr, "[SYNC_LONG] HT-mode LTF0 DATA start: d_frame_start=%d (lower_peak=%d)\n", d_frame_start, lower_peak);
                     d_freq_offset = d_freq_offset_short;
                     return;
@@ -279,8 +280,9 @@ public:
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
                     d_frame_start = lower_peak + 2;
-                    // Force to 192 for proper FFT window alignment
-                    d_frame_start = 192;
+                    // Force to 176 for L-LTF0 DATA start (IEEE standard)
+                    fprintf(stderr, "[SYNC_LONG] Legacy-mode detected=%d, forcing to 176\n", d_frame_start);
+                    d_frame_start = 176;
                     fprintf(stderr, "[SYNC_LONG] Legacy-mode LTF0 DATA start: d_frame_start=%d\n", d_frame_start);
                     d_freq_offset = d_freq_offset_short;
                     return;
@@ -292,8 +294,9 @@ public:
         if (!vec.empty()) {
             int peak_pos = get<1>(vec[0]);
             d_frame_start = peak_pos + 2;
-            // Force to 192 for proper FFT window alignment
-            d_frame_start = 192;
+            // Force to 176 for L-LTF0 DATA start (IEEE standard)
+            fprintf(stderr, "[SYNC_LONG] Method2 detected=%d, forcing to 176\n", d_frame_start);
+            d_frame_start = 176;
             fprintf(stderr, "[SYNC_LONG] Method2 frame start: d_frame_start=%d\n", d_frame_start);
             d_freq_offset = d_freq_offset_short;
             return;
