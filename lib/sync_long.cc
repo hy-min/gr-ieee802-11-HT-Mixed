@@ -177,6 +177,11 @@ public:
         }
 
         case RESET: {
+            // CRITICAL: Reset d_count to 0 so the transition happens at exactly 64 samples
+            // After COPY completes, d_count ≈ 640. Without reset, (640 + o) % 64 == 0
+            // only when o = 384, causing RESET to output 384 zeros instead of 64!
+            d_count = 0;
+
             // In RESET, we output zeros until we've output at least 1 sample
             // and the modulo condition is met. This prevents immediate
             // COPY → RESET → SYNC transition when d_count + o is exactly 64.
