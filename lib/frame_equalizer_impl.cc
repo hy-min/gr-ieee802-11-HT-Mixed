@@ -2264,8 +2264,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
             bool should_takeover = false;
 
             if (!d_have_ht_header) {
-                // No valid HT header parsed yet - this is definitely a new frame
-                should_takeover = true;
+                // HT-SIG not yet parsed - check if we're past the parsing window
+                // HT-SIG consists of 2 symbols (sym 3-4), so if we're at sym >= 5,
+                // the window has passed and this is likely a genuine new frame
+                if (d_sym_idx >= 5) {
+                    should_takeover = true;
+                }
+                // Otherwise stay with current frame - HT-SIG may still succeed
             } else if (d_frame_symbols > 0) {
                 // We have a valid HT header with known frame length
                 // Only take over if we've passed the end of the expected frame
