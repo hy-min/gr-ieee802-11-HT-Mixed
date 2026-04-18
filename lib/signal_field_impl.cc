@@ -213,6 +213,13 @@ static void generate_ht_sig_header(char* out,
     // n_sym = ceil((16 + 8*1 + 6)/24) = ceil(30/24)=2  -> n_data_bits = 48
     frame_param ht_frame(sig_ofdm, 1);
 
+    // Debug: print TX HT-SIG 48 original bits BEFORE convolutional encoding
+    // These are what Viterbi should decode (before tail bits)
+    fprintf(stderr, "[TX_HT_SIG] ht_bits[0:48] = ");
+    for (int i = 0; i < 48; i++) fprintf(stderr, "%d", ht_bits[i] & 0x1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+
     char encoded[96];
     convolutional_encoding(ht_bits, encoded, ht_frame);
     interleave(encoded, out, ht_frame, sig_ofdm);

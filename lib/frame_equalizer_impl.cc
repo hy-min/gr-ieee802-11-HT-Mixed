@@ -1628,12 +1628,20 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     const uint8_t* decoded_bits = dec48.data();
 
-    // Debug: print first 24 decoded bits (MCS + reserved + length)
-    std::fprintf(stderr, "[VITERBI_OUT] dec48[0:24] = ");
-    for (int i = 0; i < 24; i++) {
-        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    // Debug: print ALL 48 decoded bits (MCS + reserved + length + CRC + tail)
+    fprintf(stderr, "[VITERBI_OUT] dec48[0:48] = ");
+    for (int i = 0; i < 48; i++) {
+        fprintf(stderr, "%d", decoded_bits[i] & 1);
     }
-    std::fprintf(stderr, "\n");
+    fprintf(stderr, "\n");
+
+    // Print TX expected: MCS=0, CBW=0, length=38, reserved=0
+    // TX ht_bits[0:23] = MCS(7) + CBW(1) + length_low(8) = "000000001100100" (LSB-first)
+    // TX ht_bits[24:33] = length_high(7) + reserved(3) = "0000000"
+    // TX ht_bits[34:41] = CRC = 0x0d = "10110000" (LSB-first)
+    // TX ht_bits[42:47] = tail = "000000"
+    fprintf(stderr, "[TX_EXPECTED] ht_bits[0:47] should be: 000000001100100000000000000011010000000000\n");
+    fflush(stderr);
 
     int mcs = 0;
     int psdu_length = 0;
