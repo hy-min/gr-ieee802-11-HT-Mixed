@@ -2269,23 +2269,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
         } else if (wifi_start) {
             // A wifi_start tag indicates the START of a new frame.
+            // MOAT: Add length-aware protection to prevent premature reset during HT-DATA
             bool should_takeover = false;
 
             if (!d_have_ht_header) {
                 // HT-SIG not yet parsed - check if we're past the parsing window
-                // HT-SIG consists of 2 symbols (sym 3-4), so if we're at sym >= 5,
-                // the window has passed and this is likely a genuine new frame
-                if (d_sym_idx >= 5) {
+                // HT-SIG consists of 2 symbols (rel 3-4), HT-STF+HT-LTF are rel 5-6.
+                // Wait until kDataStartRel (7) to allow takeover - this ensures
+                // HT-SIG parsing at rel 4 completes before any takeover decision.
+                if (d_sym_idx >= kDataStartRel) {
                     should_takeover = true;
                 }
                 // Otherwise stay with current frame - HT-SIG may still succeed
             } else if (d_frame_symbols > 0) {
                 // We have a valid HT header with known frame length
-                // Only take over if we've passed the end of the expected frame
+                // MOAT: Only take over if we've ACTUALLY finished the frame
+                // This blocks the "mid-HT-DATA premature reset" bug
                 const int end_rel = d_data_start_rel + d_frame_symbols;
                 if (d_sym_idx >= end_rel - 1) {
                     should_takeover = true;
                 }
+                // else: we're in the middle of HT-DATA (sym_idx < end_rel - 1) - IGNORE new wifi_start
             }
             // If d_have_ht_header=1 but d_frame_symbols=0, don't take over
             // (this shouldn't normally happen in well-formed frames)
@@ -2303,16 +2307,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 fflush(stdout);
 #endif
             }
-#if DEBUG_FRAME_FLOW
-            else {
-                std::printf("[EQ][FLOW] ignoring_wifi_start_during_active_frame abs=%llu (d_have_ht_header=%d, frame_symbols=%d, sym_idx=%d)\n",
-                            (unsigned long long)abs_in_off,
-                            d_have_ht_header ? 1 : 0,
-                            d_frame_symbols,
-                            d_sym_idx);
-                fflush(stdout);
-            }
-#endif
         }
 
         // ------------------------------------------------------------
@@ -2322,12 +2316,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // ------------------------------------------------------------
         // Use d_internal_symbol_counter for symbol type determination
         // d_sym_idx may be out of sync due to 'continue' path skipping its increment
-        std::fprintf(stderr, "[EQ][PRE_EXTRACT] d_sym_idx=%d d_internal_counter=%d in_frame=%d\n",
-                     d_sym_idx, d_internal_symbol_counter, d_in_frame ? 1 : 0);
-        std::fflush(stderr);
-        std::printf("[EQ][IDX_CHECK] d_sym_idx=%d d_internal_counter=%d condition=%d\n",
-                    d_sym_idx, d_internal_symbol_counter,
-                    (d_internal_symbol_counter >= 0 && d_internal_symbol_counter < 8) ? 1 : 0);
         if (d_internal_symbol_counter >= 0 && d_internal_symbol_counter < 8) {
             // 调试：记录提取时的符号索引 - use internal counter for type
             std::fprintf(stderr, "[EXTRACT_CALL] internal_counter=%d, type=%s\n", d_internal_symbol_counter,
@@ -2977,8 +2965,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
         // Check if frame is complete BEFORE reset (since reset clears d_have_ht_header)
         bool should_reset = false;
+        int end_rel = 0;
         if (d_have_ht_header && d_frame_symbols > 0) {
-            const int end_rel = d_data_start_rel + d_frame_symbols;
+            end_rel = d_data_start_rel + d_frame_symbols;
             if (d_sym_idx >= end_rel - 1) {
                 // Using end_rel - 1 to trigger one symbol earlier
                 should_reset = true;
@@ -2990,6 +2979,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
         }
 
         if (should_reset) {
+            std::printf("[EQ][RESET] triggering reset: d_sym_idx=%d end_rel=%d have_ht=%d frame_symbols=%d\n",
+                        d_sym_idx, end_rel, d_have_ht_header ? 1 : 0, d_frame_symbols);
+            fflush(stdout);
             reset_frame_state();
             d_in_frame = false;
         }
