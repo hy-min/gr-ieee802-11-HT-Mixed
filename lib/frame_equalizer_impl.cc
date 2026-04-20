@@ -2284,12 +2284,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
             } else if (d_frame_symbols > 0) {
                 // We have a valid HT header with known frame length
                 // MOAT: Only take over if we've ACTUALLY finished the frame
-                // This blocks the "mid-HT-DATA premature reset" bug
+                // FIX: Use >= end_rel (not >= end_rel - 1) because:
+                // - end_rel = d_data_start_rel + d_frame_symbols = 7 + 13 = 20
+                // - d_sym_idx=19 means we just output the LAST data symbol (sym19)
+                // - resetting at d_sym_idx=19 (end_rel - 1) is TOO EARLY - we haven't
+                //   finished transmitting all data symbols yet
+                // - d_sym_idx >= end_rel means d_sym_idx=20, which is AFTER the last
+                //   symbol has been output and we're ready to reset
                 const int end_rel = d_data_start_rel + d_frame_symbols;
-                if (d_sym_idx >= end_rel - 1) {
+                if (d_sym_idx >= end_rel) {
                     should_takeover = true;
                 }
-                // else: we're in the middle of HT-DATA (sym_idx < end_rel - 1) - IGNORE new wifi_start
+                // else: we're in the middle of HT-DATA (sym_idx < end_rel) - IGNORE new wifi_start
             }
             // If d_have_ht_header=1 but d_frame_symbols=0, don't take over
             // (this shouldn't normally happen in well-formed frames)
@@ -2968,8 +2974,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
         int end_rel = 0;
         if (d_have_ht_header && d_frame_symbols > 0) {
             end_rel = d_data_start_rel + d_frame_symbols;
-            if (d_sym_idx >= end_rel - 1) {
-                // Using end_rel - 1 to trigger one symbol earlier
+            // FIX: Use >= end_rel (not >= end_rel - 1) because:
+            // - end_rel = 7 + 13 = 20
+            // - d_sym_idx=19 means we just output the LAST data symbol (sym19)
+            // - resetting at d_sym_idx >= end_rel - 1 (i.e. >= 19) is TOO EARLY
+            // - we should reset at d_sym_idx >= end_rel (i.e. >= 20) to allow
+            //   the LAST symbol to be fully processed before resetting
+            if (d_sym_idx >= end_rel) {
                 should_reset = true;
             }
         }
