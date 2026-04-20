@@ -445,6 +445,7 @@ public:
             ++i;
         }
 
+        dout << "[decode_mac][DEBUG] work ending: i=" << i << " ninput=" << ninput_items.size() << " in_frame=" << d_in_frame << std::endl;
         consume(0, i);
         return 0;
     }
