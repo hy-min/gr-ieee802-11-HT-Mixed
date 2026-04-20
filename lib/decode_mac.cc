@@ -342,6 +342,11 @@ public:
 
                     if (d_in_frame && d_items_copied < d_items_expected) {
                         log_incomplete("new_frame_tag_before_complete");
+                        dout << "[decode_mac][DEBUG] new_frame_tag: abs_in_offset=" << (nread + i)
+                             << " copied=" << d_items_copied
+                             << " expected=" << d_items_expected
+                             << " missing=" << (d_items_expected - d_items_copied)
+                             << std::endl;
                     }
 
                     d_meta = pmt::make_dict();
