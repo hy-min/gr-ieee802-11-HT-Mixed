@@ -445,7 +445,13 @@ private:
         char* symbols          = (char*)calloc(frame.n_sym * data_carriers, sizeof(char));
 
         generate_bits(psdu, data_bits, frame);
+        fprintf(stderr, "[TX_SCRAMBLER] seed=%d, first16bits before scramble: ", d_scrambler);
+        for (int i = 0; i < 16; i++) fprintf(stderr, "%d", data_bits[i]);
+        fprintf(stderr, "\n");
         scramble(data_bits, scrambled_data, frame, d_scrambler++);
+        fprintf(stderr, "[TX_SCRAMBLER] first16bits after scramble: ");
+        for (int i = 0; i < 16; i++) fprintf(stderr, "%d", scrambled_data[i]);
+        fprintf(stderr, "\n");
         if (d_scrambler > 127) {
             d_scrambler = 1;
         }

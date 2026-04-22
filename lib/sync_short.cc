@@ -23,8 +23,8 @@
 using namespace gr::ieee802_11;
 
 // HT-Mixed mode: L-SIG(80) + HT-SIG(160) + HT-STF(80) + HT-LTF(160+) = ~480+ samples after L-STF
-// Increase MIN_GAP to 1200 so we don't re-trigger during HT preamble
-static const int MIN_GAP = 1200;
+// Increase MIN_GAP to 2000 so we don't re-trigger during HT preamble (1200 was too small, caused false RESET at offset 1201)
+static const int MIN_GAP = 2000;
 static const int MAX_SAMPLES = 5400 * 80;
 
 class sync_short_impl : public sync_short

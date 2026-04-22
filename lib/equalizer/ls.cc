@@ -85,7 +85,8 @@ void ls::equalize(gr_complex* in,
                   uint8_t* bits,
                   std::shared_ptr<gr::digital::constellation> mod)
 {
-    fprintf(stderr, "[LS_EQ] equalize called with n=%d\n", n);
+    fprintf(stderr, "[LS_EQ] equalize called with n=%d, this=%p d_H_addr=%p\n",
+            n, (void*)this, (void*)d_H);
     if (n == 0) {
         std::memcpy(d_H, in, 64 * sizeof(gr_complex));
         // Debug: print first few d_H values
@@ -108,6 +109,11 @@ void ls::equalize(gr_complex* in,
         fprintf(stderr, "[LS_EQ] n=1 FFT_LONG[6-10] = ");
         for (int i = 6; i < 10; i++) {
             fprintf(stderr, "%.3f+%.3fi ", FFT_LONG[i].real(), FFT_LONG[i].imag());
+        }
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[LS_EQ] n=1 d_H[6-10] = ");
+        for (int i = 6; i < 10; i++) {
+            fprintf(stderr, "%.3f+%.3fi ", d_H[i].real(), d_H[i].imag());
         }
         fprintf(stderr, "\n");
 

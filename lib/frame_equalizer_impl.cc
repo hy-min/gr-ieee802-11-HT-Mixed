@@ -252,6 +252,54 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
+    // Compute BEFORE-CPE raw values for first 4 data carriers (indices 0-3 of kTxOrder52)
+    // kTxOrder52[0..3] = -28, -27, -26, -25 -> FFT bins via sc_to_fft_bin
+    if (data_sym_idx >= 0 && data_sym_idx <= 2) {
+        fprintf(stderr, "[HTDATA_DEBUG] data_sym_idx=%d cpe=%.3f rad (%.1f deg) rot=%.4f+%.4fi\n",
+                data_sym_idx, cpe, cpe*180/M_PI, rot.real(), rot.imag());
+        fprintf(stderr, "[HTDATA_DEBUG] BEFORE-CPE (first4 of kTxOrder52): ");
+        for (int j = 0; j < 4; j++) {
+            int sc = kTxOrder52[j];
+            int bin = sc_to_fft_bin(sc);
+            fprintf(stderr, "sc=%3d bin=%2d raw=%.3f+%.3fi ",
+                    sc, bin, sym64[bin].real(), sym64[bin].imag());
+        }
+        fprintf(stderr, "\n");
+
+        // Apply CPE and show after
+        gr_complex after[4];
+        for (int j = 0; j < 4; j++) {
+            int sc = kTxOrder52[j];
+            int bin = sc_to_fft_bin(sc);
+            after[j] = sym64[bin] * rot;
+        }
+        fprintf(stderr, "[HTDATA_DEBUG] AFTER-CPE (first4): ");
+        for (int j = 0; j < 4; j++) {
+            fprintf(stderr, "%.3f+%.3fi ", after[j].real(), after[j].imag());
+        }
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[HTDATA_DEBUG] hard_bit BEFORE: ");
+        for (int j = 0; j < 4; j++) {
+            int sc = kTxOrder52[j];
+            int bin = sc_to_fft_bin(sc);
+            fprintf(stderr, "%d", (sym64[bin].real() >= 0) ? 1 : 0);
+        }
+        fprintf(stderr, " AFTER: ");
+        for (int j = 0; j < 4; j++) {
+            fprintf(stderr, "%d", (after[j].real() >= 0) ? 1 : 0);
+        }
+        fprintf(stderr, "\n");
+
+        // Check HT-SIG pilot rotation state (d_have_ht_header)
+        fprintf(stderr, "[HTDATA_DEBUG] RX phase at pilot SC{-21} bin=%d = %.3f+%.3fi arg=%.1f deg\n",
+                sc_to_fft_bin(-21), sym64[sc_to_fft_bin(-21)].real(), sym64[sc_to_fft_bin(-21)].imag(),
+                std::arg(sym64[sc_to_fft_bin(-21)]) * 180 / M_PI);
+        fprintf(stderr, "[HTDATA_DEBUG] RX phase at pilot SC{+7} bin=%d = %.3f+%.3fi arg=%.1f deg\n",
+                sc_to_fft_bin(7), sym64[sc_to_fft_bin(7)].real(), sym64[sc_to_fft_bin(7)].imag(),
+                std::arg(sym64[sc_to_fft_bin(7)]) * 180 / M_PI);
+        fflush(stderr);
+    }
+
     for (int i = 0; i < 52; i++) {
         out52[i] = sym64[sc_to_fft_bin(kTxOrder52[i])] * rot;
     }
@@ -420,6 +468,26 @@ static const gr_complex kLltfPilotTX[4] = {
 static constexpr int kHeaderPilotBase[4] = {
     1, 1, 1, -1
 };
+
+// HT-LTF reference values for 52 data subcarriers (kTxOrder52 order)
+// These are the TX reference values for HT-LTF training symbols
+// Derived from IEEE 802.11n HT-LTF definition for 20MHz
+// For single spatial stream, all data subcarriers are +1 (BPSK)
+// The pilots have known phases as defined in kLltfPilotSign
+static constexpr gr_complex kHtLtfDataRef[52] = {
+    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
+    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
+    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f)
+};
+
+// HT-LTF pilot signs (same as L-LTF for 20MHz)
+static constexpr int kHtLtfPilotSign[4] = { 1, -1, 1, 1 };
 
 // ============================================================
 // Header direct extraction from raw 64 FFT bins
@@ -2329,10 +2397,33 @@ int frame_equalizer_impl::general_work(int noutput_items,
                        d_internal_symbol_counter == kLltf1Rel ? "L-LTF1" :
                        d_internal_symbol_counter == kLSigRel ? "L-SIG" :
                        d_internal_symbol_counter == kHtSig0Rel ? "HT-SIG0" :
-                       d_internal_symbol_counter == kHtSig1Rel ? "HT-SIG1" : "OTHER");
+                       d_internal_symbol_counter == kHtSig1Rel ? "HT-SIG1" :
+                       d_internal_symbol_counter == kHtTrain0Rel ? "HT-STF" :
+                       d_internal_symbol_counter == kHtTrain1Rel ? "HT-LTF1" : "OTHER");
             std::fflush(stderr);
             // Use d_internal_symbol_counter for array indexing - it tracks actual symbol count
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
+
+            // DEBUG: Print HT-LTF1 (rel=6) raw values to verify it's captured
+            if (d_internal_symbol_counter == kHtTrain1Rel) {
+                fprintf(stderr, "[HT-LTF1_CAPTURE] internal_counter=%d (HT-LTF1), raw sym64[6-9]: ", d_internal_symbol_counter);
+                for (int i = 6; i < 10; i++) {
+                    fprintf(stderr, "%.3f+%.3fi ", sym64[i].real(), sym64[i].imag());
+                }
+                fprintf(stderr, "\n");
+                fprintf(stderr, "[HT-LTF1_CAPTURE] d_early_eqsym[6][0-3] (data carriers): ");
+                for (int i = 0; i < 4; i++) {
+                    fprintf(stderr, "%.3f+%.3fi ", d_early_eqsym[6][i].real(), d_early_eqsym[6][i].imag());
+                }
+                fprintf(stderr, "\n");
+                fprintf(stderr, "[HT-LTF1_CAPTURE] d_early_eqsym[6][48-51] (pilots): ");
+                for (int i = 48; i < 52; i++) {
+                    fprintf(stderr, "[%d]=%.3f+%.3fi ", i, d_early_eqsym[6][i].real(), d_early_eqsym[6][i].imag());
+                }
+                fprintf(stderr, "\n");
+                fflush(stderr);
+                // TODO: Update d_equalizer->d_H with HT-LTF-based channel estimate at this point
+            }
             // DEBUG: Print raw FFT bins for HT-SIG verification
             std::fprintf(stderr, "[EXTRACT_HT_SIG] internal_counter=%d, sym64[6-10] = ", d_internal_symbol_counter);
             for (int i = 6; i < 10; i++) {
@@ -2355,6 +2446,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
             std::printf("[EQ][VALID_SET] internal_counter=%d, valid=%d\n",
                         d_internal_symbol_counter, d_early_eqsym_valid[d_internal_symbol_counter] ? 1 : 0);
+            if (d_internal_symbol_counter == kHtTrain1Rel) {
+                std::printf("[EQ][HT-LTF1_VALID] d_early_eqsym_valid[6] was just set to TRUE!\n");
+                fflush(stdout);
+            }
 
             // 符号索引调试 - use internal counter for type determination
             const char* sym_type = "UNKNOWN";
@@ -2855,6 +2950,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 (data_sym_idx == 31);
 
             if (trace_sym) {
+                // DEBUG: Print raw_eq52 for first 4 carriers before any CPE
+                fprintf(stderr, "[HTDATA_TRACE] data_sym_idx=%d raw_eq52[0-3]: ", data_sym_idx);
+                for (int i = 0; i < 4; i++) {
+                    fprintf(stderr, "%.3f+%.3fi ", raw_eq52[i].real(), raw_eq52[i].imag());
+                }
+                fprintf(stderr, "\n");
+
                 uint8_t out_bits52[52];
                 for (int i = 0; i < 52; i++) {
                     out_bits52[i] = hard_bit_from_complex(out52[i]);
