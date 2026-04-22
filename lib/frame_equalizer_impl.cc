@@ -2296,9 +2296,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
             std::printf("[EQ][FLOW] frame_complete_check abs=%llu sym_idx=%d end_rel=%d in_frame=%d have_ht=%d symbols=%d\n",
                         (unsigned long long)abs_in_off, d_sym_idx, end_rel,
                         d_in_frame ? 1 : 0, d_have_ht_header ? 1 : 0, d_frame_symbols);
-            if (d_sym_idx >= end_rel - 1) {
+            if (d_sym_idx >= end_rel) {
                 // Frame is complete - reset before processing next symbol
-                // Using end_rel - 1 to trigger one symbol earlier, before the first "out-of-frame" symbol is processed
+                // Using end_rel (not end_rel - 1) to allow the LAST symbol to be
+                // fully processed before resetting
                 std::printf("[EQ][FLOW] frame_complete_reset abs=%llu sym_idx=%d end_rel=%d\n",
                             (unsigned long long)abs_in_off, d_sym_idx, end_rel);
                 fflush(stdout);

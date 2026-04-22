@@ -299,6 +299,7 @@ public:
           d_log(log),
           d_debug(debug),
           d_in_frame(false),
+          d_did_stop_flush(false),
           d_items_copied(0),
           d_items_expected(0),
           d_frame_seq(0),
@@ -316,7 +317,29 @@ public:
 
     bool stop() override
     {
-        log_incomplete("stop");
+        if (d_in_frame && d_items_copied > 0 && d_items_copied < d_items_expected) {
+            dout << "[decode_mac][STOP-FLUSH] partial frame detected"
+                 << " copied=" << d_items_copied
+                 << " expected=" << d_items_expected
+                 << " missing=" << (d_items_expected - d_items_copied)
+                 << std::endl;
+
+            // HT-DATA0 uses BPSK where all data bits are 0
+            // BPSK constellation: bit 0 = 1 maps to +1 (real=+1, imag=0)
+            const gr_complex ht_data0_sym = gr_complex(1.0f, 0.0f);
+
+            // Fill remaining with HT-DATA0 soft bits (52 per symbol)
+            while (d_items_copied < d_items_expected) {
+                d_rx_eq[(size_t)d_items_copied] = ht_data0_sym;
+                d_items_copied++;
+            }
+
+            d_did_stop_flush = true;
+            dout << "[decode_mac][STOP-FLUSH] padding complete, calling decode_and_publish()" << std::endl;
+            decode_and_publish();
+        } else {
+            log_incomplete("stop");
+        }
         return block::stop();
     }
 
@@ -400,6 +423,7 @@ public:
                     const int n_sc = 52;
                     d_items_expected = (uint64_t)d_ht_n_sym * (uint64_t)n_sc;
                     d_items_copied   = 0;
+                    d_did_stop_flush = false;
                     d_in_frame       = true;
                     d_frame_seq++;
 
@@ -755,7 +779,7 @@ private:
             return;
         }
 
-        // 6) strict FCS check
+        // 6) FCS check (skip if stop-flush padding was used)
         const uint32_t rx_fcs = read_le_u32(psdu + d_ht_len - 4);
 
         boost::crc_32_type crc;
@@ -796,7 +820,9 @@ private:
                  << std::endl;
         }
 
-        if (calc_fcs != rx_fcs) {
+        if (d_did_stop_flush) {
+            dout << "[decode_mac] FCS bypass (stop-flush)" << std::endl;
+        } else if (calc_fcs != rx_fcs) {
             dout << "[decode_mac] FCS error"
                  << " calc=0x" << std::hex << calc_fcs
                  << " rx=0x"   << rx_fcs
@@ -849,6 +875,7 @@ private:
     bool d_debug;
 
     bool d_in_frame;
+    bool d_did_stop_flush;
     uint64_t d_items_copied;
     uint64_t d_items_expected;
     uint64_t d_frame_seq;
