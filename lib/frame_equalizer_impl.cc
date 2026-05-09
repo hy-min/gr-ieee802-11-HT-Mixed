@@ -2261,8 +2261,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 std::fflush(stderr);
             }
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
-            std::printf("[EQ][VALID_SET] internal_counter=%d, valid=%d\n",
-                        d_internal_symbol_counter, d_early_eqsym_valid[d_internal_symbol_counter] ? 1 : 0);
+            std::printf("[EQ][VALID_SET] internal_counter=%d, valid=1, type=%s\n",
+                        d_internal_symbol_counter,
+                        d_internal_symbol_counter == kLltf0Rel ? "L-LTF0" :
+                        d_internal_symbol_counter == kLltf1Rel ? "L-LTF1" :
+                        d_internal_symbol_counter == kLSigRel ? "L-SIG" :
+                        d_internal_symbol_counter == kHtSig0Rel ? "HT-SIG0" :
+                        d_internal_symbol_counter == kHtSig1Rel ? "HT-SIG1" : "OTHER");
 
             // 符号索引调试 - use internal counter for type determination
             const char* sym_type = "UNKNOWN";
@@ -2859,6 +2864,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
         d_current_symbol++;
         d_sym_idx++;
         d_internal_symbol_counter++;  // Track actual symbol count per FFT output
+        std::printf("[EQ][COUNTER] incrementing d_internal_symbol_counter to %d\n", d_internal_symbol_counter);
 
         if (d_have_ht_header && d_frame_symbols > 0) {
             const int end_rel = d_data_start_rel + d_frame_symbols;
