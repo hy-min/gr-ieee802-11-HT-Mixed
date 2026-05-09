@@ -2239,6 +2239,14 @@ int frame_equalizer_impl::general_work(int noutput_items,
                        d_internal_symbol_counter == kHtSig0Rel ? "HT-SIG0" :
                        d_internal_symbol_counter == kHtSig1Rel ? "HT-SIG1" : "OTHER");
             std::fflush(stderr);
+            std::printf("[EQ][EXTRACT] Calling extract for internal_counter=%d, type=%s\n",
+                        d_internal_symbol_counter,
+                        d_internal_symbol_counter == kLltf0Rel ? "L-LTF0" :
+                        d_internal_symbol_counter == kLltf1Rel ? "L-LTF1" :
+                        d_internal_symbol_counter == kLSigRel ? "L-SIG" :
+                        d_internal_symbol_counter == kHtSig0Rel ? "HT-SIG0" :
+                        d_internal_symbol_counter == kHtSig1Rel ? "HT-SIG1" : "OTHER");
+            fflush(stdout);
             // Use d_internal_symbol_counter for array indexing - it tracks actual symbol count
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             // DEBUG: Print raw FFT bins for HT-SIG verification
