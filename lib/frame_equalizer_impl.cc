@@ -1094,6 +1094,13 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
 
+    // Debug: print decoded_bits[0:34] before CRC computation
+    std::fprintf(stderr, "[RX_CRC] decoded_bits[0:34] = ");
+    for (int i = 0; i < 34; i++) {
+        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    }
+    std::fprintf(stderr, "\n");
+    std::fprintf(stderr, "[RX_CRC] computed_crc=0x%02X rx_crc=0x%02X\n", crc_calc, crc_rx);
     std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
 
     for (int i = 42; i < 48; i++) {
@@ -1416,6 +1423,13 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
 
+    // Debug: print decoded_bits[0:34] before CRC computation
+    std::fprintf(stderr, "[RX_CRC] decoded_bits[0:34] = ");
+    for (int i = 0; i < 34; i++) {
+        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    }
+    std::fprintf(stderr, "\n");
+    std::fprintf(stderr, "[RX_CRC] computed_crc=0x%02X rx_crc=0x%02X\n", crc_calc, crc_rx);
     std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
 
     for (int i = 42; i < 48; i++) {
@@ -1628,6 +1642,13 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
 
+    // Debug: print decoded_bits[0:34] before CRC computation
+    std::fprintf(stderr, "[RX_CRC] decoded_bits[0:34] = ");
+    for (int i = 0; i < 34; i++) {
+        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    }
+    std::fprintf(stderr, "\n");
+    std::fprintf(stderr, "[RX_CRC] computed_crc=0x%02X rx_crc=0x%02X\n", crc_calc, crc_rx);
     std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
 
     for (int i = 42; i < 48; i++) {
@@ -1931,6 +1952,13 @@ bool frame_equalizer_impl::parse_signal_ht(const uint8_t* decoded_bits,
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
 
+    // Debug: print decoded_bits[0:34] before CRC computation
+    std::fprintf(stderr, "[RX_CRC] decoded_bits[0:34] = ");
+    for (int i = 0; i < 34; i++) {
+        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
+    }
+    std::fprintf(stderr, "\n");
+    std::fprintf(stderr, "[RX_CRC] computed_crc=0x%02X rx_crc=0x%02X\n", crc_calc, crc_rx);
     std::fprintf(stderr, "[PARSE_HT_SIG] CRC: received=0x%02x, calculated=0x%02x\n", crc_rx, crc_calc);
 
     for (int i = 42; i < 48; i++) {
