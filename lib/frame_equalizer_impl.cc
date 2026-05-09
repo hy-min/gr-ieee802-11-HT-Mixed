@@ -1489,6 +1489,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        bool& out_sgi,
                                        bool& out_agg)
 {
+    fprintf(stderr, "[DECODE_HT] CALLED: rx52_a[0]=%.3f+%.3fi rx52_b[0]=%.3f+%.3fi H52[0]=%.3f+%.3fi\n",
+            rx52_a[0].real(), rx52_a[0].imag(),
+            rx52_b[0].real(), rx52_b[0].imag(),
+            H52[0].real(), H52[0].imag());
     uint8_t eqbits48_a[48];
     uint8_t eqbits48_b[48];
     uint8_t deintl48_a[48];
