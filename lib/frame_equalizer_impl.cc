@@ -2433,9 +2433,21 @@ int frame_equalizer_impl::general_work(int noutput_items,
         std::fflush(stdout);
 
         // 真正的 HT-SIG 解析门条件，必须保留
-        std::printf("[EQ][GATE_DETAIL] d_sym_idx=%d, kHtSig1Rel=%d, d_have_ht_header=%d\n",
-                   d_sym_idx, kHtSig1Rel, d_have_ht_header ? 1 : 0);
+        std::printf("[EQ][GATE_DETAIL] d_sym_idx=%d, d_internal_counter=%d, kHtSig1Rel=%d, d_have_ht_header=%d\n",
+                   d_sym_idx, d_internal_symbol_counter, kHtSig1Rel, d_have_ht_header ? 1 : 0);
         std::printf("[EQ][GATE_DETAIL] valid flags: lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d\n",
+                   d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kLSigRel] ? 1 : 0,
+                   d_early_eqsym_valid[kHtSig0Rel] ? 1 : 0,
+                   d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
+        std::printf("[EQ][GATE_DETAIL] ht_parse_condition = %d (need: !have_ht=%d counter>=4=%d lltf0=%d lltf1=%d lsig=%d htsig0=%d htsig1=%d)\n",
+                   (!d_have_ht_header) && (d_internal_symbol_counter >= kHtSig1Rel) &&
+                   d_early_eqsym_valid[kLltf0Rel] && d_early_eqsym_valid[kLltf1Rel] &&
+                   d_early_eqsym_valid[kLSigRel] && d_early_eqsym_valid[kHtSig0Rel] &&
+                   d_early_eqsym_valid[kHtSig1Rel],
+                   !d_have_ht_header,
+                   d_internal_symbol_counter >= kHtSig1Rel,
                    d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
                    d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
                    d_early_eqsym_valid[kLSigRel] ? 1 : 0,
@@ -2456,7 +2468,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[kHtSig1Rel];
         if (ht_parse_condition) {
 
-            std::printf("[EQ][DEBUG_BLOCK] ENTERING HT-SIG PARSE BLOCK\n");
+            std::printf("[EQ][DEBUG_BLOCK] ENTERING HT-SIG PARSE BLOCK (ht_parse_condition=%d)\n", ht_parse_condition);
             std::fflush(stdout);
 
             // L-LTF符号调试
