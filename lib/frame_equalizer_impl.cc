@@ -615,7 +615,9 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
         const gr_complex lltf1 = lltf1_52[48 + i];
-        const gr_complex tx = kLltfPilotTX[i];
+        // FIX: Use actual TX pilot values kHeaderPilotBase (real ±1), not kLltfPilotTX (complex FFT values)
+        // The TX pilots for L-SIG are {1, 1, 1, -1} (real), not the complex FFT of LTF sequence
+        const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
 
         // 检查L-LTF符号一致性
         const float dot_product = lltf0.real() * lltf1.real() + lltf0.imag() * lltf1.imag();
@@ -674,6 +676,8 @@ static float estimate_header_cpe_rad(const gr_complex* rx52,
 
     for (int i = 0; i < 4; i++) {
         const gr_complex eqp = safe_div(rx52[48 + i], H52[48 + i]);
+        // Use kHeaderPilotBase (real ±1) as expected pilot values
+        // The TX pilots for L-SIG are {1, 1, 1, -1} (real), which is kHeaderPilotBase
         const gr_complex expect = gr_complex((float)kHeaderPilotBase[i], 0.0f);
         acc += eqp * std::conj(expect);
     }
@@ -682,6 +686,26 @@ static float estimate_header_cpe_rad(const gr_complex* rx52,
         return 0.0f;
     }
 
+    return std::arg(acc);
+}
+
+// Alternative CPE estimation that directly uses rx pilots without H
+static float estimate_cpe_direct_from_rx_pilots(const gr_complex* rx52)
+{
+    gr_complex acc(0.0f, 0.0f);
+
+    for (int i = 0; i < 4; i++) {
+        // Direct phase of received pilot (should be ±1 real if channel had no phase)
+        // The TX pilots are {1, 1, 1, -1} (real)
+        // So arg(rx) should be arg(H) if tx was real
+        acc += rx52[48 + i];
+    }
+
+    if (std::abs(acc) < 1e-9f) {
+        return 0.0f;
+    }
+
+    // The accumulated phase is the average channel phase at pilots
     return std::arg(acc);
 }
 
@@ -1256,6 +1280,19 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
 
     const uint8_t* decoded_bits = dec24.data();
 
+    // DEBUG: Print all 24 decoded bits before parity check
+    fprintf(stderr, "[LSIG_DECODE] decoded_bits[0:24]=");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", decoded_bits[i] & 1);
+    fprintf(stderr, "\n");
+
+    // Also print what we expect for TX rate 0x0D (MCS 0)
+    // L-SIG TX raw24 = 110100000011000001000000 (from TX debug)
+    // Bits 0-3: rate = 1101 = 0x0D
+    // Bits 4-15: length = 000000110000 = 0x030 = 48
+    // Bits 16-17: reserved = 00
+    // Bits 18-23: parity (even parity of bits 0-17)
+    fprintf(stderr, "[LSIG_DECODE] Expected for rate 0x0D: bits[0:18]=110100000011000001\n");
+
     const int rate_field =
         ((decoded_bits[0] & 1) << 3) |
         ((decoded_bits[1] & 1) << 2) |
@@ -1271,8 +1308,27 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     for (int i = 0; i < 18; i++) {
         parity_sum ^= (decoded_bits[i] & 1);
     }
+    // DEBUG: Show which bit is wrong
     if (parity_sum != 0) {
         fprintf(stderr, "[LSIG_DECODE] Parity check failed! parity_sum=%d\n", parity_sum);
+        // Compute expected parity (even parity of bits 0-17)
+        int expected_parity = 0;
+        for (int i = 0; i < 18; i++) expected_parity ^= (decoded_bits[i] & 1);
+        fprintf(stderr, "[LSIG_DECODE] Bit positions where decoded differs from expected:\n");
+        fprintf(stderr, "  Expected bits[0:18]=110100000011000001\n");
+        fprintf(stderr, "  Decoded bits[0:18]=");
+        for (int i = 0; i < 18; i++) {
+            int expected_bit = 0;
+            if (i == 0) expected_bit = 1;  // rate bit 3
+            else if (i == 1) expected_bit = 1;  // rate bit 2
+            else if (i == 2) expected_bit = 0;  // rate bit 1
+            else if (i == 3) expected_bit = 1;  // rate bit 0
+            // Length bits 4-15 and reserved bits 16-17 are harder to compute
+            // Just show the decoded bit
+            fprintf(stderr, "%d", decoded_bits[i] & 1);
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
         return false;
     }
 
@@ -1282,6 +1338,8 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
             return false;
         }
     }
+    fprintf(stderr, "[LSIG_DECODE] Tail bits OK (all zero), proceeding to rate switch\n");
+    fflush(stderr);
 
     int encoding = -1;
     switch (rate_field) {
@@ -1297,6 +1355,11 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         fprintf(stderr, "[LSIG_DECODE] Unknown rate field: 0x%02X\n", rate_field);
         return false;
     }
+    // Debug: Print decoded L-SIG bits
+    fprintf(stderr, "[LSIG_DECODE] SUCCESS: rate=0x%02X enc=%d len=%d parity_ok deintl_bits[0:8]=%02X%02X%02X%02X\n",
+            rate_field, encoding, psdu_length,
+            deintl48[0], deintl48[1], deintl48[2], deintl48[3]);
+    fflush(stderr);
 
     out_encoding = encoding;
     out_len_bytes = psdu_length;
@@ -2474,6 +2537,17 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // not just at the exact symbol index kHtSig1Rel.
         // This handles the case where L-SIG validation happens later than expected.
         // Use d_internal_symbol_counter for type determination (not d_sym_idx)
+        // ULTRA-DEBUG: Check exact state at condition evaluation
+        std::printf("[EQ][COND_CHK] d_have_ht_header=%d, counter=%d, kHtSig1Rel=%d\n",
+                    d_have_ht_header ? 1 : 0, d_internal_symbol_counter, kHtSig1Rel);
+        std::printf("[EQ][COND_CHK] flags: ll0=%d ll1=%d ls=%d hs0=%d hs1=%d\n",
+                    d_early_eqsym_valid[kLltf0Rel] ? 1 : 0,
+                    d_early_eqsym_valid[kLltf1Rel] ? 1 : 0,
+                    d_early_eqsym_valid[kLSigRel] ? 1 : 0,
+                    d_early_eqsym_valid[kHtSig0Rel] ? 1 : 0,
+                    d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
+        std::printf("[EQ][COND_CHK] counter>=4? %d\n", d_internal_symbol_counter >= kHtSig1Rel);
+        fflush(stdout);
         const bool ht_parse_condition =
             !d_have_ht_header &&
             // d_is_ht_frame &&     // Temporarily disabled - ratio threshold too strict
@@ -2484,7 +2558,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[kHtSig0Rel] &&
             d_early_eqsym_valid[kHtSig1Rel];
         if (ht_parse_condition) {
-
+            std::printf("[EQ][COND_ENTER] ENTERED! ht_parse_condition=%d\n", ht_parse_condition ? 1 : 0);
+            fflush(stdout);
             std::printf("[EQ][DEBUG_BLOCK] ENTERING HT-SIG PARSE BLOCK (ht_parse_condition=%d)\n", ht_parse_condition);
             std::fflush(stdout);
 
@@ -2598,13 +2673,22 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                       lsig_len,
                                                       nullptr,
                                                       nullptr)) {
+                    std::printf("[EQ][LSIG_FAIL] decode_lsig returned false for inv_lsig=%d\n", inv_lsig);
+                    fflush(stdout);
                     continue;
                 }
+                std::printf("[EQ][LSIG_OK] decode_lsig returned true: lsig_enc=%d lsig_len=%d inv_lsig=%d\n",
+                           lsig_enc, lsig_len, inv_lsig);
+                fflush(stdout);
 
                 if (lsig_enc != 0) {
+                    std::printf("[EQ][LSIG_FAIL] lsig_enc=%d != 0, continuing\n", lsig_enc);
+                    fflush(stdout);
                     continue;
                 }
 
+                std::printf("[EQ][LSIG_OK] Passed L-SIG checks, about to detect HT-SIG rotation\n");
+                fflush(stdout);
                 // Detect HT-SIG QBPSK rotation
                 fprintf(stderr, "[DEBUG2] d_early_eqsym[3][0:4] BEFORE detect_htsig_rotation = ");
                 for (int i = 0; i < 4; i++) {
