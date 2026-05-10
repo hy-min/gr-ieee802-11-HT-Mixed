@@ -789,7 +789,7 @@ static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
     std::memset(out48, 0, 48);
 
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 16;  // FIX: k/16 to correctly inverse interleaver i = 3*(k%16) + k/16
+        const int j = 16 * (k % 3) + k / 3;  // FIX: k/3 correctly deinterleaves i = 3*(k%16) + k/16
         out48[k] = in48[j] & 0x1;
     }
 }
@@ -1625,13 +1625,13 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     // HT-SIG Deinterleaving: undo the 802.11 permutation
     // Forward interleaver: j = 3*(k%16) + k/16
-    // Inverse (deinterleaver): k = 16*(j%3) + j/16, so j = 16*(k%3) + k/16
+    // Inverse (deinterleaver): k = 16*(j%3) + j/3, so j = 16*(k%3) + k/3
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 16;  // FIX: k/16 to correctly inverse
+        const int j = 16 * (k % 3) + k / 3;  // FIX: k/3 correctly deinterleaves
         deintl48_a[k] = eqbits48_a[j] & 0x1;
     }
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 16;  // FIX: k/16 to correctly inverse
+        const int j = 16 * (k % 3) + k / 3;  // FIX: k/3 correctly deinterleaves
         deintl48_b[k] = eqbits48_b[j] & 0x1;
     }
 

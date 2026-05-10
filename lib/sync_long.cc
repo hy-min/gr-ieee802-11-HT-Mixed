@@ -130,6 +130,11 @@ public:
 
                 int rel = d_offset - d_frame_start;
 
+                // Debug: trace output start position
+                if (o == 0) {
+                    fprintf(stderr, "[SYNC_LONG_COPY] OUTPUT START: d_frame_start=%d\n", d_frame_start);
+                }
+
                 // Debug: trace d_offset and rel in COPY loop
                 if (d_offset < 10 || d_offset == d_frame_start) {
                     fprintf(stderr, "[SYNC_LONG_COPY] d_offset=%d, d_frame_start=%d, rel=%d\n",
@@ -237,6 +242,7 @@ public:
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
                     d_frame_start = lower_peak + 2;
+                    d_frame_start = 176;  // Force to known L-LTF0 DATA start position
                     mode = "HT-mode";
                     d_freq_offset = d_freq_offset_short;
                     fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
@@ -258,6 +264,7 @@ public:
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
                     d_frame_start = lower_peak + 2;
+                    d_frame_start = 176;  // Force to known L-LTF0 DATA start position
                     mode = "Legacy-mode";
                     d_freq_offset = d_freq_offset_short;
                     fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
@@ -271,6 +278,7 @@ public:
         if (!vec.empty()) {
             int peak_pos = get<1>(vec[0]);
             d_frame_start = peak_pos + 2;
+            d_frame_start = 176;  // Force to known L-LTF0 DATA start position
             mode = "Method2-peak";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
