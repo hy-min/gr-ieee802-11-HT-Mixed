@@ -19,34 +19,6 @@
 namespace gr {
 namespace ieee802_11 {
 
-// Correct FFT output positions for HT-Mixed 20MHz preamble
-// These are the rel_idx values where each symbol's DATA ends
-// LTF0: 63, LTF1: 143, L-SIG: 223, HT-SIG0: 303, HT-SIG1: 383, HT-STF: 463
-// HT-DATA: offset 79 within 80-sample blocks starting at 464 (543, 623, 703, ...)
-static const uint64_t kCorrectOutputPositions[] = {
-    63,   // LTF0 DATA end
-    143,  // LTF1 DATA end
-    223,  // L-SIG DATA end
-    303,  // HT-SIG0 DATA end
-    383,  // HT-SIG1 DATA end
-    463,  // HT-STF DATA end
-    543,  // HT-DATA(0) end
-};
-
-bool should_output_at(uint64_t rel_idx) {
-    // Check if we're at a preamble DATA end
-    for (size_t i = 0; i < sizeof(kCorrectOutputPositions)/sizeof(kCorrectOutputPositions[0]); i++) {
-        if (rel_idx == kCorrectOutputPositions[i]) return true;
-    }
-    // HT-DATA: offset 79 within each 80-sample block starting at 464 (464+79=543, 544+79=623, 624+79=703, ...)
-    // HT-DATA(0): CP 464-479, DATA 480-543, output at 543
-    // HT-DATA(1): CP 544-559, DATA 560-623, output at 623
-    if (rel_idx >= 464) {
-        return ((rel_idx - 464) % 80) == 79;
-    }
-    return false;
-}
-
 ht_symbol_splitter::sptr
 ht_symbol_splitter::make(int fft_size, int symbol_size, int cp_size)
 {
@@ -312,56 +284,35 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //
             // L-LTF: 160 samples = 32 GI2 + 64 LTF0 + 64 LTF1
             //   - rel_idx 0-63:   LTF0 DATA (input d_frame_start to d_frame_start+63)
-            //   - rel_idx 64-79:  LTF1 CP (16 samples) -> SKIP
-            //   - rel_idx 80-143: LTF1 DATA (64 samples) -> BUFFER
-            //   - rel_idx 144-159: L-SIG CP (16 samples) -> SKIP
-            //   - rel_idx 160-223: L-SIG DATA (64 samples) -> BUFFER
-            //   - rel_idx 224-239: HT-SIG0 CP (16 samples) -> SKIP
-            //   - rel_idx 240-303: HT-SIG0 DATA (64 samples) -> BUFFER
-            //   - rel_idx 304-319: HT-SIG1 CP (16 samples) -> SKIP
-            //   - rel_idx 320-383: HT-SIG1 DATA (64 samples) -> BUFFER
-            //   - rel_idx 384-399: HT-STF CP (16 samples) -> SKIP
-            //   - rel_idx 400-447: HT-STF DATA (64 samples) -> BUFFER
+            //   - rel_idx 64-127: LTF1 DATA (continuous, NO CP between LTF0 and LTF1!)
+            //   - rel_idx 128-143: L-SIG CP (16 samples) -> SKIP
+            //   - rel_idx 144-207: L-SIG DATA (64 samples) -> BUFFER
+            //   - rel_idx 208-223: HT-SIG0 CP (16 samples) -> SKIP
+            //   - rel_idx 224-287: HT-SIG0 DATA (64 samples) -> BUFFER
+            //   - rel_idx 288-303: HT-SIG1 CP (16 samples) -> SKIP
+            //   - rel_idx 304-367: HT-SIG1 DATA (64 samples) -> BUFFER
+            //   - rel_idx 368-383: HT-STF CP (16 samples) -> SKIP
+            //   - rel_idx 384-447: HT-STF DATA (64 samples) -> BUFFER
             //   - rel_idx 448+: HT-DATA (80-sample period: 16 CP + 64 Data)
             // ============================================================
-            if (rel_idx < 64) {
-                // Stage 1: LTF0 DATA (rel_idx 0-63)
+            if (rel_idx < 128) {
+                // Stage 1: L-LTF continuous 128 samples (NO CP skip!)
                 should_buffer = true;
-            } else if (rel_idx < 80) {
-                // Stage 1b: LTF1 CP (rel_idx 64-79) -> SKIP
-                should_buffer = false;
-            } else if (rel_idx < 144) {
-                // Stage 1c: LTF1 DATA (rel_idx 80-143)
-                should_buffer = true;
-            } else if (rel_idx < 160) {
-                // Stage 2: L-SIG CP (rel_idx 144-159) -> SKIP
-                should_buffer = false;
-            } else if (rel_idx < 224) {
-                // Stage 2b: L-SIG DATA (rel_idx 160-223)
-                should_buffer = true;
-            } else if (rel_idx < 240) {
-                // Stage 3: HT-SIG0 CP (rel_idx 224-239) -> SKIP
-                should_buffer = false;
-            } else if (rel_idx < 304) {
-                // Stage 3b: HT-SIG0 DATA (rel_idx 240-303)
-                should_buffer = true;
-            } else if (rel_idx < 320) {
-                // Stage 4: HT-SIG1 CP (rel_idx 304-319) -> SKIP
-                should_buffer = false;
-            } else if (rel_idx < 384) {
-                // Stage 4b: HT-SIG1 DATA (rel_idx 320-383)
-                should_buffer = true;
-            } else if (rel_idx < 400) {
-                // Stage 5: HT-STF CP (rel_idx 384-399) -> SKIP
-                should_buffer = false;
-            } else if (rel_idx < 464) {
-                // Stage 5b: HT-STF DATA (rel_idx 400-463, 64 samples)
-                should_buffer = true;
+            } else if (rel_idx < 208) {
+                // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA)
+                should_buffer = (rel_idx >= 144);
+            } else if (rel_idx < 288) {
+                // Stage 3: HT-SIG0 (rel_idx 208-223 CP, 224-287 DATA)
+                should_buffer = (rel_idx >= 224);
+            } else if (rel_idx < 368) {
+                // Stage 4: HT-SIG1 (rel_idx 288-303 CP, 304-367 DATA)
+                should_buffer = (rel_idx >= 304);
+            } else if (rel_idx < 448) {
+                // Stage 5: HT-STF (rel_idx 368-383 CP, 384-447 DATA)
+                should_buffer = (rel_idx >= 384);
             } else {
-                // Stage 6: HT-DATA and beyond (80-sample period starting at 464)
-                // HT-DATA(0): CP 464-479, DATA 480-543
-                // HT-DATA(1): CP 544-559, DATA 560-623
-                uint64_t sym_rel_idx = rel_idx - 464;
+                // Stage 6: HT-DATA and beyond (80-sample period)
+                uint64_t sym_rel_idx = rel_idx - 448;
                 uint64_t sym_offset = sym_rel_idx % 80;
                 if (sym_offset >= 16) {
                     should_buffer = true;  // Skip CP, buffer Data
@@ -396,10 +347,24 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     }
                 }
 
-                // When buffer is full AND we're at a correct symbol boundary, output FFT block
-                uint64_t out_rel_idx = current_idx - d_frame_start_abs;
-                if (d_buffer_count == d_fft_size && should_output_at(out_rel_idx)) {
-                    // Debug: check if this is HT-SIG region (HT-SIG0 data: 240-303, HT-SIG1 data: 320-383)
+                // When buffer is full, output FFT block
+                if (d_buffer_count == d_fft_size) {
+                    uint64_t out_rel_idx = current_idx - d_frame_start_abs;
+
+                    // For HT-DATA (rel_idx >= 448): only output at DATA boundaries
+                    // HT-DATA structure: 16 CP + 64 DATA per 80-sample block
+                    // DATA ends at offset 79 within each block (sym_offset = 79)
+                    // Output at rel_idx = 448 + 79 = 527, 607, 687, etc.
+                    if (rel_idx >= 448) {
+                        uint64_t block_offset = (rel_idx - 448) % 80;
+                        if (block_offset != 79) {
+                            // Not at DATA boundary - reset and continue
+                            d_buffer_count = 0;
+                            continue;
+                        }
+                    }
+
+                    // Debug: check if this is HT-SIG region
                     if ((out_rel_idx >= 240 && out_rel_idx < 304) || (out_rel_idx >= 320 && out_rel_idx < 384)) {
                         fprintf(stderr, "[HT_SPLITTER] HT-SIG OUTPUT at rel_idx=%llu, sample[0]=%.4f+%.4fi\n",
                                 (unsigned long long)out_rel_idx,
