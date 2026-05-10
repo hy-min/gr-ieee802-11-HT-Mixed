@@ -289,8 +289,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //   - rel_idx 384-447: HT-STF DATA (64 samples) -> BUFFER
             //   - rel_idx 448+: HT-DATA (80-sample period: 16 CP + 64 Data)
             // ============================================================
-            if (rel_idx < 128) {
-                // Stage 1: L-LTF continuous 128 samples (NO CP skip!)
+            if (rel_idx < 64) {
+                // Stage 1: L-LTF0 DATA (rel_idx 0-63)
+                should_buffer = true;
+            } else if (rel_idx < 80) {
+                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - SKIP!
+                should_buffer = false;
+            } else if (rel_idx < 144) {
+                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
                 should_buffer = true;
             } else if (rel_idx < 208) {
                 // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA)
