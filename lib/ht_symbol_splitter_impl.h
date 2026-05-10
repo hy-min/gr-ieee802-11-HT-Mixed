@@ -46,6 +46,9 @@ private:
     bool d_frame_start_known;       // Have we seen wifi_start tag?
     int64_t d_items_processed;      // Total items we've processed
 
+    // Symbol counter for debugging - tracks which symbol we're outputting
+    int d_internal_symbol_counter;   // 0=L-LTF0, 1=L-LTF1, 2=L-SIG, 3=HT-SIG0, 4=HT-SIG1, etc.
+
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);
     ~ht_symbol_splitter_impl();
