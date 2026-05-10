@@ -47,8 +47,7 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
     // We output in multiples of fft_size
     set_output_multiple(d_fft_size);
 
-    fprintf(stderr, "[HT_SPLITTER] Created: fft_size=%d, symbol_size=%d, cp_size=%d\n",
-            d_fft_size, d_symbol_size, d_cp_size);
+
 }
 
 ht_symbol_splitter_impl::~ht_symbol_splitter_impl() {}
@@ -56,7 +55,7 @@ ht_symbol_splitter_impl::~ht_symbol_splitter_impl() {}
 void ht_symbol_splitter_impl::set_ht_mixed(bool ht_mixed)
 {
     d_ht_mixed = ht_mixed;
-    fprintf(stderr, "[HT_SPLITTER] Mode changed: ht_mixed=%d\n", ht_mixed);
+
 }
 
 void ht_symbol_splitter_impl::forecast(int noutput_items,
@@ -78,10 +77,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int produced = 0;
     int consumed = 0;
 
-    if (d_debug && d_debug_count < 5) {
-        fprintf(stderr, "\n[HT_SPLITTER] === START general_work: noutput_items=%d, frame_known=%d ===\n",
-                noutput_items, d_frame_start_known);
-    }
+
 
     // Get absolute position of first input item
     uint64_t start_abs_idx = nitems_read(0);
@@ -131,6 +127,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
                 uint64_t tag_abs_pos = (uint64_t)tag.offset;
 
+                // ESSENTIAL DEBUG: wifi_start tag
                 fprintf(stderr, "[HT_SPLITTER] wifi_start tag: offset=%llu, value(d_frame_start)=%llu\n",
                         (unsigned long long)tag_abs_pos, (unsigned long long)d_frame_start);
 
@@ -169,24 +166,21 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // it means a new frame has started (we don't re-use wifi_start within a frame)
                 bool is_new_frame = d_frame_start_known;
 
-                d_frame_start_abs = tag_abs_pos;  // FIXED: wifi_start appears at tag_abs_pos in ht_symbol_splitter input, which IS LTF0 DATA start
+                d_frame_start_abs = tag_abs_pos;  // tag.offset = position in stream where wifi_start appears
 
                 d_frame_start_known = true;
 
-                // Debug: print when wifi_start is detected
+                // ESSENTIAL DEBUG: wifi_start detected
                 fprintf(stderr, "[HT_SPLITTER] %s wifi_start detected at abs_pos=%llu\n",
                         is_new_frame ? "NEW_FRAME" : "FIRST",
                         (unsigned long long)tag_abs_pos);
-                fprintf(stderr, "[HT_SPLITTER] d_frame_start_abs=%llu\n",
-                        (unsigned long long)d_frame_start_abs);
                 // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
                 add_item_tag(0,  // output port 0
                              nitems_written(0),  // current output position
                              pmt::string_to_symbol("wifi_start"),
                              pmt::from_double(d_frame_start_abs),
                              pmt::string_to_symbol(name()));
-                fprintf(stderr, "[HT_SPLITTER] wifi_start tag propagated at output pos %llu\n",
-                        (unsigned long long)nitems_written(0));
+
                 break;
             }
         }
@@ -321,31 +315,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             if (should_buffer) {
                 d_buffer[d_buffer_count++] = in[i];
-                // TIME DOMAIN DEBUG: Print LTF0 and LTF1 time-domain samples for comparison
-                static int td_debug_count = 0;
-                static int ltf0_sample_count = 0;
-                static int ltf1_sample_count = 0;
-                if (td_debug_count < 3) {
-                    // Print LTF0 samples (rel_idx 0-63)
-                    if (rel_idx < 64 && ltf0_sample_count < 10) {
-                        fprintf(stderr, "[TIME_DOMAIN_LTF0] rel_idx=%llu, sample[%d]=%.4f+%.4fi\n",
-                                (unsigned long long)rel_idx, ltf0_sample_count,
-                                in[i].real(), in[i].imag());
-                        ltf0_sample_count++;
-                    }
-                    // Print LTF1 samples (rel_idx 64-127)
-                    if (rel_idx >= 64 && rel_idx < 128 && ltf1_sample_count < 10) {
-                        fprintf(stderr, "[TIME_DOMAIN_LTF1] rel_idx=%llu, sample[%d]=%.4f+%.4fi\n",
-                                (unsigned long long)rel_idx, ltf1_sample_count,
-                                in[i].real(), in[i].imag());
-                        ltf1_sample_count++;
-                    }
-                    if (rel_idx >= 127) {
-                        td_debug_count++;
-                        ltf0_sample_count = 0;
-                        ltf1_sample_count = 0;
-                    }
-                }
 
                 // When buffer is full, output FFT block
                 if (d_buffer_count == d_fft_size) {
@@ -364,20 +333,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         }
                     }
 
-                    // Debug: check if this is HT-SIG region
-                    if ((out_rel_idx >= 240 && out_rel_idx < 304) || (out_rel_idx >= 320 && out_rel_idx < 384)) {
-                        fprintf(stderr, "[HT_SPLITTER] HT-SIG OUTPUT at rel_idx=%llu, sample[0]=%.4f+%.4fi\n",
-                                (unsigned long long)out_rel_idx,
-                                d_buffer[0].real(), d_buffer[0].imag());
-                    }
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     produced += d_fft_size;
                     d_buffer_count = 0;
 
-                    if (d_debug && d_debug_count < 10) {
-                        fprintf(stderr, "[HT_SPLITTER] OUTPUT FFT at rel_idx=%llu\n",
-                                (unsigned long long)out_rel_idx);
-                    }
                 }
             }
         }
@@ -388,11 +347,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     d_items_processed += consumed;
 
-    if (d_debug && d_debug_count < 5) {
-        fprintf(stderr, "[HT_SPLITTER] === END: consumed=%d, produced=%d ===\n\n",
-                consumed, produced);
-        d_debug_count++;
-    }
 
     consume(0, consumed);
     return produced;

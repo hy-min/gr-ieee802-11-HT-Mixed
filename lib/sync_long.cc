@@ -112,21 +112,7 @@ public:
                 i++;
                 d_offset++;
 
-                // Debug: periodically log d_offset
-                if (d_offset == 100 || d_offset == 200 || d_offset == 300 || d_offset == 400 || d_offset == 401) {
-                    FILE* df = fopen("/tmp/sync_debug.txt", "a");
-                    if (df) { fprintf(df, "SYNC_LONG: d_offset=%d ninput=%d\n", d_offset, ninput); fclose(df); }
-                }
-
                 if (d_offset == SYNC_LENGTH) {
-                    FILE* df = fopen("/tmp/sync_debug.txt", "a");
-                    if (df) {
-                        fprintf(df, "SYNC_LONG: calling search_frame_start() d_offset=%d d_cor.size=%zu\n", d_offset, d_cor.size());
-                        fclose(df);
-                    } else {
-                        FILE* ef = fopen("/tmp/sync_err.txt", "a");
-                        if (ef) { fprintf(ef, "SYNC_LONG: fopen failed! errno=%d\n", errno); fclose(ef); }
-                    }
                     search_frame_start();
                     mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                     d_offset = 0;
@@ -143,6 +129,12 @@ public:
             while (i < ninput && o < noutput) {
 
                 int rel = d_offset - d_frame_start;
+
+                // Debug: trace d_offset and rel in COPY loop
+                if (d_offset < 10 || d_offset == d_frame_start) {
+                    fprintf(stderr, "[SYNC_LONG_COPY] d_offset=%d, d_frame_start=%d, rel=%d\n",
+                            d_offset, d_frame_start, rel);
+                }
 
                 // Add wifi_start tag at L-LTF0 DATA start (rel=0)
                 // Only add if we haven't already added one for this detection
@@ -221,9 +213,6 @@ public:
 
     void search_frame_start()
     {
-        FILE* df = fopen("/tmp/sync_debug.txt", "a");
-        if (df) { fprintf(df, "SYNC_LONG: search_frame_start() CALLED\n"); fclose(df); }
-
         // sort list (highest correlation first)
         assert(d_cor.size() == SYNC_LENGTH);
         d_cor.sort(compare_abs);
@@ -232,19 +221,10 @@ public:
         vector<pair<gr_complex, int>> vec(d_cor.begin(), d_cor.end());
         d_cor.clear();
 
-        // Debug: print top 10 peaks
-        df = fopen("/tmp/sync_debug.txt", "a");
-        if (df) {
-            fprintf(df, "SYNC_LONG Top 10 peaks:\n");
-            for (int i = 0; i < (int)vec.size() && i < 10; i++) {
-                fprintf(df, "  vec[%d]: mag=%.4f pos=%d\n",
-                        i, (double)abs(get<0>(vec[i])), get<1>(vec[i]));
-            }
-            fclose(df);
-        }
+        // ESSENTIAL DEBUG: d_frame_start detection
+        const char* mode = "unknown";
 
         // Method 1: Try to find pairs with expected L-LTF spacing
-        // Use magnitude-priority and HT-mode-preferred selection
         // HT Mixed mode detection
         for (int i = 0; i < (int)vec.size() && i < 10; i++) {
             for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
@@ -257,11 +237,10 @@ public:
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
                     d_frame_start = lower_peak + 2;
-                    // Force to 192 for proper FFT window alignment
-                    // NOTE: This is known to work; the correlation detector is unreliable
-                    d_frame_start = 192;
-                    fprintf(stderr, "[SYNC_LONG] HT-mode LTF0 DATA start: d_frame_start=%d (lower_peak=%d)\n", d_frame_start, lower_peak);
+                    mode = "HT-mode";
                     d_freq_offset = d_freq_offset_short;
+                    fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
+                            d_frame_start, mode, lower_peak);
                     return;
                 }
             }
@@ -279,10 +258,10 @@ public:
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
                     d_frame_start = lower_peak + 2;
-                    // Force to 192 for proper FFT window alignment
-                    d_frame_start = 192;
-                    fprintf(stderr, "[SYNC_LONG] Legacy-mode LTF0 DATA start: d_frame_start=%d\n", d_frame_start);
+                    mode = "Legacy-mode";
                     d_freq_offset = d_freq_offset_short;
+                    fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
+                            d_frame_start, mode, lower_peak);
                     return;
                 }
             }
@@ -292,18 +271,16 @@ public:
         if (!vec.empty()) {
             int peak_pos = get<1>(vec[0]);
             d_frame_start = peak_pos + 2;
-            // Force to 192 for proper FFT window alignment
-            d_frame_start = 192;
-            fprintf(stderr, "[SYNC_LONG] Method2 frame start: d_frame_start=%d\n", d_frame_start);
+            mode = "Method2-peak";
             d_freq_offset = d_freq_offset_short;
+            fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
+                    d_frame_start, mode, peak_pos);
             return;
         }
 
         // Fallback: use SYNC_LENGTH (no detection)
         d_frame_start = SYNC_LENGTH;
         d_freq_offset = 0.0f;
-        df = fopen("/tmp/sync_debug.txt", "a");
-        if (df) { fprintf(df, "SYNC_LONG SYNC_LENGTH fallback: d_frame_start=%d\n", d_frame_start); fclose(df); }
     }
 
 private:
