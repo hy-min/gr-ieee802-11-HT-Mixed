@@ -329,10 +329,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
-                // Boundary check: out_rel_idx % 80 == 63 or 143
+                // Boundary check: out_rel_idx % 80 == 63
                 // This gives boundaries at: 63, 143, 223, 303, 383, 463, 543, 623, 703...
+                // All boundaries satisfy out_rel_idx % 80 == 63
                 // For HT-DATA (rel_idx >= 448): exclude out_rel_idx < 480 to skip false boundary at 463
-                bool at_boundary = (out_rel_idx % 80 == 63 || out_rel_idx % 80 == 143);
+                bool at_boundary = (out_rel_idx % 80 == 63);
                 if (rel_idx >= 448 && out_rel_idx < 480) {
                     at_boundary = false;
                 }
