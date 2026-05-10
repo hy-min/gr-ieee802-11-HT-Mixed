@@ -43,6 +43,7 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
     d_buffer_count = 0;
+    d_buffer_filled = false;
 
     // We output in multiples of fft_size
     set_output_multiple(d_fft_size);
@@ -320,30 +321,32 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
             }
 
-            if (should_buffer) {
+            if (should_buffer && !d_buffer_filled) {
                 d_buffer[d_buffer_count++] = in[i];
+            }
 
-                // When buffer is full, output FFT block
-                if (d_buffer_count == d_fft_size) {
-                    uint64_t out_rel_idx = current_idx - d_frame_start_abs;
+            // Check boundary conditions when buffer is full
+            if (d_buffer_count == d_fft_size) {
+                uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
-                    // For HT-DATA (rel_idx >= 448): only output at DATA boundaries
-                    // HT-DATA structure: 16 CP + 64 DATA per 80-sample block
-                    // DATA ends at offset 79 within each block (sym_offset = 79)
-                    // Output at rel_idx = 448 + 79 = 527, 607, 687, etc.
-                    if (rel_idx >= 448) {
-                        uint64_t block_offset = (rel_idx - 448) % 80;
-                        if (block_offset != 79) {
-                            // Not at DATA boundary - reset and continue
-                            d_buffer_count = 0;
-                            continue;
-                        }
-                    }
+                // Boundary check: out_rel_idx % 80 == 63 or 143
+                // This gives boundaries at: 63, 143, 223, 303, 383, 463, 543, 623, 703...
+                // For HT-DATA (rel_idx >= 448): exclude out_rel_idx < 480 to skip false boundary at 463
+                bool at_boundary = (out_rel_idx % 80 == 63 || out_rel_idx % 80 == 143);
+                if (rel_idx >= 448 && out_rel_idx < 480) {
+                    at_boundary = false;
+                }
 
+                if (at_boundary) {
+                    // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     produced += d_fft_size;
                     d_buffer_count = 0;
-
+                    d_buffer_filled = false;
+                } else {
+                    // Buffer filled at non-boundary - hold for next boundary
+                    d_buffer_filled = true;
+                    // Don't reset d_buffer_count - keep at 64
                 }
             }
         }

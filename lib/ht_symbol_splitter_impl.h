@@ -39,6 +39,7 @@ private:
     // Circular buffer for FFT blocks
     std::vector<gr_complex> d_buffer;
     int d_buffer_count;
+    bool d_buffer_filled;  // True when buffer filled at non-boundary, waiting for boundary
 
     // Frame tracking
     int64_t d_frame_start_abs;      // Absolute item index of frame start (from wifi_start tag)
