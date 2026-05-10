@@ -2478,6 +2478,38 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
             std::printf("\n");
 
+            // DEBUG: Print Hhdr52 phase per subcarrier to verify channel estimate
+            fprintf(stderr, "[CHAN_EST] Hhdr52 data subcarrier phases (subcarriers 0-47):\n");
+            for (int i = 0; i < 48; i++) {
+                float mag = std::abs(Hhdr52[i]);
+                float phase_deg = std::arg(Hhdr52[i]) * 180.0f / M_PI;
+                fprintf(stderr, "  SC%+.2d (idx%d): mag=%.3f phase=%+.1fdeg\n",
+                        kHeader48Sc[i], i, mag, phase_deg);
+            }
+            fprintf(stderr, "[CHAN_EST] Hhdr52 pilot phases:\n");
+            for (int i = 0; i < 4; i++) {
+                int idx = 48 + i;
+                float mag = std::abs(Hhdr52[idx]);
+                float phase_deg = std::arg(Hhdr52[idx]) * 180.0f / M_PI;
+                fprintf(stderr, "  Pilot%d (idx%d): mag=%.3f phase=%+.1fdeg\n",
+                        i, idx, mag, phase_deg);
+            }
+
+            // Summary: check if phases are consistent
+            float phase_sum = 0.0f, phase_var = 0.0f;
+            for (int i = 0; i < 52; i++) {
+                phase_sum += std::arg(Hhdr52[i]);
+            }
+            float phase_mean = phase_sum / 52.0f;
+            for (int i = 0; i < 52; i++) {
+                float diff = std::arg(Hhdr52[i]) - phase_mean;
+                phase_var += diff * diff;
+            }
+            phase_var /= 52.0f;
+            fprintf(stderr, "[CHAN_EST] Phase stats: mean=%+.1fdeg var=%.1f\n",
+                    phase_mean * 180.0f / M_PI, phase_var * 180.0f / M_PI);
+            fflush(stderr);
+
             // debug print rel=3/4/5 direct-path raw/equalized/deinterleaved bits
             std::fprintf(stderr, "[DIRECT_STDERR] About to print LSIG_MARKER\n");
             fflush(stderr);
