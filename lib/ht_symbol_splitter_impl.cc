@@ -316,14 +316,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (should_buffer) {
                 d_buffer[d_buffer_count++] = in[i];
 
-                // Debug: track buffer state
-                if (d_buffer_count == 0) {
-                    fprintf(stderr, "[HT_SPLITTER] BUFFER EMPTY at rel_idx=%llu\n", (unsigned long long)rel_idx);
-                }
-                if (d_buffer_count == 32) {
-                    fprintf(stderr, "[HT_SPLITTER] BUFFER HALF at rel_idx=%llu\n", (unsigned long long)rel_idx);
-                }
-
                 // When buffer is full, output FFT block
                 if (d_buffer_count == d_fft_size) {
                     uint64_t out_rel_idx = current_idx - d_frame_start_abs;
