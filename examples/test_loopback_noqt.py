@@ -14,6 +14,7 @@ The log file /tmp/test_output.log captures Python-level debug output including
 [TX][MM-CA] htsig1_data48 and htsig2_data48 which contain the same HT-SIG bits
 as the gr-htsig [TX][HTSIG] intl96 output.
 """
+import contextlib
 import sys
 import time
 import os
@@ -24,23 +25,50 @@ import ieee802_11
 sys.path.insert(0, 'examples')
 from wifi_phy_hier import wifi_phy_hier
 
-# TX debug capture - Tee class to write stdout to both console and file
-log_file_path = '/tmp/test_output.log'
-log_file = open(log_file_path, 'w')
+# Module constants for magic strings
+LOG_FILE_PATH = '/tmp/test_output.log'
+TX_BITS_OUTPUT_PATH = '/tmp/tx_htsig_bits.txt'
+HTSIG1_MARKER = '[TX][MM-CA] htsig1_data48='
+HTSIG2_MARKER = '[TX][MM-CA] htsig2_data48='
+
 
 class Tee:
-    def __init__(self, *files):
+    """Write to multiple output streams (e.g., console and file)."""
+    def __init__(self, *files: list) -> None:
         self.files = files
-    def write(self, msg):
+
+    def write(self, msg: str) -> None:
         for f in self.files:
             f.write(msg)
-            f.flush()
-    def flush(self):
+
+    def flush(self) -> None:
         for f in self.files:
             f.flush()
 
+    def __enter__(self) -> 'Tee':
+        return self
 
-def make_pdu(payload_len=38):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
+
+
+@contextlib.contextmanager
+def stdout_logger(path: str = LOG_FILE_PATH):
+    """Context manager that duplicates stdout/stderr to a file."""
+    log_file: object = open(path, 'w')
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = Tee(sys.stderr, log_file)
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        log_file.close()
+
+
+def make_pdu(payload_len: int = 38):
     total_payload = payload_len + 30
     payload = [0x42] * total_payload
     u8v = pmt.init_u8vector(total_payload, payload)
@@ -52,93 +80,100 @@ def make_pdu(payload_len=38):
     return pmt.cons(meta, u8v)
 
 
-def extract_tx_htsig_bits():
-    """Extract TX HT-SIG bits from the log file and write to /tmp/tx_htsig_bits.txt"""
-    tx_bits_file = '/tmp/tx_htsig_bits.txt'
-    htsig_lines = {'htsig1': None, 'htsig2': None}
+def extract_tx_htsig_bits(
+    log_file_path: str = LOG_FILE_PATH,
+    output_path: str = TX_BITS_OUTPUT_PATH
+) -> list[str]:
+    """Extract TX HT-SIG bits from the log file and write to output_path."""
+    htsig_lines: dict = {'htsig1': None, 'htsig2': None}
+    tx_lines: list = []
 
     try:
         with open(log_file_path, 'r') as f:
             for line in f:
-                if '[TX][MM-CA] htsig1_data48=' in line:
-                    htsig_lines['htsig1'] = line.split('htsig1_data48=')[1].strip()
-                elif '[TX][MM-CA] htsig2_data48=' in line:
-                    htsig_lines['htsig2'] = line.split('htsig2_data48=')[1].strip()
+                if HTSIG1_MARKER in line:
+                    htsig_lines['htsig1'] = line.split(HTSIG1_MARKER)[1].strip()
+                elif HTSIG2_MARKER in line:
+                    htsig_lines['htsig2'] = line.split(HTSIG2_MARKER)[1].strip()
+    except FileNotFoundError:
+        print(f"Log file not found: {log_file_path}")
+        return []
 
-        if htsig_lines['htsig1'] and htsig_lines['htsig2']:
-            intl96 = htsig_lines['htsig1'] + htsig_lines['htsig2']
-            with open(tx_bits_file, 'w') as f:
-                f.write(f"# TX HT-SIG Interleaved 96 bits (HT-SIG0 + HT-SIG1)\n")
-                f.write(f"# HT-SIG0 (bits 0-47): {htsig_lines['htsig1']}\n")
-                f.write(f"# HT-SIG1 (bits 48-95): {htsig_lines['htsig2']}\n")
-                f.write(f"intl96={intl96}\n")
-            print(f"[TX CAPTURE] TX HT-SIG bits written to {tx_bits_file}", flush=True)
-            print(f"[TX CAPTURE] HT-SIG0: {htsig_lines['htsig1']}", flush=True)
-            print(f"[TX CAPTURE] HT-SIG1: {htsig_lines['htsig2']}", flush=True)
-        else:
-            print(f"[TX CAPTURE] Warning: Could not find complete HT-SIG bits", flush=True)
-            print(f"[TX CAPTURE] htsig1={htsig_lines['htsig1']}, htsig2={htsig_lines['htsig2']}", flush=True)
-    except Exception as e:
-        print(f"[TX CAPTURE] Error extracting TX bits: {e}", flush=True)
+    if htsig_lines['htsig1'] and htsig_lines['htsig2']:
+        interleaved_96 = htsig_lines['htsig1'] + htsig_lines['htsig2']
+        tx_lines.append(f"# TX HT-SIG Interleaved 96 bits (HT-SIG0 + HT-SIG1)")
+        tx_lines.append(f"# HT-SIG0 (bits 0-47): {htsig_lines['htsig1']}")
+        tx_lines.append(f"# HT-SIG1 (bits 48-95): {htsig_lines['htsig2']}")
+        tx_lines.append(f"interleaved_96={interleaved_96}")
+        print(f"[TX CAPTURE] TX HT-SIG bits written to {output_path}", flush=True)
+        print(f"[TX CAPTURE] HT-SIG0: {htsig_lines['htsig1']}", flush=True)
+        print(f"[TX CAPTURE] HT-SIG1: {htsig_lines['htsig2']}", flush=True)
+    else:
+        print(f"[TX CAPTURE] Warning: Could not find complete HT-SIG bits", flush=True)
+        print(f"[TX CAPTURE] htsig1={htsig_lines['htsig1']}, htsig2={htsig_lines['htsig2']}", flush=True)
+
+    if tx_lines:
+        with open(output_path, 'w') as f:
+            f.write('\n'.join(tx_lines))
+
+    return tx_lines
 
 
 def main():
-    # Redirect stdout/stderr to also write to log file
-    sys.stdout = Tee(sys.stdout, log_file)
-    sys.stderr = Tee(sys.stderr, log_file)
+    # Redirect stdout/stderr to also write to log file using context manager
+    with stdout_logger(LOG_FILE_PATH):
+        print("=== HT Mixed Mode Loopback Test (Rapid Fire) ===", flush=True)
 
-    print("=== HT Mixed Mode Loopback Test (Rapid Fire) ===", flush=True)
+        tb = gr.top_block()
 
-    tb = gr.top_block()
+        wifi = wifi_phy_hier(
+            bandwidth=20e6,
+            chan_est=ieee802_11.LS,
+            encoding=ieee802_11.BPSK_1_2,
+            frequency=5.89e9,
+            sensitivity=0.01,
+        )
 
-    wifi = wifi_phy_hier(
-        bandwidth=20e6,
-        chan_est=ieee802_11.LS,
-        encoding=ieee802_11.BPSK_1_2,
-        frequency=5.89e9,
-        sensitivity=0.01,
-    )
+        chan = channels.channel_model(
+            noise_voltage=0.0,
+            frequency_offset=0.0,
+            epsilon=1.0,
+            taps=[1.0],
+            noise_seed=0,
+            block_tags=False
+        )
 
-    chan = channels.channel_model(
-        noise_voltage=0.0,
-        frequency_offset=0.0,
-        epsilon=1.0,
-        taps=[1.0],
-        noise_seed=0,
-        block_tags=False
-    )
+        mac = ieee802_11.mac([0x23]*6, [0x42]*6, [0xff]*6)
+        dbg = blocks.message_debug(True, gr.log_levels.info)
 
-    mac = ieee802_11.mac([0x23]*6, [0x42]*6, [0xff]*6)
-    dbg = blocks.message_debug(True, gr.log_levels.info)
+        tb.msg_connect((mac, 'phy out'), (wifi, 'mac_in'))
+        tb.msg_connect((wifi, 'mac_out'), (dbg, 'print_pdu'))
 
-    tb.msg_connect((mac, 'phy out'), (wifi, 'mac_in'))
-    tb.msg_connect((wifi, 'mac_out'), (dbg, 'print_pdu'))
+        tb.connect((wifi, 0), (chan, 0))
+        tb.connect((chan, 0), (wifi, 0))
 
-    tb.connect((wifi, 0), (chan, 0))
-    tb.connect((chan, 0), (wifi, 0))
+        print("Flowgraph built. Starting...", flush=True)
 
-    print("Flowgraph built. Starting...", flush=True)
+        tb.start()
 
-    tb.start()
+        time.sleep(0.1)
+        mb = mac.to_basic_block()
 
-    time.sleep(0.1)
-    mb = mac.to_basic_block()
+        for i in range(3):
+            mb._post(pmt.intern("app in"), make_pdu(38))
+            print(f"[TX] Sent packet {i+1}", flush=True)
+            time.sleep(0.05)
 
-    for i in range(3):
-        mb._post(pmt.intern("app in"), make_pdu(38))
-        print(f"[TX] Sent packet {i+1}", flush=True)
-        time.sleep(0.05)
+        print("Waiting...", flush=True)
+        time.sleep(0.5)
 
-    print("Waiting...", flush=True)
-    time.sleep(0.5)
+        print("Stopping...", flush=True)
+        tb.stop()
+        tb.wait()
+        print("Done", flush=True)
 
-    print("Stopping...", flush=True)
-    tb.stop()
-    tb.wait()
-    print("Done", flush=True)
-
-    # Extract TX HT-SIG bits from log file
-    extract_tx_htsig_bits()
+        # Extract TX HT-SIG bits from log file
+        extract_tx_htsig_bits()
 
 
 if __name__ == "__main__":
