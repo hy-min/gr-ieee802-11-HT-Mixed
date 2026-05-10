@@ -453,63 +453,7 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         ltf0_saved = true;
     }
 
-    if (extract_call_count == 1 && ltf0_saved) {
-        // This is LTF1 - compare with saved LTF0
-        fprintf(stderr, "\n[NAKED_TEST] Comparing LTF0 vs LTF1 (first HT-SIG detection):\n");
-        fprintf(stderr, "  Comparing raw FFT at same bins:\n");
-
-        // Compare specific bins
-        int bins_to_check[] = {6, 7, 8, 9, 10, 22, 23, 24, 40, 41, 42, 54};
-        for (int b = 0; b < sizeof(bins_to_check)/sizeof(bins_to_check[0]); b++) {
-            int bin = bins_to_check[b];
-            float mag0 = std::abs(saved_ltf0_fft[bin]);
-            float mag1 = std::abs(sym64[bin]);
-            float phase0 = std::arg(saved_ltf0_fft[bin]) * 180 / M_PI;
-            float phase1 = std::arg(sym64[bin]) * 180 / M_PI;
-            float phase_diff = phase1 - phase0;
-            // Normalize phase difference to [-180, 180]
-            while (phase_diff > 180) phase_diff -= 360;
-            while (phase_diff < -180) phase_diff += 360;
-            fprintf(stderr, "  bin[%2d]: LTF0=%8.3f∠%6.1f  LTF1=%8.3f∠%6.1f  diff=%+6.1fdeg\n",
-                    bin, mag0, phase0, mag1, phase1, phase_diff);
-        }
-        ltf0_saved = false;
-        fprintf(stderr, "[NAKED_TEST] End comparison\n\n");
-    }
-
     extract_call_count++;
-    // 调试：打印前几个子载波索引和值
-    static int call_count = 0;
-    if (call_count < 10) {
-        std::fprintf(stderr, "[EXTRACT] called, first 5 subcarriers:\n");
-        for (int i = 0; i < 5 && i < 48; i++) {
-            int fft_bin = kHeader48Bin[i];  // EXPLICIT bin mapping!
-            gr_complex val = sym64[fft_bin];
-            std::fprintf(stderr, "  i=%d, sc=%d, bin=%d, val=%.3f+%.3fi\n",
-                        i, kHeader48Sc[i], fft_bin,
-                        val.real(), val.imag());
-        }
-        // NAKED_TEST: Print specific FFT bins for physical layer verification
-        // These are actual bin indices, not subcarrier indices
-        std::fprintf(stderr, "[NAKED_FFT] Physical FFT bins (not SC indices):\n");
-        std::fprintf(stderr, "  bin[10] (SC+10, pos freq):  %.3f+%.3fi | %.3f∠%.1f\n",
-                    sym64[10].real(), sym64[10].imag(),
-                    std::abs(sym64[10]), std::arg(sym64[10])*180/M_PI);
-        std::fprintf(stderr, "  bin[22] (SC-10, neg freq):  %.3f+%.3fi | %.3f∠%.1f\n",
-                    sym64[22].real(), sym64[22].imag(),
-                    std::abs(sym64[22]), std::arg(sym64[22])*180/M_PI);
-        std::fprintf(stderr, "  bin[32] (DC):              %.3f+%.3fi | %.3f∠%.1f\n",
-                    sym64[32].real(), sym64[32].imag(),
-                    std::abs(sym64[32]), std::arg(sym64[32])*180/M_PI);
-        std::fprintf(stderr, "  bin[40] (SC+8, pos freq):   %.3f+%.3fi | %.3f∠%.1f\n",
-                    sym64[40].real(), sym64[40].imag(),
-                    std::abs(sym64[40]), std::arg(sym64[40])*180/M_PI);
-        std::fprintf(stderr, "  bin[54] (SC+22, pos freq):  %.3f+%.3fi | %.3f∠%.1f\n",
-                    sym64[54].real(), sym64[54].imag(),
-                    std::abs(sym64[54]), std::arg(sym64[54])*180/M_PI);
-        call_count++;
-        std::fflush(stderr);
-    }
 
     for (int i = 0; i < 48; i++) {
         out52[i] = sym64[kHeader48Bin[i]];  // EXPLICIT bin mapping!
@@ -526,86 +470,15 @@ static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint
     }
 }
 
-// NAKED_TEST: Print raw FFT at specific bins to verify LTF0 vs LTF1 equality
-static void print_naked_lltf_test(const gr_complex* sym64_ltf0, const gr_complex* sym64_ltf1)
-{
-    std::fprintf(stderr, "[NAKED_TEST] Raw FFT comparison (before subcarrier extraction):\n");
-
-    // Check positive frequency bin (e.g., FFT bin 10 = SC +10)
-    int pos_bin = sc_to_fft_bin(10);
-    std::fprintf(stderr, "  FFT bin %d (SC +10, pos freq): LTF0=%10.3f∠%6.1f  LTF1=%10.3f∠%6.1f\n",
-                pos_bin,
-                std::abs(sym64_ltf0[pos_bin]), std::arg(sym64_ltf0[pos_bin]) * 180 / M_PI,
-                std::abs(sym64_ltf1[pos_bin]), std::arg(sym64_ltf1[pos_bin]) * 180 / M_PI);
-
-    // Check negative frequency bin (e.g., FFT bin 40 = SC +8... wait, FFT bin 40 is SC +8)
-    // For negative frequency, let's use SC -10 → bin 22
-    int neg_bin = sc_to_fft_bin(-10);
-    std::fprintf(stderr, "  FFT bin %d (SC -10, neg freq): LTF0=%10.3f∠%6.1f  LTF1=%10.3f∠%6.1f\n",
-                neg_bin,
-                std::abs(sym64_ltf0[neg_bin]), std::arg(sym64_ltf0[neg_bin]) * 180 / M_PI,
-                std::abs(sym64_ltf1[neg_bin]), std::arg(sym64_ltf1[neg_bin]) * 180 / M_PI);
-
-    // Check DC bin
-    std::fprintf(stderr, "  FFT bin 32 (DC):          LTF0=%10.3f∠%6.1f  LTF1=%10.3f∠%6.1f\n",
-                std::abs(sym64_ltf0[32]), std::arg(sym64_ltf0[32]) * 180 / M_PI,
-                std::abs(sym64_ltf1[32]), std::arg(sym64_ltf1[32]) * 180 / M_PI);
-
-    // Phase difference
-    float phase_diff_pos = std::arg(sym64_ltf1[pos_bin]) - std::arg(sym64_ltf0[pos_bin]);
-    float phase_diff_neg = std::arg(sym64_ltf1[neg_bin]) - std::arg(sym64_ltf0[neg_bin]);
-    std::fprintf(stderr, "  Phase diff: pos_freq=%+.1fdeg, neg_freq=%+.1fdeg\n",
-                phase_diff_pos * 180 / M_PI, phase_diff_neg * 180 / M_PI);
-    std::fflush(stderr);
-}
-
 static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
 {
-    // 调试：L-LTF符号质量分析
-    float lltf0_mag_sum = 0.0f, lltf1_mag_sum = 0.0f;
-    for (int i = 0; i < 52; i++) {
-        lltf0_mag_sum += std::abs(lltf0_52[i]);
-        lltf1_mag_sum += std::abs(lltf1_52[i]);
-    }
-    std::fprintf(stderr, "[CHAN_EST][DEBUG] L-LTF0 average magnitude: %.4f\n", lltf0_mag_sum / 52.0f);
-    std::fprintf(stderr, "[CHAN_EST][DEBUG] L-LTF1 average magnitude: %.4f\n", lltf1_mag_sum / 52.0f);
-
-    // 调试：比较接收到的L-LTF符号与期望符号
-    std::fprintf(stderr, "[CHAN_EST][LLTF_COMPARE] First 20 data subcarriers:\n");
-    for (int i = 0; i < 20 && i < 48; i++) {
-        const gr_complex avg = 0.5f * (lltf0_52[i] + lltf1_52[i]);
-        float avg_real = avg.real();
-        float avg_imag = avg.imag();
-        float avg_mag = std::abs(avg);
-        float avg_phase = std::arg(avg);
-        int expected_sign = kLltf48Sign[i];
-        std::fprintf(stderr, "  i=%d sc=%d: expected=%d, avg=%.3f+%.3fi (mag=%.3f, phase=%.3f), received0=%.3f+%.3fi received1=%.3f+%.3fi\n",
-                    i, kHeader48Sc[i], expected_sign,
-                    avg_real, avg_imag, avg_mag, avg_phase,
-                    lltf0_52[i].real(), lltf0_52[i].imag(),
-                    lltf1_52[i].real(), lltf1_52[i].imag());
-    }
-    std::fflush(stderr);
-
-    int opposite_sign_count = 0;
+    // Channel estimation using LTF0 only (avoid averaging opposite signs)
     for (int i = 0; i < 48; i++) {
-        // FIXED: Use only LTF0 for channel estimation to avoid opposite-sign averaging problem
-        // When lltf0 and lltf1 have opposite phases, averaging gives wrong/inconsistent results
         const gr_complex lltf0 = lltf0_52[i];
-        const gr_complex lltf1 = lltf1_52[i];
         const gr_complex tx = kLltf48TX[i];
 
-        // 检查L-LTF符号一致性
-        const float dot_product = lltf0.real() * lltf1.real() + lltf0.imag() * lltf1.imag();
-        if (dot_product < 0) {
-            opposite_sign_count++;
-            std::fprintf(stderr, "[CHAN_EST][WARNING] Opposite signs at SC%d (idx=%d): lltf0=%.3f+%.3fi, lltf1=%.3f+%.3fi, dot=%.3f\n",
-                        kHeader48Sc[i], i, lltf0.real(), lltf0.imag(), lltf1.real(), lltf1.imag(), dot_product);
-        }
-
-        // Channel estimation using LTF0 only (avoid averaging opposite signs)
         if (std::abs(tx) > 0.001f) {
             H52[i] = lltf0 / tx;
         } else {
@@ -614,59 +487,16 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     }
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
-        const gr_complex lltf1 = lltf1_52[48 + i];
         // FIX: Use actual TX pilot values kHeaderPilotBase (real ±1), not kLltfPilotTX (complex FFT values)
         // The TX pilots for L-SIG are {1, 1, 1, -1} (real), not the complex FFT of LTF sequence
         const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
 
-        // 检查L-LTF符号一致性
-        const float dot_product = lltf0.real() * lltf1.real() + lltf0.imag() * lltf1.imag();
-        if (dot_product < 0) {
-            opposite_sign_count++;
-            std::fprintf(stderr, "[CHAN_EST][WARNING] Opposite signs at pilot SC%d (idx=%d)\n",
-                        kPilot4Sc[i], 48 + i);
-        }
-
-        // Channel estimation using LTF0 only
         if (std::abs(tx) > 0.001f) {
             H52[48 + i] = lltf0 / tx;
         } else {
             H52[48 + i] = lltf0;  // fallback
         }
     }
-
-    if (opposite_sign_count > 0) {
-        std::fprintf(stderr, "[CHAN_EST][WARNING] Total %d/%d subcarriers with opposite L-LTF signs\n",
-                    opposite_sign_count, 52);
-    }
-
-    // 调试：计算信道幅度和相位分布
-    float mag_sum = 0.0f;
-    float mag_min = 1e9f, mag_max = 0.0f;
-    float phase_min = 3.14f, phase_max = -3.14f;
-    int zero_count = 0;
-    for (int i = 0; i < 52; i++) {
-        float mag = std::abs(H52[i]);
-        float phase = std::arg(H52[i]);
-        mag_sum += mag;
-        if (mag < mag_min) mag_min = mag;
-        if (mag > mag_max) mag_max = mag;
-        if (phase < phase_min) phase_min = phase;
-        if (phase > phase_max) phase_max = phase;
-        if (mag < 0.001f) zero_count++;
-    }
-    std::fprintf(stderr, "[CHAN_EST] Average channel magnitude: %.4f\n", mag_sum / 52.0f);
-    std::fprintf(stderr, "[CHAN_EST] Channel magnitude range: [%.4f, %.4f]\n", mag_min, mag_max);
-    std::fprintf(stderr, "[CHAN_EST] Channel phase range: [%.3f, %.3f] rad\n", phase_min, phase_max);
-    std::fprintf(stderr, "[CHAN_EST] Zero magnitude subcarriers: %d/52\n", zero_count);
-
-    // 调试：打印前10个子载波的信道估计
-    for (int i = 0; i < 10 && i < 52; i++) {
-        std::fprintf(stderr, "[CHAN_EST][SC%d] H=%.3f+%.3fi, mag=%.3f, phase=%.3f\n",
-                    i, H52[i].real(), H52[i].imag(), std::abs(H52[i]), std::arg(H52[i]));
-    }
-
-    std::fflush(stderr);
 }
 
 static float estimate_header_cpe_rad(const gr_complex* rx52,
@@ -687,6 +517,37 @@ static float estimate_header_cpe_rad(const gr_complex* rx52,
     }
 
     return std::arg(acc);
+}
+
+// 4th-power phase estimation for L-SIG when pilots are not available
+// For BPSK: after equalization, eq[i] = tx_bit[i] * exp(jθ)
+// Then eq[i]^4 = exp(j4θ) (since (±1)^4 = 1)
+// So arg(mean(eq[i]^4)) = 4θ, and θ = arg(mean(eq[i]^4)) / 4
+static float estimate_cpe_4th_power(const gr_complex* rx52, const gr_complex* H52, float fudge_factor = 1.0f)
+{
+    gr_complex acc(0.0f, 0.0f);
+    int count = 0;
+
+    for (int i = 0; i < 48; i++) {
+        float h_mag = std::abs(H52[i]);
+        if (h_mag < 0.1f) continue;
+
+        const gr_complex eq = safe_div(rx52[i], H52[i]);
+        float eq_mag = std::abs(eq);
+        if (eq_mag < 0.1f) continue;
+
+        // Normalize to unit circle and raise to 4th power
+        gr_complex eq_norm = eq / eq_mag;
+        acc += eq_norm * eq_norm * eq_norm * eq_norm;
+        count++;
+    }
+
+    if (count < 10 || std::abs(acc) < 1e-9f) {
+        return 0.0f;
+    }
+
+    float phase_4x = std::arg(acc);
+    return (phase_4x / 4.0f) * fudge_factor;
 }
 
 // Alternative CPE estimation that directly uses rx pilots without H
@@ -714,11 +575,25 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
                                                gr_complex* out_eq48,
                                                uint8_t* out_bits48)
 {
-    const float cpe = estimate_header_cpe_rad(rx52, H52);
-    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
+    // Check if pilots are usable (non-zero)
+    bool pilots_usable = false;
+    for (int i = 0; i < 4; i++) {
+        if (std::abs(rx52[48 + i]) > 0.01f) {
+            pilots_usable = true;
+            break;
+        }
+    }
 
-    std::fprintf(stderr, "[EQ_HEADER] CPE estimate: %.3f rad, rot=%.3f+%.3fi\n",
-                cpe, rot.real(), rot.imag());
+    float cpe;
+    if (pilots_usable) {
+        cpe = estimate_header_cpe_rad(rx52, H52);
+    } else {
+        // Pilots are zero (FFT misalignment), use 4th power method
+        // Try a fudge factor since 4th power method might underestimate
+        cpe = estimate_cpe_4th_power(rx52, H52, 1.5f);
+    }
+
+    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
     int zero_H_count = 0;
     float rx_mag_sum = 0.0f, eq_mag_sum = 0.0f;
@@ -1422,20 +1297,6 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
-    // Debug: print first 24 encoded bits before Viterbi (HT-SIG)
-    std::fprintf(stderr, "[VITERBI_IN] enc96[0:24] = ");
-    for (int i = 0; i < 24; i++) {
-        std::fprintf(stderr, "%d", enc96[i]);
-    }
-    std::fprintf(stderr, "\n");
-
-    // Debug: print first 20 encoded bits before Viterbi (HT-SIG)
-    std::fprintf(stderr, "[VITERBI_HT_SIG] enc96[0:20] = ");
-    for (int i = 0; i < 20 && i < 96; i++) {
-        std::fprintf(stderr, "%d", enc96[i]);
-    }
-    std::fprintf(stderr, "\n");
-
     std::vector<uint8_t> dec48;
     if (!viterbi_decode_133_171(enc96, 96, dec48)) {
         std::fprintf(stderr, "[VITERBI_HT_SIG] decode failed!\n");
@@ -1586,19 +1447,13 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         }
         // Probe eq phase
         if (i < 5) {
-            fprintf(stderr, "[DECODE_HT]   i=%d eq=%.3f+%.3fi phase=%+.1fdeg imag>=0?%d\n",
-                    i, eq.real(), eq.imag(), std::arg(eq)*180/M_PI, (eq.imag() >= 0.0f) ? 1 : 0);
+            fprintf(stderr, "[DECODE_HT]   i=%d eq=%.3f+%.3fi phase=%+.1fdeg real>=0?%d\n",
+                    i, eq.real(), eq.imag(), std::arg(eq)*180/M_PI, (eq.real() >= 0.0f) ? 1 : 0);
         }
-        // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        // bit 0 → +j (imag >= 0), bit 1 → -j (imag < 0)
-        eqbits48_a[i] = (eq.imag() >= 0.0f) ? 0 : 1;
+        // QPSK: HT-SIG uses standard QPSK (45° offset), bits are on REAL axis
+        // bit 0 → real >= 0, bit 1 → real < 0
+        eqbits48_a[i] = (eq.real() >= 0.0f) ? 0 : 1;
     }
-    // Probe: print eqbits48_a before deinterleave
-    fprintf(stderr, "[EQ_BITS] eqbits48_a[0:24]=");
-    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", eqbits48_a[i]);
-    fprintf(stderr, "\n");
-    fflush(stderr);
-
     // Extract bits from HT-SIG1 (rx52_b)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
@@ -1608,8 +1463,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         } else {
             eq = safe_div(rx52_b[i], H52[i]);
         }
-        // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        eqbits48_b[i] = (eq.imag() >= 0.0f) ? 0 : 1;
+        // QPSK: HT-SIG uses standard QPSK (45° offset), bits are on REAL axis
+        eqbits48_b[i] = (eq.real() >= 0.0f) ? 0 : 1;
     }
 
     if (invert_a) {
@@ -1640,18 +1495,6 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
-    // Debug: print full 96 encoded bits before Viterbi
-    std::fprintf(stderr, "[VITERBI_IN] enc96[0:48] = ");
-    for (int i = 0; i < 48; i++) {
-        std::fprintf(stderr, "%d", enc96[i]);
-    }
-    std::fprintf(stderr, "\n");
-    std::fprintf(stderr, "[VITERBI_IN] enc96[48:96] = ");
-    for (int i = 48; i < 96; i++) {
-        std::fprintf(stderr, "%d", enc96[i]);
-    }
-    std::fprintf(stderr, "\n");
-
     std::vector<uint8_t> dec48;
     if (!viterbi_decode_133_171(enc96, 96, dec48)) {
         std::fprintf(stderr, "[VITERBI_HT_SIG] decode failed!\n");
@@ -1662,13 +1505,6 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     }
 
     const uint8_t* decoded_bits = dec48.data();
-
-    // Debug: print first 10 decoded bits
-    std::fprintf(stderr, "[VITERBI_OUT] dec48[0:10] = ");
-    for (int i = 0; i < 10; i++) {
-        std::fprintf(stderr, "%d", decoded_bits[i] & 1);
-    }
-    std::fprintf(stderr, "\n");
 
     int mcs = 0;
     int psdu_length = 0;
@@ -2720,6 +2556,23 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                 // Try all rotations (0, 90°, 180°, 270°) and 180° ambiguity on each symbol
                 // Note: try ALL rotations, not just from start_rot, to avoid missing correct rotation
+
+                // DEBUG: Print raw FFT bins for HT-SIG0 before rotation compensation
+                fprintf(stderr, "[FFT_RAW_HT0] d_early_eqsym[kHtSig0Rel] BEFORE rotation:\n");
+                for (int i = 0; i < 48; i++) {
+                    fprintf(stderr, "  idx[%d] SC%+.2d (bin%d) = %.3f+%.3fi\n",
+                            i, kHeader48Sc[i], kHeader48Bin[i],
+                            d_early_eqsym[kHtSig0Rel][i].real(), d_early_eqsym[kHtSig0Rel][i].imag());
+                }
+                fprintf(stderr, "[FFT_RAW_HT0] Pilots:\n");
+                for (int i = 0; i < 4; i++) {
+                    int idx = 48 + i;
+                    fprintf(stderr, "  idx[%d] (bin%d) = %.3f+%.3fi\n",
+                            idx, kPilot4Bin[i],
+                            d_early_eqsym[kHtSig0Rel][idx].real(), d_early_eqsym[kHtSig0Rel][idx].imag());
+                }
+                fflush(stderr);
+
                 for (int rot = 0; rot <= 3 && !found; rot++) {
                     // Apply rotation compensation
                     gr_complex rot_htsig0[52];

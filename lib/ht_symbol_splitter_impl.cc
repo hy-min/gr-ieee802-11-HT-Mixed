@@ -128,10 +128,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
                 uint64_t tag_abs_pos = (uint64_t)tag.offset;
 
-                // ESSENTIAL DEBUG: wifi_start tag
-                fprintf(stderr, "[HT_SPLITTER] wifi_start tag: offset=%llu, value(d_frame_start)=%llu\n",
-                        (unsigned long long)tag_abs_pos, (unsigned long long)d_frame_start);
-
                 // d_frame_start_abs should be the ABSOLUTE position where L-LTF DATA starts.
                 // wifi_start tag.offset = absolute position in input stream where tag was written
                 // d_frame_start (176) = offset within sync_long where L-LTF DATA starts
@@ -167,14 +163,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // it means a new frame has started (we don't re-use wifi_start within a frame)
                 bool is_new_frame = d_frame_start_known;
 
-                d_frame_start_abs = tag_abs_pos;  // tag.offset = position in stream where wifi_start appears
+                d_frame_start_abs = d_frame_start;  // tag.offset = position in stream where wifi_start appears
 
                 d_frame_start_known = true;
 
-                // ESSENTIAL DEBUG: wifi_start detected
-                fprintf(stderr, "[HT_SPLITTER] %s wifi_start detected at abs_pos=%llu\n",
-                        is_new_frame ? "NEW_FRAME" : "FIRST",
-                        (unsigned long long)tag_abs_pos);
                 // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
                 add_item_tag(0,  // output port 0
                              nitems_written(0),  // current output position
