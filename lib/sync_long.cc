@@ -236,7 +236,9 @@ public:
                     int p1 = get<1>(vec[i]);
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
-                    d_frame_start = lower_peak + 2;
+                    // FIX: Use correct L-LTF0 DATA start (176), not lower_peak + 2
+                    // The correlation peak may appear in CP region (160-175) rather than DATA region (176-239)
+                    d_frame_start = 176;  // Fixed: L-LTF0 DATA starts at input 176
                     mode = "HT-mode";
                     d_freq_offset = d_freq_offset_short;
                     fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
