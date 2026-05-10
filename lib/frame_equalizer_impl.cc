@@ -1495,6 +1495,25 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
+    // DEBUG: Print RX enc96 bits before Viterbi decode
+    fprintf(stderr, "[RX_ENC96] ");
+    for (int i = 0; i < 96; i++) {
+        fprintf(stderr, "%d", enc96[i]);
+    }
+    fprintf(stderr, "\n");
+    fflush(stderr);
+
+    // DEBUG: Compare with known TX bits (from Task 1 capture)
+    const char* tx_intl96 = "000000000111100000000000000001000000000011101100000000010100010100000001011101100000001011001110";
+    fprintf(stderr, "[TX_ENC96] %s\n", tx_intl96);
+
+    // Count bit differences
+    int diff_count = 0;
+    for (int i = 0; i < 96; i++) {
+        if (enc96[i] != (tx_intl96[i] - '0')) diff_count++;
+    }
+    fprintf(stderr, "[BITDIFF] %d/96 bits differ\n", diff_count);
+
     std::vector<uint8_t> dec48;
     if (!viterbi_decode_133_171(enc96, 96, dec48)) {
         std::fprintf(stderr, "[VITERBI_HT_SIG] decode failed!\n");
