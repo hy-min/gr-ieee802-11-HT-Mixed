@@ -278,7 +278,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //
             // L-LTF: 160 samples = 32 GI2 + 64 LTF0 + 64 LTF1
             //   - rel_idx 0-63:   LTF0 DATA (input d_frame_start to d_frame_start+63)
-            //   - rel_idx 64-127: LTF1 DATA (continuous, NO CP between LTF0 and LTF1!)
+            //   - rel_idx 64-79:  LTF1 CP (16 samples) -> SKIP
+            //   - rel_idx 80-143: LTF1 DATA (64 samples) -> BUFFER
             //   - rel_idx 128-143: L-SIG CP (16 samples) -> SKIP
             //   - rel_idx 144-207: L-SIG DATA (64 samples) -> BUFFER
             //   - rel_idx 208-223: HT-SIG0 CP (16 samples) -> SKIP
