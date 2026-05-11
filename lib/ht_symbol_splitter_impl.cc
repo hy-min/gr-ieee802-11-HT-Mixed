@@ -152,18 +152,28 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // But the original code uses d_frame_start = 176, which would make
                 // rel_idx = current_idx - 176. At current_idx = 1166976 (where tag was found),
                 // rel_idx = 1166800, which is way off.
-                //
-                // The fix: d_frame_start_abs should be d_frame_start, not tag.offset.
-                // sync_long sets d_frame_start=176 (L-LTF0 DATA start in original input).
-                // We want rel_idx=0 to correspond to L-LTF0 DATA start.
-                // d_frame_start_abs = d_frame_start;
+                // d_frame_start_abs should be 0 because:
+                // - sync_long output[0] = sync_long input[d_frame_start] = input[176]
+                // - ht_symbol_splitter input[0] = sync_long output[0] = input[176]
+                // - So L-LTF0 DATA starts at ht_symbol_splitter input position 0
+                // - We want rel_idx=0 to correspond to L-LTF0 DATA start
+                // - Therefore d_frame_start_abs = 0
+
+                // CORRECT FIX: Compute buffer-relative index where wifi_start appears
+                // tag.offset is absolute position in input stream
+                // nitems_read(0) is number of samples already consumed
+                // buffer_start_idx is position in current in[] buffer where L-LTF0 DATA starts
+                int64_t buffer_start_idx = (int64_t)tag_abs_pos - (int64_t)nitems_read(0);
+
+                // d_frame_start_abs should be the position in CURRENT buffer where L-LTF0 starts
+                // Since wifi_start at buffer_start_idx corresponds to L-LTF0 DATA start,
+                // and we want rel_idx=0 at L-LTF0 DATA, set d_frame_start_abs = buffer_start_idx
+                d_frame_start_abs = buffer_start_idx;
 
                 // Check if this is a NEW frame
                 // If d_frame_start_known is already true and we see another wifi_start,
                 // it means a new frame has started (we don't re-use wifi_start within a frame)
                 bool is_new_frame = d_frame_start_known;
-
-                d_frame_start_abs = tag_abs_pos;  // tag.offset = position in stream where wifi_start appears
 
                 d_frame_start_known = true;
 
