@@ -1187,6 +1187,12 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         std::memcpy(dbg_deintl48, deintl48, 48);
     }
 
+    fprintf(stderr, "[VITERBI_IN] 48 bits:\n");
+    for (int di = 0; di < 48; di++) {
+        fprintf(stderr, "%d", deintl48[di]);
+        if ((di+1) % 12 == 0) fprintf(stderr, "\n");
+    }
+
     std::vector<uint8_t> dec24;
     if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
         fprintf(stderr, "[LSIG_DECODE] Viterbi decode failed!\n");
