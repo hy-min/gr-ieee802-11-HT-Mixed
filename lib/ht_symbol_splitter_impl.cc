@@ -267,21 +267,23 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // rel_idx 400-463: HT-STF DATA (input 576-639)
             // rel_idx 464+: HT-DATA (each symbol 80 samples: 16 CP + 64 data)
             // ============================================================
-            // HT-Mixed 20MHz Preamble Structure (CORRECTED):
+            // HT-Mixed 20MHz Preamble Structure (IEEE 802.11n):
             //
-            // L-LTF: 160 samples = 32 GI2 + 64 LTF0 + 64 LTF1
-            //   - rel_idx 0-63:   LTF0 DATA (input d_frame_start to d_frame_start+63)
-            //   - rel_idx 64-79:  LTF1 CP (16 samples) -> SKIP
-            //   - rel_idx 80-143: LTF1 DATA (64 samples) -> BUFFER
-            //   - rel_idx 128-143: L-SIG CP (16 samples) -> SKIP
-            //   - rel_idx 144-207: L-SIG DATA (64 samples) -> BUFFER
-            //   - rel_idx 208-223: HT-SIG0 CP (16 samples) -> SKIP
-            //   - rel_idx 224-287: HT-SIG0 DATA (64 samples) -> BUFFER
-            //   - rel_idx 288-303: HT-SIG1 CP (16 samples) -> SKIP
-            //   - rel_idx 304-367: HT-SIG1 DATA (64 samples) -> BUFFER
-            //   - rel_idx 368-383: HT-STF CP (16 samples) -> SKIP
-            //   - rel_idx 384-447: HT-STF DATA (64 samples) -> BUFFER
-            //   - rel_idx 448+: HT-DATA (80-sample period: 16 CP + 64 Data)
+            // sync_long outputs from input 176 (L-LTF0 DATA start)
+            // rel_idx = input_pos - 176
+            //
+            // L-LTF0 DATA: rel_idx 0-63 (64 samples) -> BUFFER
+            // L-LTF1 CP: rel_idx 64-79 (16 samples) -> SKIP
+            // L-LTF1 DATA: rel_idx 80-143 (64 samples) -> BUFFER
+            // L-SIG CP: rel_idx 144-159 (16 samples) -> SKIP
+            // L-SIG DATA: rel_idx 160-223 (64 samples) -> BUFFER
+            // HT-SIG0 CP: rel_idx 224-239 (16 samples) -> SKIP
+            // HT-SIG0 DATA: rel_idx 240-303 (64 samples) -> BUFFER
+            // HT-SIG1 CP: rel_idx 304-319 (16 samples) -> SKIP
+            // HT-SIG1 DATA: rel_idx 320-383 (64 samples) -> BUFFER
+            // HT-STF CP: rel_idx 384-399 (16 samples) -> SKIP
+            // HT-STF DATA: rel_idx 400-463 (64 samples) -> BUFFER
+            // HT-DATA: rel_idx 464+ (80-sample period: 16 CP + 64 Data)
             // ============================================================
             if (rel_idx < 64) {
                 // Stage 1: L-LTF0 DATA (rel_idx 0-63)
@@ -292,21 +294,30 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             } else if (rel_idx < 144) {
                 // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
                 should_buffer = true;
-            } else if (rel_idx < 208) {
+            } else if (rel_idx < 224) {
                 // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
                 should_buffer = (rel_idx >= 160);
-            } else if (rel_idx < 288) {
-                // Stage 3: HT-SIG0 (rel_idx 192-207 CP, 208-271 DATA)
-                should_buffer = (rel_idx >= 208);
-            } else if (rel_idx < 368) {
-                // Stage 4: HT-SIG1 (rel_idx 272-287 CP, 288-351 DATA)
-                should_buffer = (rel_idx >= 288);
-            } else if (rel_idx < 448) {
-                // Stage 5: HT-STF (rel_idx 368-383 CP, 384-447 DATA)
-                should_buffer = (rel_idx >= 384);
+            } else if (rel_idx < 240) {
+                // Stage 3: HT-SIG0 CP (rel_idx 224-239) - SKIP
+                should_buffer = false;
+            } else if (rel_idx < 304) {
+                // Stage 3b: HT-SIG0 DATA (rel_idx 240-303)
+                should_buffer = true;
+            } else if (rel_idx < 320) {
+                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - SKIP
+                should_buffer = false;
+            } else if (rel_idx < 384) {
+                // Stage 4b: HT-SIG1 DATA (rel_idx 320-383)
+                should_buffer = true;
+            } else if (rel_idx < 400) {
+                // Stage 5: HT-STF CP (rel_idx 384-399) - SKIP
+                should_buffer = false;
+            } else if (rel_idx < 464) {
+                // Stage 5b: HT-STF DATA (rel_idx 400-463)
+                should_buffer = true;
             } else {
-                // Stage 6: HT-DATA and beyond (80-sample period)
-                uint64_t sym_rel_idx = rel_idx - 448;
+                // Stage 6: HT-DATA and beyond (80-sample period: 16 CP + 64 Data)
+                uint64_t sym_rel_idx = rel_idx - 464;
                 uint64_t sym_offset = sym_rel_idx % 80;
                 if (sym_offset >= 16) {
                     should_buffer = true;  // Skip CP, buffer Data
@@ -321,45 +332,53 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
-                // Explicit boundary positions for HT-mixed 20MHz:
+                // Explicit boundary positions for HT-mixed 20MHz (IEEE 802.11n):
                 // L-LTF0 DATA: ends at out_rel_idx=63
                 // L-LTF1 DATA: ends at out_rel_idx=143
-                // L-SIG DATA: ends at out_rel_idx=223
-                // HT-SIG0 DATA: ends at out_rel_idx=287
-                // HT-SIG1 DATA: ends at out_rel_idx=367
-                // HT-STF DATA: ends at out_rel_idx=431
-                // HT-DATA: 448 + n*80 (for n >= 0)
+                // L-SIG DATA: ends at out_rel_idx=223 (64 samples: rel_idx 160-223)
+                // HT-SIG0 DATA: ends at out_rel_idx=303 (64 samples: rel_idx 240-303)
+                // HT-SIG1 DATA: ends at out_rel_idx=383 (64 samples: rel_idx 320-383)
+                // HT-STF DATA: ends at out_rel_idx=463 (64 samples: rel_idx 400-463)
+                // HT-DATA: 464 + n*80 (for n >= 0)
                 bool at_boundary = false;
                 if (out_rel_idx == 63 || out_rel_idx == 143 || out_rel_idx == 223) {
                     // L-LTF/L-SIG boundaries
                     at_boundary = true;
-                } else if (out_rel_idx == 287 || out_rel_idx == 367) {
+                } else if (out_rel_idx == 303 || out_rel_idx == 383) {
                     // HT-SIG boundaries
                     at_boundary = true;
-                } else if (out_rel_idx == 431) {
+                } else if (out_rel_idx == 463) {
                     // HT-STF boundary
                     at_boundary = true;
-                } else if (rel_idx >= 448) {
+                } else if (rel_idx >= 464) {
                     // HT-DATA and beyond: 80-sample periodicity
-                    at_boundary = ((out_rel_idx - 448) % 80 == 0);
+                    at_boundary = ((out_rel_idx - 464) % 80 == 0);
                 }
 
                 if (at_boundary) {
                     // Debug: Print symbol type based on rel_idx
                     // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
                     // rel_idx=223: output is L-SIG FFT (L-SIG DATA ends at 223)
-                    // rel_idx=287: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 287)
-                    // rel_idx=367: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 367)
+                    // rel_idx=303: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 303)
+                    // rel_idx=383: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 383)
                     int symbol_type = -1;
                     if (out_rel_idx == 223) {
                         symbol_type = 2; // L-SIG FFT
-                    } else if (out_rel_idx == 287) {
+                    } else if (out_rel_idx == 303) {
                         symbol_type = 3; // HT-SIG0 FFT
-                    } else if (out_rel_idx == 367) {
+                    } else if (out_rel_idx == 383) {
                         symbol_type = 4; // HT-SIG1 FFT
                     }
                     fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
                             symbol_type, (unsigned long long)out_rel_idx);
+                    // Debug: Print first 4 samples of L-SIG FFT
+                    if (out_rel_idx == 223) {
+                        fprintf(stderr, "[SPLITTER][LSIG_FFT] First 4 samples: ");
+                        for (int dbg_i = 0; dbg_i < 4 && dbg_i < d_fft_size; dbg_i++) {
+                            fprintf(stderr, "%.3f%+.3fi ", d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
+                        }
+                        fprintf(stderr, "\n");
+                    }
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     produced += d_fft_size;
