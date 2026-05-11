@@ -2132,6 +2132,31 @@ int frame_equalizer_impl::general_work(int noutput_items,
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
+            // ===== DEBUG: Print raw L-SIG subcarriers before EQ =====
+            if (d_internal_symbol_counter == kLSigRel) {
+                fprintf(stderr, "[LSIG_RAW] d_sym_idx=%d d_internal_counter=%d - Raw L-SIG subcarriers (before EQ):\n",
+                        d_sym_idx, d_internal_symbol_counter);
+                fprintf(stderr, "[LSIG_RAW] First 8 data subcarriers (indices 0-7):\n");
+                for (int di = 0; di < 8; di++) {
+                    gr_complex val = d_early_eqsym[kLSigRel][di];
+                    fprintf(stderr, "  sc[%d]=%.4f%+.4fi | mag=%.4f phase=%+.1fdeg\n",
+                            di, val.real(), val.imag(), std::abs(val), std::arg(val)*180/M_PI);
+                }
+                fprintf(stderr, "[LSIG_RAW] Last 4 data subcarriers (indices 44-47):\n");
+                for (int di = 44; di < 48; di++) {
+                    gr_complex val = d_early_eqsym[kLSigRel][di];
+                    fprintf(stderr, "  sc[%d]=%.4f%+.4fi | mag=%.4f phase=%+.1fdeg\n",
+                            di, val.real(), val.imag(), std::abs(val), std::arg(val)*180/M_PI);
+                }
+                fprintf(stderr, "[LSIG_RAW] Pilot subcarriers (indices 48-51):\n");
+                for (int di = 48; di < 52; di++) {
+                    gr_complex val = d_early_eqsym[kLSigRel][di];
+                    fprintf(stderr, "  sc[%d]=%.4f%+.4fi | mag=%.4f phase=%+.1fdeg\n",
+                            di, val.real(), val.imag(), std::abs(val), std::arg(val)*180/M_PI);
+                }
+                fflush(stderr);
+            }
+
             // ===== Legacy vs HT-Mixed frame type detection =====
             // After L-SIG (rel_idx=2), detect if next symbol is Legacy Data or HT-SIG1
             // QBPSK rotation: E_Q > E_I indicates HT-SIG (+90° rotation)
