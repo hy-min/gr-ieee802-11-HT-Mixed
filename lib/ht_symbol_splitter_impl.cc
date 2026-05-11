@@ -335,15 +335,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
                     // rel_idx=303: output is L-SIG FFT (L-SIG DATA ends at 303)
                     // rel_idx=383: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 383)
-                    // rel_idx=463: would be HT-SIG1 FFT but excluded by HT-DATA check
-                    // rel_idx=543: output is HT-STF FFT (skipping 463)
+                    // rel_idx=543: output is HT-STF FFT
                     int symbol_type = -1;
                     if (out_rel_idx == 303) {
                         symbol_type = 2; // L-SIG FFT
                     } else if (out_rel_idx == 383) {
                         symbol_type = 3; // HT-SIG0 FFT
-                    } else if (out_rel_idx == 463) {
-                        symbol_type = 4; // HT-SIG1 FFT (but excluded)
                     }
                     fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
                             symbol_type, (unsigned long long)out_rel_idx);
