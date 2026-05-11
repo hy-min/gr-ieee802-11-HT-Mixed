@@ -675,6 +675,14 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
         out_bits48[i] = hard_bit_from_complex(eq);
     }
 
+    // Full equalization debug output for all 48 data subcarriers
+    std::fprintf(stderr, "[EQ_FULL] Equalized L-SIG symbols (48 data SC):\n");
+    for (int i = 0; i < 48; i++) {
+        std::fprintf(stderr, "  SC[%2d] idx[%2d]: eq=%.4f%+.4fi bit=%d\n",
+                kHeader48Sc[i], i, out_eq48[i].real(), out_eq48[i].imag(), out_bits48[i]);
+    }
+    std::fflush(stderr);
+
     std::fprintf(stderr, "[EQ_HEADER] Zero-magnitude H subcarriers: %d/48\n", zero_H_count);
     std::fprintf(stderr, "[EQ_HEADER] Average RX magnitude: %.4f\n", rx_mag_sum / 48.0f);
     std::fprintf(stderr, "[EQ_HEADER] Average EQ magnitude: %.4f\n", eq_mag_sum / 48.0f);
