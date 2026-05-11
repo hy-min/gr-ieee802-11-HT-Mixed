@@ -591,6 +591,15 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
             H52[48 + i] = lltf0 / kFftNormalize;  // fallback
         }
     }
+
+    // Debug: dump all 48 data subcarrier channel estimates
+    std::fprintf(stderr, "[CHAN_EST_FULL] All 48 data SC channel estimates:\n");
+    for (int i = 0; i < 48; i++) {
+        std::fprintf(stderr, "  SC[%2d] idx[%2d]: H=%.4f%+.4fi mag=%.4f phase=%+.1fdeg\n",
+                kHeader48Sc[i], i, H52[i].real(), H52[i].imag(),
+                std::abs(H52[i]), std::arg(H52[i])*180/M_PI);
+    }
+    std::fflush(stderr);
 }
 
 static float estimate_header_cpe_rad(const gr_complex* rx52,
