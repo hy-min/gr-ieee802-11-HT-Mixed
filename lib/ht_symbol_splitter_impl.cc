@@ -362,7 +362,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // rel_idx=303: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 303)
                     // rel_idx=383: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 383)
                     int symbol_type = -1;
-                    if (out_rel_idx == 223) {
+                    if (out_rel_idx == 63 || out_rel_idx == 143) {
+                        symbol_type = 0; // L-LTF FFT
+                    } else if (out_rel_idx == 223) {
                         symbol_type = 2; // L-SIG FFT
                     } else if (out_rel_idx == 303) {
                         symbol_type = 3; // HT-SIG0 FFT
@@ -380,6 +382,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             fprintf(stderr, "  bin[%d]=%.6f%+.6fi\n",
                                     di, d_buffer[di].real(), d_buffer[di].imag());
                         }
+                    }
+                    // L-LTF FFT verification: for ideal channel with taps=[1.0], bins should be ±1 real
+                    if (symbol_type == 0) {
+                        fprintf(stderr, "[SPLITTER_LLTF_VERIFY] First 8 bins:\n");
+                        for (int i = 0; i < 8; i++) {
+                            fprintf(stderr, "  bin[%d]=%.4f%+.4fi\n", i, d_buffer[i].real(), d_buffer[i].imag());
+                        }
+                        fflush(stderr);
                     }
                     produced += d_fft_size;
                     d_buffer_count = 0;
