@@ -371,16 +371,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     }
                     fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
                             symbol_type, (unsigned long long)out_rel_idx);
-                    // Debug: Print first 4 samples of L-SIG FFT
-                    if (out_rel_idx == 223) {
-                        fprintf(stderr, "[SPLITTER][LSIG_FFT] First 4 samples: ");
-                        for (int dbg_i = 0; dbg_i < 4 && dbg_i < d_fft_size; dbg_i++) {
-                            fprintf(stderr, "%.3f%+.3fi ", d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
-                        }
-                        fprintf(stderr, "\n");
-                    }
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+                    // Debug: Dump L-SIG FFT first 8 bins to stderr
+                    if (out_rel_idx == 223) {
+                        fprintf(stderr, "[SPLITTER_DUMP] L-SIG FFT samples (bins 0-7):\n");
+                        for (int di = 0; di < 8 && di < d_fft_size; di++) {
+                            fprintf(stderr, "  bin[%d]=%.6f%+.6fi\n",
+                                    di, d_buffer[di].real(), d_buffer[di].imag());
+                        }
+                    }
                     produced += d_fft_size;
                     d_buffer_count = 0;
                     d_buffer_filled = false;
