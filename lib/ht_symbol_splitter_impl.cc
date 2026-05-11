@@ -293,14 +293,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
                 should_buffer = true;
             } else if (rel_idx < 208) {
-                // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA)
-                should_buffer = (rel_idx >= 144);
+                // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
+                should_buffer = (rel_idx >= 160);
             } else if (rel_idx < 288) {
-                // Stage 3: HT-SIG0 (rel_idx 208-223 CP, 224-287 DATA)
-                should_buffer = (rel_idx >= 224);
+                // Stage 3: HT-SIG0 (rel_idx 192-207 CP, 208-271 DATA)
+                should_buffer = (rel_idx >= 208);
             } else if (rel_idx < 368) {
-                // Stage 4: HT-SIG1 (rel_idx 288-303 CP, 304-367 DATA)
-                should_buffer = (rel_idx >= 304);
+                // Stage 4: HT-SIG1 (rel_idx 272-287 CP, 288-351 DATA)
+                should_buffer = (rel_idx >= 288);
             } else if (rel_idx < 448) {
                 // Stage 5: HT-STF (rel_idx 368-383 CP, 384-447 DATA)
                 should_buffer = (rel_idx >= 384);
@@ -321,26 +321,42 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
-                // Boundary check: out_rel_idx % 80 == 63
-                // This gives boundaries at: 63, 143, 223, 303, 383, 463, 543, 623, 703...
-                // All boundaries satisfy out_rel_idx % 80 == 63
-                // For HT-DATA (rel_idx >= 448): exclude out_rel_idx < 480 to skip false boundary at 463
-                bool at_boundary = (out_rel_idx % 80 == 63);
-                if (rel_idx >= 448 && out_rel_idx < 480) {
-                    at_boundary = false;
+                // Explicit boundary positions for HT-mixed 20MHz:
+                // L-LTF0 DATA: ends at out_rel_idx=63
+                // L-LTF1 DATA: ends at out_rel_idx=143
+                // L-SIG DATA: ends at out_rel_idx=223
+                // HT-SIG0 DATA: ends at out_rel_idx=287
+                // HT-SIG1 DATA: ends at out_rel_idx=367
+                // HT-STF DATA: ends at out_rel_idx=431
+                // HT-DATA: 448 + n*80 (for n >= 0)
+                bool at_boundary = false;
+                if (out_rel_idx == 63 || out_rel_idx == 143 || out_rel_idx == 223) {
+                    // L-LTF/L-SIG boundaries
+                    at_boundary = true;
+                } else if (out_rel_idx == 287 || out_rel_idx == 367) {
+                    // HT-SIG boundaries
+                    at_boundary = true;
+                } else if (out_rel_idx == 431) {
+                    // HT-STF boundary
+                    at_boundary = true;
+                } else if (rel_idx >= 448) {
+                    // HT-DATA and beyond: 80-sample periodicity
+                    at_boundary = ((out_rel_idx - 448) % 80 == 0);
                 }
 
                 if (at_boundary) {
                     // Debug: Print symbol type based on rel_idx
                     // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
-                    // rel_idx=303: output is L-SIG FFT (L-SIG DATA ends at 303)
-                    // rel_idx=383: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 383)
-                    // rel_idx=543: output is HT-STF FFT
+                    // rel_idx=223: output is L-SIG FFT (L-SIG DATA ends at 223)
+                    // rel_idx=287: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 287)
+                    // rel_idx=367: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 367)
                     int symbol_type = -1;
-                    if (out_rel_idx == 303) {
+                    if (out_rel_idx == 223) {
                         symbol_type = 2; // L-SIG FFT
-                    } else if (out_rel_idx == 383) {
+                    } else if (out_rel_idx == 287) {
                         symbol_type = 3; // HT-SIG0 FFT
+                    } else if (out_rel_idx == 367) {
+                        symbol_type = 4; // HT-SIG1 FFT
                     }
                     fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
                             symbol_type, (unsigned long long)out_rel_idx);
