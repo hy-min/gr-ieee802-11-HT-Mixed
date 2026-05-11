@@ -177,6 +177,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
                 d_frame_start_known = true;
 
+                // Critical state reset for multi-frame handling:
+                // When a new wifi_start is detected, reset all CP-skip state variables
+                // to ensure the second frame's L-LTF CP is correctly skipped, just like the first frame.
+                d_buffer_count = 0;
+                d_items_processed = 0;
+                fprintf(stderr, "[HT_SPLITTER] wifi_start detected! Reset buffer_count=0, items_processed=0.\n");
+
                 // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
                 add_item_tag(0,  // output port 0
                              nitems_written(0),  // current output position
