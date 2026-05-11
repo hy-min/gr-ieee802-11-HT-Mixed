@@ -2274,6 +2274,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                 d_early_eqsym[kLltf1Rel],
                                                 Hhdr52);
 
+            // DEBUG: Print channel estimate Hhdr52 for subcarriers 6-10 (data SC)
+            // n=0: from L-LTF0, n=1: from L-LTF1, n=2: L-SIG (all same H)
+            std::fprintf(stderr, "[CHAN_EST] n=0: d_H[6-10] = ");
+            for (int sc = 6; sc <= 10; sc++) {
+                std::fprintf(stderr, "%.4f%+.4fi ", Hhdr52[sc].real(), Hhdr52[sc].imag());
+            }
+            std::fprintf(stderr, "(mag=");
+            for (int sc = 6; sc <= 10; sc++) {
+                std::fprintf(stderr, "%.4f ", std::abs(Hhdr52[sc]));
+            }
+            std::fprintf(stderr, ")\n");
+
+            // Also print pilot channel estimates
+            std::fprintf(stderr, "[CHAN_EST] n=0: d_H[pilots] = ");
+            for (int p = 0; p < 4; p++) {
+                int idx = 48 + p;
+                std::fprintf(stderr, "%.4f%+.4fi ", Hhdr52[idx].real(), Hhdr52[idx].imag());
+            }
+            std::fprintf(stderr, "\n");
+            fflush(stderr);
+
             bool found = false;
 
             // L-SIG invert brute-force
