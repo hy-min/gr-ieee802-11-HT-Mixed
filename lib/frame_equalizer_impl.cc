@@ -563,15 +563,20 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
 {
+    // FFT/IFFT normalization factor
+    // TX IFFT: 1/sqrt(52) ≈ 0.1389, RX FFT: no normalization
+    // Effective gain: 64/sqrt(52) ≈ 8.88
+    static constexpr float kFftNormalize = 64.0f / std::sqrt(52.0f);
+
     // Channel estimation using LTF0 only (avoid averaging opposite signs)
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
         const gr_complex tx = kLltf48TX[i];
 
         if (std::abs(tx) > 0.001f) {
-            H52[i] = lltf0 / tx;
+            H52[i] = (lltf0 / tx) / kFftNormalize;
         } else {
-            H52[i] = lltf0;  // fallback for null subcarriers
+            H52[i] = lltf0 / kFftNormalize;  // fallback for null subcarriers
         }
     }
     for (int i = 0; i < 4; i++) {
@@ -581,9 +586,9 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
 
         if (std::abs(tx) > 0.001f) {
-            H52[48 + i] = lltf0 / tx;
+            H52[48 + i] = (lltf0 / tx) / kFftNormalize;
         } else {
-            H52[48 + i] = lltf0;  // fallback
+            H52[48 + i] = lltf0 / kFftNormalize;  // fallback
         }
     }
 }
