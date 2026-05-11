@@ -38,8 +38,7 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_debug_count(0),
       d_frame_start_abs(0),
       d_frame_start_known(false),
-      d_items_processed(0),
-      d_internal_symbol_counter(0)
+      d_items_processed(0)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -164,12 +163,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // it means a new frame has started (we don't re-use wifi_start within a frame)
                 bool is_new_frame = d_frame_start_known;
 
-                if (is_new_frame) {
-                    // New frame - reset symbol counter
-                    d_internal_symbol_counter = 0;
-                }
-
-                d_frame_start_abs = d_frame_start;  // tag.offset = position in stream where wifi_start appears
+                d_frame_start_abs = tag_abs_pos;  // tag.offset = position in stream where wifi_start appears
 
                 d_frame_start_known = true;
 
@@ -339,17 +333,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 if (at_boundary) {
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-
-                    // Debug: print rel_idx for first few symbols
-                    if (d_internal_symbol_counter >= 2 && d_internal_symbol_counter <= 5) {
-                        fprintf(stderr, "[SPLITTER] internal_counter=%d, rel_idx=%llu\n",
-                                d_internal_symbol_counter, (unsigned long long)out_rel_idx);
-                    }
-
                     produced += d_fft_size;
                     d_buffer_count = 0;
                     d_buffer_filled = false;
-                    d_internal_symbol_counter++;
                 } else {
                     // Buffer filled at non-boundary - hold for next boundary
                     d_buffer_filled = true;
