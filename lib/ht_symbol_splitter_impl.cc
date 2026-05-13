@@ -390,6 +390,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     }
                     fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
                             symbol_type, (unsigned long long)out_rel_idx);
+                    // FFT input timing probe
+                    float total_energy = 0.0f;
+                    for (int zz = 0; zz < 64; zz++) {
+                        total_energy += std::abs(d_buffer[zz]);
+                    }
+                    fprintf(stderr, "[SPLITTER_FFTPROBE] type=%d rel_idx=%llu total_energy=%.4f first_sample=%.4f%+.4fi\n",
+                            symbol_type, (unsigned long long)out_rel_idx, total_energy,
+                            d_buffer[0].real(), d_buffer[0].imag());
+                    fflush(stderr);
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     // Debug: Dump L-SIG FFT first 8 bins to stderr
