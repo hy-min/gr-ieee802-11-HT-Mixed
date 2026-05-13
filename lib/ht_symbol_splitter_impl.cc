@@ -344,6 +344,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             } else if (rel_idx < 224) {
                 // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
                 should_buffer = (rel_idx >= 160);
+                // Probe: Print absolute input index when L-SIG DATA starts buffering
+                static int lsig_start_probe = 0;
+                if (lsig_start_probe < 3 && rel_idx == 160 && should_buffer) {
+                    uint64_t abs_idx = d_items_processed + i;
+                    fprintf(stderr, "[SPLITTER_LSIG_ABS] L-SIG DATA starts at abs_idx=%llu current_idx=%llu\n",
+                            (unsigned long long)abs_idx, (unsigned long long)current_idx);
+                    lsig_start_probe++;
+                }
             } else if (rel_idx < 240) {
                 // Stage 3: HT-SIG0 CP (rel_idx 224-239) - SKIP
                 should_buffer = false;
@@ -418,6 +426,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         ltf1_buffer_probe++;
                     }
                 }
+            }
+
+            // Probe: Check buffer state at L-SIG boundary rel_idx
+            static int lsig_boundary_probe = 0;
+            if (lsig_boundary_probe < 3 && (rel_idx == 160 || rel_idx == 223)) {
+                fprintf(stderr, "[SPLITTER_LSIG_BUF] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d should_buffer=%d\n",
+                        (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, should_buffer);
+                lsig_boundary_probe++;
             }
 
             // Check boundary conditions when buffer is full
