@@ -49,11 +49,14 @@ void ls::equalize(gr_complex* in,
             }
             noise += std::pow(std::abs(d_H[i] - in[i]), 2);
             signal += std::pow(std::abs(d_H[i] + in[i]), 2);
-            d_H[i] += in[i];
             // Use kLltf64Binned for channel estimation
             // Guard bands, DC, and pilots have kLltf64Binned[i] == 0, so skip those
+            // Fix: compute H separately for each LTF and average to avoid phase cancellation
             if (std::abs(kLltf64Binned[i]) > 1e-9f) {
-                d_H[i] /= (kLltf64Binned[i] * kFftNormalize);
+                gr_complex H_i = in[i] / (kLltf64Binned[i] * kFftNormalize);
+                d_H[i] = (d_H[i] + H_i) * 0.5f;  // Average H estimates
+            } else {
+                d_H[i] += in[i];  // For non-data bins, still accumulate
             }
         }
 
