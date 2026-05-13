@@ -347,7 +347,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // Probe: Print absolute input index when L-SIG DATA starts buffering
                 static int lsig_start_probe = 0;
                 if (lsig_start_probe < 3 && rel_idx == 160 && should_buffer) {
-                    uint64_t abs_idx = d_items_processed + i;
+                    uint64_t abs_idx = current_idx;
                     fprintf(stderr, "[SPLITTER_LSIG_ABS] L-SIG DATA starts at abs_idx=%llu current_idx=%llu\n",
                             (unsigned long long)abs_idx, (unsigned long long)current_idx);
                     lsig_start_probe++;
