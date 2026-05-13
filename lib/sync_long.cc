@@ -415,7 +415,8 @@ public:
         }
 
         // Method 2: Use the highest correlation peak as frame start
-        if (!vec.empty()) {
+        // ONLY use this if the peak magnitude is above the noise floor
+        if (!vec.empty() && top_mag >= MIN_ABS_MAGNITUDE) {
             int peak_pos = get<1>(vec[0]);
             d_frame_start = peak_pos + 2;
             mode = "Method2-peak";
