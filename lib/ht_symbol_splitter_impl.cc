@@ -344,6 +344,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             } else if (rel_idx < 224) {
                 // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
                 should_buffer = (rel_idx >= 160);
+                // CRITICAL PROBE: Check if buffer was properly reset at L-LTF1/L-SIG boundary
+                static int lsig_buffer_reset_probe = 0;
+                if (lsig_buffer_reset_probe < 3 && rel_idx == 160) {
+                    fprintf(stderr, "[SPLITTER_RESET_CHECK] rel_idx=160 d_buffer_count=%d d_buffer_filled=%d should_buffer=%d\n",
+                            d_buffer_count, d_buffer_filled, should_buffer);
+                    if (d_buffer_count != 0) {
+                        fprintf(stderr, "[SPLITTER_RESET_CHECK] WARNING: d_buffer_count=%d at L-SIG start (expected 0)!\n",
+                                d_buffer_count);
+                    }
+                    lsig_buffer_reset_probe++;
+                }
                 // Probe: Print absolute input index when L-SIG DATA starts buffering
                 static int lsig_start_probe = 0;
                 if (lsig_start_probe < 3 && rel_idx == 160 && should_buffer) {
