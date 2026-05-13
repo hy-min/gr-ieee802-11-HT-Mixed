@@ -299,14 +299,13 @@ public:
             double ratio = std::get<3>(cand);
             int lower_peak = std::get<4>(cand);
 
-            // Score: amplitude ratio (primary) + position bonus (secondary)
-            // Position bonus: if lower_peak in range [160, 185], give extra points
-            double position_bonus = 0.0;
-            if (lower_peak >= 160 && lower_peak <= 185) {
-                position_bonus = 0.5;
-            }
-
-            double score = ratio + position_bonus;
+            // Score: amplitude ratio (primary) * continuous position score (secondary)
+            // Continuous position score: closer to ideal_lower_peak=171 is better
+            // Score ranges from ratio*1.0 (lower_peak at edge of range) to ratio*2.0 (exact ideal)
+            int ideal_lower_peak = 171;
+            double position_score = 1.0 - std::abs(lower_peak - ideal_lower_peak) / 50.0;
+            position_score = std::max(0.0, position_score);
+            double score = ratio * (1.0 + position_score);
 
             fprintf(stderr, "[SYNC_LONG] HT Candidate: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d ratio=%.2f lower_peak=%d score=%.2f\n",
                     i, get<1>(vec[i]), abs(get<0>(vec[i])),
