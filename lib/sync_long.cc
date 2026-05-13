@@ -170,6 +170,13 @@ public:
                     } else {
                         out[o] = in_delayed[i];
                     }
+                    // PROBE: Print first 10 output samples to verify sync_long output
+                    static int copy_probe_count = 0;
+                    if (copy_probe_count < 10) {
+                        fprintf(stderr, "[SYNC_LONG_OUT] d_offset=%d out_idx=%d amp=%.6f sample=%.6f%+.6fi\n",
+                                d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag());
+                        copy_probe_count++;
+                    }
                     o++;
                 }
 
