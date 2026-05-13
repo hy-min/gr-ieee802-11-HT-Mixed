@@ -238,11 +238,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             // PROBE: Check input amplitude at key positions
             static int amp_probe_count = 0;
+            static uint64_t last_current_idx = 0;
             if (amp_probe_count < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 128 || rel_idx == 160 || rel_idx == 224 || rel_idx == 240 || rel_idx == 304 || rel_idx == 320 || rel_idx == 384 || rel_idx == 400 || rel_idx == 464)) {
                 float amp = std::abs(in[i]);
-                fprintf(stderr, "[SPLITTER_IN_AMP] rel_idx=%llu current_idx=%llu d_buffer_count=%d amp=%.4f sample=%.4f%+.4fi%s\n",
+                fprintf(stderr, "[SPLITTER_IN_AMP] rel_idx=%llu current_idx=%llu d_buffer_count=%d amp=%.4f sample=%.4f%+.4fi%s gap=%lld\n",
                         (unsigned long long)rel_idx, (unsigned long long)current_idx, d_buffer_count, amp, in[i].real(), in[i].imag(),
-                        (amp < 0.1) ? " ** LOW **" : "");
+                        (amp < 0.1) ? " ** LOW **" : "",
+                        (unsigned long long)(current_idx - last_current_idx));
+                last_current_idx = current_idx;
                 amp_probe_count++;
             }
             // PROBE: Check if position 416 has correct data from sync_long
