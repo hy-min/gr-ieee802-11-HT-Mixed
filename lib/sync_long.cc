@@ -126,6 +126,18 @@ public:
             break;
 
         case COPY: {
+            // PROBE: Check amplitude at start of COPY state and at key rel positions
+            static int copy_amp_probe_count = 0;
+            int rel_for_probe = d_offset - d_frame_start;
+            // Probe at key positions: rel=128 (HT-SIG0 CP start), rel=144 (L-SIG DATA start), rel=240 (HT-SIG0 DATA start), rel=320 (HT-SIG1 DATA start)
+            if (copy_amp_probe_count < 20 && i < ninput && (rel_for_probe == 128 || rel_for_probe == 144 || rel_for_probe == 240 || rel_for_probe == 304 || rel_for_probe == 320)) {
+                float amp = std::abs(in_delayed[i]);
+                fprintf(stderr, "[SYNC_LONG_AMP] d_offset=%d rel=%d amp=%.4f sample=%.4f%+.4fi%s\n",
+                        d_offset, rel_for_probe, amp, in_delayed[i].real(), in_delayed[i].imag(),
+                        (amp < 0.1) ? " ** LOW **" : "");
+                copy_amp_probe_count++;
+            }
+
             while (i < ninput && o < noutput) {
 
                 int rel = d_offset - d_frame_start;
@@ -226,33 +238,60 @@ public:
 
         // Method 1: Try to find pairs with expected L-LTF spacing
         // HT Mixed mode detection
+        double top_mag = abs(get<0>(vec[0]));
+        fprintf(stderr, "[SYNC_LONG] Top correlation magnitude: %.4f\n", top_mag);
+
+        // Minimum absolute magnitude threshold to reject noise detections
+        // Real L-LTF correlation peaks should exceed ~3.0
+        const double MIN_ABS_MAGNITUDE = 3.0;
+
         for (int i = 0; i < (int)vec.size() && i < 10; i++) {
             for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
                 double mag = abs(get<0>(vec[i]));
+
+                // Absolute magnitude threshold - reject noise
+                if (mag < MIN_ABS_MAGNITUDE) {
+                    continue;
+                }
+
+                // Peak magnitude must exceed 30% of top magnitude to be valid
+                const double MIN_PEAK_RATIO = 0.30;
+                if (mag < top_mag * MIN_PEAK_RATIO) {
+                    continue;  // Skip low-energy peaks
+                }
 
                 // HT Mixed mode: L-LTF period is 80 samples (diff 78-82)
                 if (diff >= 78 && diff <= 82) {
                     int p1 = get<1>(vec[i]);
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
-                    // FIX: Use correct L-LTF0 DATA start (176), not lower_peak + 2
-                    // The correlation peak may appear in CP region (160-175) rather than DATA region (176-239)
-                    d_frame_start = 176;  // Fixed: L-LTF0 DATA starts at input 176
+                    d_frame_start = lower_peak + 2;  // Use actual lower_peak, not hardcoded 176
                     mode = "HT-mode";
                     d_freq_offset = d_freq_offset_short;
-                    fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
-                            d_frame_start, mode, lower_peak);
+                    fprintf(stderr, "[SYNC_LONG] HT-mode: lower_peak=%d, d_frame_start=%d, peak_mag=%.4f (%.0f%% of top)\n",
+                            lower_peak, d_frame_start, mag, (mag/top_mag)*100);
                     return;
                 }
             }
         }
 
-        // Legacy mode check
+        // Legacy mode check - apply same peak ratio threshold
         for (int i = 0; i < (int)vec.size() && i < 10; i++) {
             for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
                 double mag = abs(get<0>(vec[i]));
+
+                // Same absolute magnitude threshold
+                if (mag < MIN_ABS_MAGNITUDE) {
+                    continue;
+                }
+
+                // Same magnitude threshold
+                const double MIN_PEAK_RATIO = 0.30;
+                if (mag < top_mag * MIN_PEAK_RATIO) {
+                    continue;
+                }
 
                 // Legacy mode: L-LTF period is 64 samples (diff 62-66)
                 if (diff >= 62 && diff <= 66) {
@@ -262,8 +301,8 @@ public:
                     d_frame_start = lower_peak + 2;
                     mode = "Legacy-mode";
                     d_freq_offset = d_freq_offset_short;
-                    fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, lower_peak=%d)\n",
-                            d_frame_start, mode, lower_peak);
+                    fprintf(stderr, "[SYNC_LONG] Legacy-mode: lower_peak=%d, d_frame_start=%d, peak_mag=%.4f\n",
+                            lower_peak, d_frame_start, mag);
                     return;
                 }
             }
