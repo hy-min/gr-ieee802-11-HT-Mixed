@@ -236,6 +236,14 @@ public:
         // ESSENTIAL DEBUG: d_frame_start detection
         const char* mode = "unknown";
 
+        // Print Top 20 peaks to diagnose plateau effect
+        fprintf(stderr, "[SYNC_LONG_DEBUG] Top 20 peaks: ");
+        for (int m = 0; m < 20 && m < (int)vec.size(); m++) {
+            fprintf(stderr, "%d(%.1f) ", get<1>(vec[m]), abs(get<0>(vec[m])));
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
+
         // Method 1: Try to find pairs with expected L-LTF spacing
         // HT Mixed mode detection
         double top_mag = abs(get<0>(vec[0]));
@@ -249,6 +257,14 @@ public:
             for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
                 double mag = abs(get<0>(vec[i]));
+
+                // Print ALL candidate pairs with diff in expanded range
+                if (diff >= 60 && diff <= 100) {
+                    fprintf(stderr, "[SYNC_LONG_PAIR_CANDIDATE] i=%d(idx=%d,amp=%.2f,%.0f%%) k=%d(idx=%d,amp=%.2f,%.0f%%) diff=%d\n",
+                            i, get<1>(vec[i]), abs(get<0>(vec[i])), abs(get<0>(vec[i]))/top_mag*100,
+                            k, get<1>(vec[k]), abs(get<0>(vec[k])), abs(get<0>(vec[k]))/top_mag*100,
+                            diff);
+                }
 
                 // Absolute magnitude threshold - reject noise
                 if (mag < MIN_ABS_MAGNITUDE) {
@@ -266,6 +282,8 @@ public:
                     int p1 = get<1>(vec[i]);
                     int p2 = get<1>(vec[k]);
                     int lower_peak = min(p1, p2);
+                    fprintf(stderr, "[SYNC_LONG] HT-mode PAIR FOUND: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d lower_peak=%d\n",
+                            i, p1, abs(get<0>(vec[i])), k, p2, abs(get<0>(vec[k])), diff, lower_peak);
                     d_frame_start = lower_peak + 2;  // Use actual lower_peak, not hardcoded 176
                     mode = "HT-mode";
                     d_freq_offset = d_freq_offset_short;
