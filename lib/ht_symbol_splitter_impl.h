@@ -45,6 +45,7 @@ private:
     int64_t d_frame_start_abs;      // Absolute item index of frame start (from wifi_start tag)
     bool d_frame_start_known;       // Have we seen wifi_start tag?
     int64_t d_items_processed;      // Total items we've processed
+    bool d_wifi_start_accepted;    // true if last wifi_start was accepted, false if ignored
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);

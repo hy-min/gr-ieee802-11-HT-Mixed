@@ -38,7 +38,8 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_debug_count(0),
       d_frame_start_abs(0),
       d_frame_start_known(false),
-      d_items_processed(0)
+      d_items_processed(0),
+      d_wifi_start_accepted(false)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -48,6 +49,8 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
     // We output in multiples of fft_size
     set_output_multiple(d_fft_size);
 
+    // Disable automatic tag propagation - we manually control which tags are forwarded
+    set_tag_propagation_policy(TPP_DONT);
 
 }
 
@@ -185,8 +188,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // We're seeing wifi_start during preamble processing - ignore it
                     fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu\n",
                             (unsigned long long)d_items_processed);
+                    d_wifi_start_accepted = false;
                 } else {
                     d_frame_start_known = true;
+                    d_wifi_start_accepted = true;
 
                     // Critical state reset for multi-frame handling:
                     // When a new wifi_start is detected, reset all CP-skip state variables
@@ -196,12 +201,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     fprintf(stderr, "[HT_SPLITTER] wifi_start detected! Reset buffer_count=0, items_processed=0.\n");
                 }
 
-                // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
-                add_item_tag(0,  // output port 0
-                             nitems_written(0),  // current output position
-                             pmt::string_to_symbol("wifi_start"),
-                             pmt::from_double(d_frame_start_abs),
-                             pmt::string_to_symbol(name()));
+                // Only propagate wifi_start if SPLITTER accepted it (not ignored)
+                if (d_wifi_start_accepted) {
+                    add_item_tag(0,  // output port 0
+                                 nitems_written(0),  // current output position
+                                 pmt::string_to_symbol("wifi_start"),
+                                 pmt::from_double(d_frame_start_abs),
+                                 pmt::string_to_symbol(name()));
+                    d_wifi_start_accepted = false;  // Reset after propagation
+                }
 
                 break;
             }
