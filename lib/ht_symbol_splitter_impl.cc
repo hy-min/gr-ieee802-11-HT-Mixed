@@ -81,7 +81,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int produced = 0;
     int consumed = 0;
 
-
+    // PROBE: Print work call info at start of each work
+    static int work_call = 0;
+    fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d\n", work_call++, ninput_items[0]);
 
     // Get absolute position of first input item
     uint64_t start_abs_idx = nitems_read(0);
@@ -225,6 +227,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             uint64_t rel_idx = current_idx - d_frame_start_abs;
             bool should_buffer = false;
 
+            // PROBE: Track relationship between input index and rel_idx
+            static uint64_t first_rel_idx_input = UINT64_MAX;
+            if (first_rel_idx_input == UINT64_MAX && rel_idx == 0) {
+                first_rel_idx_input = d_items_processed + i;
+                fprintf(stderr, "[SPLITTER_START] rel_idx=0 maps to input index=%llu d_items_processed=%llu i=%d\n",
+                        (unsigned long long)first_rel_idx_input,
+                        (unsigned long long)d_items_processed, i);
+            }
+
             // PROBE: Check input amplitude at key positions
             static int amp_probe_count = 0;
             if (amp_probe_count < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 128 || rel_idx == 160 || rel_idx == 224 || rel_idx == 240 || rel_idx == 304 || rel_idx == 320 || rel_idx == 384 || rel_idx == 400 || rel_idx == 464)) {
@@ -233,6 +244,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         (unsigned long long)rel_idx, (unsigned long long)current_idx, d_buffer_count, amp, in[i].real(), in[i].imag(),
                         (amp < 0.1) ? " ** LOW **" : "");
                 amp_probe_count++;
+            }
+            // PROBE: Check if position 416 has correct data from sync_long
+            if (current_idx == 416) {
+                fprintf(stderr, "[SPLITTER_IDX416] current_idx=%llu amp=%.6f sample=%.6f%+.6fi in[i]=%.6f%+.6fi\n",
+                        (unsigned long long)current_idx, std::abs(in[i]), in[i].real(), in[i].imag(),
+                        std::abs(in[i]), in[i].real(), in[i].imag());
             }
 
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
@@ -548,6 +565,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     d_items_processed += consumed;
 
+    // PROBE: Print consumption at end of work
+    static uint64_t last_consumed = 0;
+    if (consumed > 0 || last_consumed > 0) {
+        fprintf(stderr, "[SPLITTER_CONSUME] consumed=%d produced=%d d_items_processed=%llu\n",
+                consumed, produced, (unsigned long long)d_items_processed);
+        last_consumed = consumed;
+    }
 
     consume(0, consumed);
     return produced;

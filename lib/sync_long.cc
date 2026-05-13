@@ -191,6 +191,12 @@ public:
                                 d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag());
                         copy_probe_count++;
                     }
+                    // PROBE: Print at out_idx=240 (HTSIG0_DATA position)
+                    if (o == 240) {
+                        fprintf(stderr, "[SYNC_LONG_OUT_IDX240] d_offset=%d out_idx=%d amp=%.6f sample=%.6f%+.6fi in_delayed[i]=%.6f%+.6fi\n",
+                                d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag(),
+                                std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag());
+                    }
                     o++;
                 }
 
