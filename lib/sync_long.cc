@@ -244,86 +244,168 @@ public:
         fprintf(stderr, "\n");
         fflush(stderr);
 
-        // Method 1: Try to find pairs with expected L-LTF spacing
-        // HT Mixed mode detection
+        // Method 1: Plateau-aware L-LTF peak pair detection
+        // Problem: The correlation peak can form a "plateau" (wide peak)
+        // due to multipath, causing max() to return an index at the edge
+        // of the plateau rather than the true peak at ~171.
+        // Solution: Find ALL candidate pairs with diff≈80 and select the
+        // one with best amplitude balance and position score.
         double top_mag = abs(get<0>(vec[0]));
         fprintf(stderr, "[SYNC_LONG] Top correlation magnitude: %.4f\n", top_mag);
 
-        // Minimum absolute magnitude threshold to reject noise detections
-        // Real L-LTF correlation peaks should exceed ~3.0
+        // Minimum thresholds (keep from previous implementation)
         const double MIN_ABS_MAGNITUDE = 3.0;
+        const double MIN_PEAK_RATIO = 0.30;
+
+        // ============================================================
+        // HT-mode: Find ALL candidate pairs in diff range [70, 90]
+        // ============================================================
+        std::vector<std::tuple<int, int, int, double, int>> ht_candidates;  // (i, k, diff, ratio, lower_peak)
 
         for (int i = 0; i < (int)vec.size() && i < 10; i++) {
+            double mag_i = abs(get<0>(vec[i]));
+            if (mag_i < MIN_ABS_MAGNITUDE || mag_i < top_mag * MIN_PEAK_RATIO) {
+                continue;
+            }
+
             for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
+                double mag_k = abs(get<0>(vec[k]));
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
-                double mag = abs(get<0>(vec[i]));
 
-                // Print ALL candidate pairs with diff in expanded range
-                if (diff >= 60 && diff <= 100) {
-                    fprintf(stderr, "[SYNC_LONG_PAIR_CANDIDATE] i=%d(idx=%d,amp=%.2f,%.0f%%) k=%d(idx=%d,amp=%.2f,%.0f%%) diff=%d\n",
-                            i, get<1>(vec[i]), abs(get<0>(vec[i])), abs(get<0>(vec[i]))/top_mag*100,
-                            k, get<1>(vec[k]), abs(get<0>(vec[k])), abs(get<0>(vec[k]))/top_mag*100,
-                            diff);
-                }
-
-                // Absolute magnitude threshold - reject noise
-                if (mag < MIN_ABS_MAGNITUDE) {
+                // Only consider pairs in extended L-LTF period range (70-90, expanded for plateau)
+                if (diff < 70 || diff > 90) {
                     continue;
                 }
 
-                // Peak magnitude must exceed 30% of top magnitude to be valid
-                const double MIN_PEAK_RATIO = 0.30;
-                if (mag < top_mag * MIN_PEAK_RATIO) {
-                    continue;  // Skip low-energy peaks
-                }
+                // Amplitude similarity ratio (both peaks should be similar magnitude)
+                double ratio = std::min(mag_i, mag_k) / std::max(mag_i, mag_k);
 
-                // HT Mixed mode: L-LTF period is 80 samples (diff 78-82)
-                if (diff >= 78 && diff <= 82) {
-                    int p1 = get<1>(vec[i]);
-                    int p2 = get<1>(vec[k]);
-                    int lower_peak = min(p1, p2);
-                    fprintf(stderr, "[SYNC_LONG] HT-mode PAIR FOUND: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d lower_peak=%d\n",
-                            i, p1, abs(get<0>(vec[i])), k, p2, abs(get<0>(vec[k])), diff, lower_peak);
-                    d_frame_start = lower_peak + 2;  // Use actual lower_peak, not hardcoded 176
-                    mode = "HT-mode";
-                    d_freq_offset = d_freq_offset_short;
-                    fprintf(stderr, "[SYNC_LONG] HT-mode: lower_peak=%d, d_frame_start=%d, peak_mag=%.4f (%.0f%% of top)\n",
-                            lower_peak, d_frame_start, mag, (mag/top_mag)*100);
-                    return;
-                }
+                int p1 = get<1>(vec[i]);
+                int p2 = get<1>(vec[k]);
+                int lower_peak = std::min(p1, p2);
+
+                ht_candidates.push_back(std::make_tuple(i, k, diff, ratio, lower_peak));
             }
         }
 
-        // Legacy mode check - apply same peak ratio threshold
-        for (int i = 0; i < (int)vec.size() && i < 10; i++) {
-            for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
-                int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
-                double mag = abs(get<0>(vec[i]));
+        // Select best HT-mode candidate: highest amplitude ratio, then closest to expected lower_peak
+        int best_ht_i = -1, best_ht_k = -1, best_ht_diff = -1, best_ht_lower_peak = -1;
+        double best_ht_score = 0.0;
 
-                // Same absolute magnitude threshold
-                if (mag < MIN_ABS_MAGNITUDE) {
-                    continue;
-                }
+        for (auto& cand : ht_candidates) {
+            int i = std::get<0>(cand);
+            int k = std::get<1>(cand);
+            int diff = std::get<2>(cand);
+            double ratio = std::get<3>(cand);
+            int lower_peak = std::get<4>(cand);
 
-                // Same magnitude threshold
-                const double MIN_PEAK_RATIO = 0.30;
-                if (mag < top_mag * MIN_PEAK_RATIO) {
-                    continue;
-                }
-
-                // Legacy mode: L-LTF period is 64 samples (diff 62-66)
-                if (diff >= 62 && diff <= 66) {
-                    int p1 = get<1>(vec[i]);
-                    int p2 = get<1>(vec[k]);
-                    int lower_peak = min(p1, p2);
-                    d_frame_start = lower_peak + 2;
-                    mode = "Legacy-mode";
-                    d_freq_offset = d_freq_offset_short;
-                    fprintf(stderr, "[SYNC_LONG] Legacy-mode: lower_peak=%d, d_frame_start=%d, peak_mag=%.4f\n",
-                            lower_peak, d_frame_start, mag);
-                    return;
-                }
+            // Score: amplitude ratio (primary) + position bonus (secondary)
+            // Position bonus: if lower_peak in range [160, 185], give extra points
+            double position_bonus = 0.0;
+            if (lower_peak >= 160 && lower_peak <= 185) {
+                position_bonus = 0.5;
             }
+
+            double score = ratio + position_bonus;
+
+            fprintf(stderr, "[SYNC_LONG] HT Candidate: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d ratio=%.2f lower_peak=%d score=%.2f\n",
+                    i, get<1>(vec[i]), abs(get<0>(vec[i])),
+                    k, get<1>(vec[k]), abs(get<0>(vec[k])),
+                    diff, ratio, lower_peak, score);
+
+            if (score > best_ht_score) {
+                best_ht_score = score;
+                best_ht_i = i;
+                best_ht_k = k;
+                best_ht_diff = diff;
+                best_ht_lower_peak = lower_peak;
+            }
+        }
+
+        // If we found a valid HT candidate
+        if (best_ht_i >= 0 && best_ht_k >= 0) {
+            d_frame_start = best_ht_lower_peak + 2;
+            mode = "HT-mode-plateau";
+            d_freq_offset = d_freq_offset_short;
+            fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
+                    best_ht_i, get<1>(vec[best_ht_i]), best_ht_k, get<1>(vec[best_ht_k]),
+                    best_ht_diff, best_ht_lower_peak, d_frame_start, best_ht_score);
+            return;
+        }
+
+        // ============================================================
+        // Legacy mode: Find ALL candidate pairs in diff range [55, 70]
+        // ============================================================
+        std::vector<std::tuple<int, int, int, double, int>> legacy_candidates;  // (i, k, diff, ratio, lower_peak)
+
+        for (int i = 0; i < (int)vec.size() && i < 10; i++) {
+            double mag_i = abs(get<0>(vec[i]));
+            if (mag_i < MIN_ABS_MAGNITUDE || mag_i < top_mag * MIN_PEAK_RATIO) {
+                continue;
+            }
+
+            for (int k = i + 1; k < (int)vec.size() && k < 20; k++) {
+                double mag_k = abs(get<0>(vec[k]));
+                int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
+
+                // Only consider pairs in Legacy L-LTF period range (55-70)
+                if (diff < 55 || diff > 70) {
+                    continue;
+                }
+
+                // Amplitude similarity ratio
+                double ratio = std::min(mag_i, mag_k) / std::max(mag_i, mag_k);
+
+                int p1 = get<1>(vec[i]);
+                int p2 = get<1>(vec[k]);
+                int lower_peak = std::min(p1, p2);
+
+                legacy_candidates.push_back(std::make_tuple(i, k, diff, ratio, lower_peak));
+            }
+        }
+
+        // Select best Legacy candidate
+        int best_leg_i = -1, best_leg_k = -1, best_leg_diff = -1, best_leg_lower_peak = -1;
+        double best_leg_score = 0.0;
+
+        for (auto& cand : legacy_candidates) {
+            int i = std::get<0>(cand);
+            int k = std::get<1>(cand);
+            int diff = std::get<2>(cand);
+            double ratio = std::get<3>(cand);
+            int lower_peak = std::get<4>(cand);
+
+            // Score: amplitude ratio (primary) + position bonus (secondary)
+            double position_bonus = 0.0;
+            if (lower_peak >= 130 && lower_peak <= 160) {
+                position_bonus = 0.5;
+            }
+
+            double score = ratio + position_bonus;
+
+            fprintf(stderr, "[SYNC_LONG] Legacy Candidate: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d ratio=%.2f lower_peak=%d score=%.2f\n",
+                    i, get<1>(vec[i]), abs(get<0>(vec[i])),
+                    k, get<1>(vec[k]), abs(get<0>(vec[k])),
+                    diff, ratio, lower_peak, score);
+
+            if (score > best_leg_score) {
+                best_leg_score = score;
+                best_leg_i = i;
+                best_leg_k = k;
+                best_leg_diff = diff;
+                best_leg_lower_peak = lower_peak;
+            }
+        }
+
+        // If we found a valid Legacy candidate
+        if (best_leg_i >= 0 && best_leg_k >= 0) {
+            d_frame_start = best_leg_lower_peak + 2;
+            mode = "Legacy-mode-plateau";
+            d_freq_offset = d_freq_offset_short;
+            fprintf(stderr, "[SYNC_LONG] Legacy-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
+                    best_leg_i, get<1>(vec[best_leg_i]), best_leg_k, get<1>(vec[best_leg_k]),
+                    best_leg_diff, best_leg_lower_peak, d_frame_start, best_leg_score);
+            return;
         }
 
         // Method 2: Use the highest correlation peak as frame start
