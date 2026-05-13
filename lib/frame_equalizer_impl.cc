@@ -481,6 +481,15 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     // 调试：打印前几个子载波索引和值
     static int call_count = 0;
     if (call_count < 10) {
+        // SYMBOL FINGERPRINT: 打印 bin 7 (SC +7, 第3个导频) 的原始FFT值
+        // TX L-SIG 导频: SC+7 = +1 (实轴, 0°)
+        // TX HT-SIG 导频: SC+7 = +j (虚轴, +90°)
+        // 通过观察 bin 7 的实部/虚部比例，可以判断当前符号是 L-SIG 还是 HT-SIG
+        fprintf(stderr, "[SYMBOL_FP] call_count=%d extract_call=%d  bin7=%.4f%+.4fi |mag=%.4f phase=%+.1fdeg RE=%.4f IM=%.4f\n",
+                call_count, extract_call_count,
+                sym64[7].real(), sym64[7].imag(),
+                std::abs(sym64[7]), std::arg(sym64[7])*180/M_PI,
+                sym64[7].real(), sym64[7].imag());
         std::fprintf(stderr, "[EXTRACT] called, first 5 subcarriers:\n");
         for (int i = 0; i < 5 && i < 48; i++) {
             int fft_bin = kHeader48Bin[i];  // EXPLICIT bin mapping!
@@ -578,6 +587,12 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         } else {
             H52[i] = lltf0 / kFftNormalize;  // fallback for null subcarriers
         }
+        // Probe raw FFT values before channel estimation
+        if (i == 7) {  // SC+7
+            fprintf(stderr, "[RAW_FFT_PROBE] lltf0[7]=%.4f%+.4fi tx=%.4f%+.4fi H=%.4f%+.4fi mag=%.4f\n",
+                    lltf0.real(), lltf0.imag(), tx.real(), tx.imag(),
+                    H52[i].real(), H52[i].imag(), std::abs(H52[i]));
+        }
     }
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
@@ -603,15 +618,19 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
 }
 
 static float estimate_header_cpe_rad(const gr_complex* rx52,
-                                     const gr_complex* H52)
+                                     const gr_complex* H52,
+                                     bool is_ht_sig)
 {
     gr_complex acc(0.0f, 0.0f);
 
     for (int i = 0; i < 4; i++) {
         const gr_complex eqp = safe_div(rx52[48 + i], H52[48 + i]);
-        // Use kHeaderPilotBase (real ±1) as expected pilot values
-        // The TX pilots for L-SIG are {1, 1, 1, -1} (real), which is kHeaderPilotBase
-        const gr_complex expect = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+        // For L-SIG: pilots are {1, 1, 1, -1} (real) - kHeaderPilotBase
+        // For HT-SIG: pilots are {j, j, j, -j} (imaginary) due to QBPSK rotation
+        gr_complex expect = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+        if (is_ht_sig) {
+            expect *= gr_complex(0.0f, 1.0f);  // multiply by j for QBPSK rotated pilots
+        }
         acc += eqp * std::conj(expect);
     }
 
@@ -645,9 +664,11 @@ static float estimate_cpe_direct_from_rx_pilots(const gr_complex* rx52)
 static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
                                                const gr_complex* H52,
                                                gr_complex* out_eq48,
-                                               uint8_t* out_bits48)
+                                               uint8_t* out_bits48,
+                                               bool is_ht_sig)
 {
-    const float cpe = estimate_header_cpe_rad(rx52, H52);
+    const float cpe = 0.0f;  // DEBUG: bypass CPE to test raw symbol
+    //const float cpe = estimate_header_cpe_rad(rx52, H52, is_ht_sig);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
     std::fprintf(stderr, "[EQ_HEADER] CPE estimate: %.3f rad, rot=%.3f+%.3fi\n",
@@ -707,10 +728,11 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
 static void equalize_header52_to_bits48(const gr_complex* rx52,
                                         const gr_complex* H52,
                                         uint8_t* out_bits48,
-                                        gr_complex* out_eq48 = nullptr)
+                                        gr_complex* out_eq48 = nullptr,
+                                        bool is_ht_sig = false)
 {
     gr_complex tmp_eq48[48];
-    equalize_header52_to_eq48_and_bits(rx52, H52, tmp_eq48, out_bits48);
+    equalize_header52_to_eq48_and_bits(rx52, H52, tmp_eq48, out_bits48, is_ht_sig);
     if (out_eq48) {
         std::memcpy(out_eq48, tmp_eq48, 48 * sizeof(gr_complex));
     }
@@ -730,7 +752,7 @@ static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
     std::memset(out48, 0, 48);
 
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;  // FIX: k/3 correctly deinterleaves i = 3*(k%16) + k/16
+        const int j = 16 * (k % 3) + (k / 3) % 16;  // correct inverse of i = 3*(k%16) + k/16
         out48[k] = in48[j] & 0x1;
     }
 }
@@ -1191,7 +1213,7 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     uint8_t eqbits48[48];
     uint8_t deintl48[48];
 
-    equalize_header52_to_bits48(rx52, H52, eqbits48, nullptr);
+    equalize_header52_to_bits48(rx52, H52, eqbits48, nullptr, false);  // false = L-SIG
 
     if (invert_bits) {
         for (int i = 0; i < 48; i++) {
@@ -1293,8 +1315,8 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
     uint8_t deintl48_b[48];
     uint8_t enc96[96];
 
-    equalize_header52_to_bits48(rx52_a, H52, eqbits48_a, nullptr);
-    equalize_header52_to_bits48(rx52_b, H52, eqbits48_b, nullptr);
+    equalize_header52_to_bits48(rx52_a, H52, eqbits48_a, nullptr, true);  // true = HT-SIG
+    equalize_header52_to_bits48(rx52_b, H52, eqbits48_b, nullptr, true);  // true = HT-SIG
 
     if (invert_a) {
         for (int i = 0; i < 48; i++) {
@@ -2182,6 +2204,45 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     fprintf(stderr, "  sc[%d]=%.4f%+.4fi | mag=%.4f phase=%+.1fdeg\n",
                             di, val.real(), val.imag(), std::abs(val), std::arg(val)*180/M_PI);
                 }
+                // 关键探针: bin 7 (SC +7) = index 50 in the 52-array (48 data + 4 pilots)
+                // pilots: [48]=-21, [49]=-7, [50]=+7, [51]=+21
+                fprintf(stderr, "[LSIG_RAW][KEY_PROBE] bin7(SC+7) pilot: idx50=%.4f%+.4fi |mag=%.4f phase=%+.1fdeg\n",
+                        d_early_eqsym[kLSigRel][50].real(), d_early_eqsym[kLSigRel][50].imag(),
+                        std::abs(d_early_eqsym[kLSigRel][50]),
+                        std::arg(d_early_eqsym[kLSigRel][50])*180/M_PI);
+                fprintf(stderr, "[LSIG_RAW][KEY_PROBE] bin21(SC+21) pilot: idx51=%.4f%+.4fi |mag=%.4f phase=%+.1fdeg\n",
+                        d_early_eqsym[kLSigRel][51].real(), d_early_eqsym[kLSigRel][51].imag(),
+                        std::abs(d_early_eqsym[kLSigRel][51]),
+                        std::arg(d_early_eqsym[kLSigRel][51])*180/M_PI);
+                fflush(stderr);
+            }
+
+            // ===== DEBUG: Print raw HT-SIG0 subcarriers before EQ =====
+            if (d_internal_symbol_counter == kHtSig0Rel) {
+                fprintf(stderr, "[HTSIG0_RAW] d_sym_idx=%d d_internal_counter=%d - Raw HT-SIG0 subcarriers (before EQ):\n",
+                        d_sym_idx, d_internal_symbol_counter);
+                fprintf(stderr, "[HTSIG0_RAW] First 8 data subcarriers (indices 0-7):\n");
+                for (int di = 0; di < 8; di++) {
+                    gr_complex val = d_early_eqsym[kHtSig0Rel][di];
+                    fprintf(stderr, "  sc[%d]=%.4f%+.4fi | mag=%.4f phase=%+.1fdeg\n",
+                            di, val.real(), val.imag(), std::abs(val), std::arg(val)*180/M_PI);
+                }
+                fprintf(stderr, "[HTSIG0_RAW] Pilot subcarriers (indices 48-51):\n");
+                for (int di = 48; di < 52; di++) {
+                    gr_complex val = d_early_eqsym[kHtSig0Rel][di];
+                    fprintf(stderr, "  sc[%d]=%.4f%+.4fi | mag=%.4f phase=%+.1fdeg\n",
+                            di, val.real(), val.imag(), std::abs(val), std::arg(val)*180/M_PI);
+                }
+                // 关键探针: bin 7 (SC +7) = index 50 in the 52-array (48 data + 4 pilots)
+                // pilots: [48]=-21, [49]=-7, [50]=+7, [51]=+21
+                fprintf(stderr, "[HTSIG0_RAW][KEY_PROBE] bin7(SC+7) pilot: idx50=%.4f%+.4fi |mag=%.4f phase=%+.1fdeg\n",
+                        d_early_eqsym[kHtSig0Rel][50].real(), d_early_eqsym[kHtSig0Rel][50].imag(),
+                        std::abs(d_early_eqsym[kHtSig0Rel][50]),
+                        std::arg(d_early_eqsym[kHtSig0Rel][50])*180/M_PI);
+                fprintf(stderr, "[HTSIG0_RAW][KEY_PROBE] bin21(SC+21) pilot: idx51=%.4f%+.4fi |mag=%.4f phase=%+.1fdeg\n",
+                        d_early_eqsym[kHtSig0Rel][51].real(), d_early_eqsym[kHtSig0Rel][51].imag(),
+                        std::abs(d_early_eqsym[kHtSig0Rel][51]),
+                        std::arg(d_early_eqsym[kHtSig0Rel][51])*180/M_PI);
                 fflush(stderr);
             }
 
@@ -2204,6 +2265,30 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                 fprintf(stderr, "[FRAME_DETECT] L-SIG: E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I_ls, E_Q_ls, ratio_ls);
                 fprintf(stderr, "[FRAME_DETECT] HT-SIG0: E_I=%.2f E_Q=%.2f ratio=%.3f\n", E_I_ht, E_Q_ht, ratio_ht);
+
+                // Probe: 打印 HT-SIG0 前16个数据子载波的原始值和硬判决
+                // 预期: HT-SIG0 是 QBPSK, 比特编码在虚轴(Q轴)上
+                // 硬判决: 如果 |I| > |Q| -> 比特0; 如果 |Q| > |I| -> 比特1
+                fprintf(stderr, "[HT-SIG0_HARD] Raw subcarrier bits (48 data SC):\n");
+                for (int di = 0; di < 48; di++) {
+                    gr_complex val = d_early_eqsym[kHtSig0Rel][di];
+                    uint8_t hard_bit = hard_bit_from_complex(val);
+                    fprintf(stderr, "  [%2d] sc=%+3d bin=%2d val=%.4f%+.4fi |I|=%.4f |Q|=%.4f bit=%d\n",
+                            di, kHeader48Sc[di], kHeader48Bin[di],
+                            val.real(), val.imag(),
+                            std::abs(val.real()), std::abs(val.imag()), hard_bit);
+                }
+                // 也打印 L-SIG 的硬判决用于对比
+                fprintf(stderr, "[L-SIG_HARD] Raw subcarrier bits (48 data SC):\n");
+                for (int di = 0; di < 48; di++) {
+                    gr_complex val = d_early_eqsym[kLSigRel][di];
+                    uint8_t hard_bit = hard_bit_from_complex(val);
+                    fprintf(stderr, "  [%2d] sc=%+3d bin=%2d val=%.4f%+.4fi |I|=%.4f |Q|=%.4f bit=%d\n",
+                            di, kHeader48Sc[di], kHeader48Bin[di],
+                            val.real(), val.imag(),
+                            std::abs(val.real()), std::abs(val.imag()), hard_bit);
+                }
+                fflush(stderr);
 
                 // If HT-SIG0's E_Q/E_I ratio is significantly higher than L-SIG, it's HT-Mixed
                 // DEBUG: Force HT-Mixed for loopback testing (ratio_ht > 1.0 indicates QBPSK)
