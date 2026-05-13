@@ -229,8 +229,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             static int amp_probe_count = 0;
             if (amp_probe_count < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 128 || rel_idx == 160 || rel_idx == 224 || rel_idx == 240 || rel_idx == 304 || rel_idx == 320 || rel_idx == 384 || rel_idx == 400 || rel_idx == 464)) {
                 float amp = std::abs(in[i]);
-                fprintf(stderr, "[SPLITTER_IN_AMP] rel_idx=%llu amp=%.4f sample=%.4f%+.4fi%s\n",
-                        (unsigned long long)rel_idx, amp, in[i].real(), in[i].imag(),
+                fprintf(stderr, "[SPLITTER_IN_AMP] rel_idx=%llu current_idx=%llu d_buffer_count=%d amp=%.4f sample=%.4f%+.4fi%s\n",
+                        (unsigned long long)rel_idx, (unsigned long long)current_idx, d_buffer_count, amp, in[i].real(), in[i].imag(),
                         (amp < 0.1) ? " ** LOW **" : "");
                 amp_probe_count++;
             }
@@ -403,14 +403,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             if (should_buffer && !d_buffer_filled) {
                 d_buffer[d_buffer_count++] = in[i];
-                // PROBE: Check buffer fill progress for first few samples of each symbol
-                static int htsig0_buffer_probe = 0;
-                if (htsig0_buffer_probe < 5 && rel_idx >= 240 && rel_idx <= 244) {
-                    fprintf(stderr, "[SPLITTER_BUF] rel_idx=%llu buf[%d]=%.4f%+.4fi amp=%.4f\n",
-                            (unsigned long long)rel_idx, d_buffer_count-1,
-                            in[i].real(), in[i].imag(), std::abs(in[i]));
-                    htsig0_buffer_probe++;
-                }
                 // PROBE: Print first 10 samples of L-LTF0 buffer to verify alignment
                 static int ltf0_buffer_probe = 0;
                 if (ltf0_buffer_probe < 2 && rel_idx < 64 && should_buffer) {
