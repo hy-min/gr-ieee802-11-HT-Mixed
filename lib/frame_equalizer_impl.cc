@@ -17,6 +17,8 @@
 #include <fstream>
 #include <cstdlib>
 
+#include "ieee80211_constants.h"
+
 namespace gr {
 namespace ieee802_11 {
 
@@ -394,36 +396,6 @@ static constexpr int kLltf48Sign[48] = {
     -1, 1, 1, 1, 1
 };
 
-// L-LTF TX values for 48 data subcarriers (kHeader48Sc order)
-// These are BPSK ±1 values (REAL axis), which is what the TX actually transmits
-// The wifi_phy_hier.py uses digital.chunks_to_symbols_bc([-1, 1]) for preamble
-// H = RX / TX gives proper channel estimate
-static constexpr gr_complex kLltf48TX[48] = {
-    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),  // sc -26 to -20
-    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),  // sc -19 to -14
-    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),  // sc -13 to -8
-    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),  // sc  -6 to  -1
-    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),  // sc  +1 to  +6
-    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f),  // sc  +8 to +13
-    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),  // sc +14 to +19
-    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),  // sc +20 to +26
-};
-
-// L-LTF pilot signs {-21,-7,+7,+21}
-static constexpr int kLltfPilotSign[4] = {
-    1, -1, 1, 1
-};
-
-// L-LTF TX complex values for pilot subcarriers {-21,-7,+7,+21}
-// Computed from FFT of LEGACY_LTF time-domain sequence with 1/sqrt(52) normalization
-// These are the actual frequency-domain pilot values, not just ±j
-static const gr_complex kLltfPilotTX[4] = {
-    gr_complex(-0.6173f, -0.1253f),  // sc -21: FFT of LEGACY_LTF
-    gr_complex( 0.3401f,  0.9423f),  // sc  -7: FFT of LEGACY_LTF
-    gr_complex( 0.3401f, -0.9423f),  // sc  +7: FFT of LEGACY_LTF
-    gr_complex(-0.6173f,  0.1253f)   // sc +21: FFT of LEGACY_LTF
-};
-
 // SIGNAL / HT-SIG pilot values after channel equalization
 static constexpr int kHeaderPilotBase[4] = {
     1, 1, 1, -1
@@ -473,6 +445,49 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
             fprintf(stderr, "  bin[%2d]: LTF0=%8.3f∠%6.1f  LTF1=%8.3f∠%6.1f  diff=%+6.1fdeg\n",
                     bin, mag0, phase0, mag1, phase1, phase_diff);
         }
+
+        // Compute and compare H from LTF0 vs LTF1
+        static constexpr float kFftNormalize = 64.0f / std::sqrt(52.0f);
+        fprintf(stderr, "\n[NAKED_TEST] H from LTF0 vs LTF1 (48 data SC):\n");
+        for (int i = 0; i < 48; i++) {
+            int bin = kHeader48Bin[i];
+            const gr_complex lltf0_52 = saved_ltf0_fft[bin];
+            const gr_complex lltf1_52 = sym64[bin];
+            const gr_complex tx = kLltf48TX[i];
+
+            gr_complex H0 = gr_complex(0,0);
+            gr_complex H1 = gr_complex(0,0);
+            if (std::abs(tx) > 0.001f) {
+                H0 = (lltf0_52 / tx) / kFftNormalize;
+                H1 = (lltf1_52 / tx) / kFftNormalize;
+            }
+
+            float mag0 = std::abs(H0);
+            float mag1 = std::abs(H1);
+            float ratio = (mag0 > 1e-9f) ? mag1 / mag0 : 0.0f;
+            if (i < 12) {  // Print first 12 for brevity
+                fprintf(stderr, "  SC[%2d] bin[%2d]: H0=%.4f%+.4fi mag=%.4f | H1=%.4f%+.4fi mag=%.4f | ratio=%.2f\n",
+                        kHeader48Sc[i], bin,
+                        H0.real(), H0.imag(), mag0,
+                        H1.real(), H1.imag(), mag1,
+                        ratio);
+            }
+        }
+        // Print summary: average magnitude
+        double sum_mag0 = 0, sum_mag1 = 0;
+        for (int i = 0; i < 48; i++) {
+            int bin = kHeader48Bin[i];
+            const gr_complex lltf0_52 = saved_ltf0_fft[bin];
+            const gr_complex lltf1_52 = sym64[bin];
+            const gr_complex tx = kLltf48TX[i];
+            if (std::abs(tx) > 0.001f) {
+                sum_mag0 += std::abs((lltf0_52 / tx) / kFftNormalize);
+                sum_mag1 += std::abs((lltf1_52 / tx) / kFftNormalize);
+            }
+        }
+        fprintf(stderr, "  [SUMMARY] Avg H magnitude: LTF0=%.4f LTF1=%.4f ratio=%.4f\n",
+                sum_mag0/48.0, sum_mag1/48.0, (sum_mag0/48.0 > 1e-9) ? (sum_mag1/sum_mag0) : 0.0);
+
         ltf0_saved = false;
         fprintf(stderr, "[NAKED_TEST] End comparison\n\n");
     }
@@ -578,20 +593,26 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     static constexpr float kFftNormalize = 64.0f / std::sqrt(52.0f);
 
     // Channel estimation using LTF0 only (avoid averaging opposite signs)
+    gr_complex H52_from_ltf0[52] = {gr_complex(0,0)};
+    gr_complex H52_from_ltf1[52] = {gr_complex(0,0)};
+
+    // Compute H from LTF0
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
         const gr_complex tx = kLltf48TX[i];
 
         if (std::abs(tx) > 0.001f) {
-            H52[i] = (lltf0 / tx) / kFftNormalize;
+            H52_from_ltf0[i] = (lltf0 / tx) / kFftNormalize;
+            H52[i] = H52_from_ltf0[i];  // Output H is from LTF0
         } else {
-            H52[i] = lltf0 / kFftNormalize;  // fallback for null subcarriers
+            H52_from_ltf0[i] = lltf0 / kFftNormalize;  // fallback for null subcarriers
+            H52[i] = H52_from_ltf0[i];
         }
         // Probe raw FFT values before channel estimation
         if (i == 7) {  // SC+7
             fprintf(stderr, "[RAW_FFT_PROBE] lltf0[7]=%.4f%+.4fi tx=%.4f%+.4fi H=%.4f%+.4fi mag=%.4f\n",
                     lltf0.real(), lltf0.imag(), tx.real(), tx.imag(),
-                    H52[i].real(), H52[i].imag(), std::abs(H52[i]));
+                    H52_from_ltf0[i].real(), H52_from_ltf0[i].imag(), std::abs(H52_from_ltf0[i]));
         }
     }
     for (int i = 0; i < 4; i++) {
@@ -601,18 +622,60 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
 
         if (std::abs(tx) > 0.001f) {
-            H52[48 + i] = (lltf0 / tx) / kFftNormalize;
+            H52_from_ltf0[48 + i] = (lltf0 / tx) / kFftNormalize;
+            H52[48 + i] = H52_from_ltf0[48 + i];
         } else {
-            H52[48 + i] = lltf0 / kFftNormalize;  // fallback
+            H52_from_ltf0[48 + i] = lltf0 / kFftNormalize;  // fallback
+            H52[48 + i] = H52_from_ltf0[48 + i];
         }
     }
 
-    // Debug: dump all 48 data subcarrier channel estimates
-    std::fprintf(stderr, "[CHAN_EST_FULL] All 48 data SC channel estimates:\n");
+    // Also compute H from LTF1 for comparison
     for (int i = 0; i < 48; i++) {
-        std::fprintf(stderr, "  SC[%2d] idx[%2d]: H=%.4f%+.4fi mag=%.4f phase=%+.1fdeg\n",
-                kHeader48Sc[i], i, H52[i].real(), H52[i].imag(),
-                std::abs(H52[i]), std::arg(H52[i])*180/M_PI);
+        const gr_complex lltf1 = lltf1_52[i];
+        const gr_complex tx = kLltf48TX[i];
+
+        if (std::abs(tx) > 0.001f) {
+            H52_from_ltf1[i] = (lltf1 / tx) / kFftNormalize;
+        } else {
+            H52_from_ltf1[i] = lltf1 / kFftNormalize;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        const gr_complex lltf1 = lltf1_52[48 + i];
+        const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+
+        if (std::abs(tx) > 0.001f) {
+            H52_from_ltf1[48 + i] = (lltf1 / tx) / kFftNormalize;
+        } else {
+            H52_from_ltf1[48 + i] = lltf1 / kFftNormalize;
+        }
+    }
+
+    // Debug: dump all 52 H values for BOTH LTF0 and LTF1
+    std::fprintf(stderr, "[CHAN_EST_FULL] All 52 H values - LTF0 vs LTF1:\n");
+    std::fprintf(stderr, "  Data SC (0-47):\n");
+    for (int i = 0; i < 48; i++) {
+        float mag0 = std::abs(H52_from_ltf0[i]);
+        float mag1 = std::abs(H52_from_ltf1[i]);
+        float ratio = (mag0 > 1e-9f) ? mag1 / mag0 : 0.0f;
+        std::fprintf(stderr, "  SC[%2d] idx[%2d]: H0=%.4f%+.4fi mag=%.4f | H1=%.4f%+.4fi mag=%.4f | ratio=%.2f\n",
+                kHeader48Sc[i], i,
+                H52_from_ltf0[i].real(), H52_from_ltf0[i].imag(), mag0,
+                H52_from_ltf1[i].real(), H52_from_ltf1[i].imag(), mag1,
+                ratio);
+    }
+    std::fprintf(stderr, "  Pilots (48-51):\n");
+    for (int i = 0; i < 4; i++) {
+        int idx = 48 + i;
+        float mag0 = std::abs(H52_from_ltf0[idx]);
+        float mag1 = std::abs(H52_from_ltf1[idx]);
+        float ratio = (mag0 > 1e-9f) ? mag1 / mag0 : 0.0f;
+        std::fprintf(stderr, "  Pilot[%d] idx[%2d]: H0=%.4f%+.4fi mag=%.4f | H1=%.4f%+.4fi mag=%.4f | ratio=%.2f\n",
+                i, idx,
+                H52_from_ltf0[idx].real(), H52_from_ltf0[idx].imag(), mag0,
+                H52_from_ltf1[idx].real(), H52_from_ltf1[idx].imag(), mag1,
+                ratio);
     }
     std::fflush(stderr);
 }
