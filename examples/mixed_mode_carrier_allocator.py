@@ -226,6 +226,24 @@ class mixed_mode_carrier_allocator(gr.basic_block):
 
         # DEBUG: Print pilot subcarrier mapping for first call
         static_debug_count = getattr(self, '_debug_fill_count', 0)
+
+        # DEBUG: Print L-SIG and HT-SIG pilot FFT bins for first few calls
+        if len(carriers) == 48:  # header symbol
+            for sc, pv in zip(self._pilot_carriers, pilot_values):
+                fft_bin = self._sc_to_fft_bin_idx(sc)
+                phase_deg = np.angle(pv) * 180 / np.pi
+                rx_pil = out_vec[fft_bin]
+                rx_phase = np.angle(rx_pil) * 180 / np.pi
+                print(f"[TX_PILOT] carriers=48 sc={sc:3d} -> bin={fft_bin:2d} TX_pilot={pv:.4f} phase={phase_deg:.1f}deg RX_bin_val={rx_pil:.4f} RX_phase={rx_phase:.1f}deg")
+            # Also print data subcarriers for first few
+            for sc in [-26, -25, -24, 1, 2, 3]:
+                if sc in carriers:
+                    idx = carriers.index(sc)
+                    bin_idx = self._sc_to_fft_bin_idx(sc)
+                    val = out_vec[bin_idx]
+                    phase_deg = np.angle(val) * 180 / np.pi
+                    print(f"[TX_DATA] sc={sc:3d} -> bin={bin_idx:2d} val={val:.4f} phase={phase_deg:.1f}deg is_pure_real={np.abs(val.imag) < 0.01}")
+
         if static_debug_count < 3:
             print(f"[TX_MM-CA] _fill_symbol called #{static_debug_count}")
             print(f"[TX_MM-CA]   carriers[:8] = {carriers[:8]}")
@@ -324,6 +342,12 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             htsig1_bpsk48 = self._map_header_bits_to_bpsk(htsig1_bits48)
             htsig2_bpsk48 = self._map_header_bits_to_bpsk(htsig2_bits48)
 
+            # DEBUG: Print L-SIG BPSK before any rotation - should be pure real (±1)
+            print(f"[TX][LSIG_BPSK] lsig_bpsk48[0:8] = {lsig_bpsk48[0:8]}", flush=True)
+            for i in range(8):
+                phase_deg = np.angle(lsig_bpsk48[i]) * 180 / np.pi
+                print(f"[TX][LSIG_BPSK] lsig[{i}]={lsig_bpsk48[i]} phase={phase_deg:.1f}deg is_pure_real={np.abs(lsig_bpsk48[i].imag) < 0.01}", flush=True)
+
             # HT-SIG uses QBPSK (90° rotation on Q-axis)
             # Rotate HT-SIG data symbols by multiplying by j
             htsig1_bpsk48 = htsig1_bpsk48 * 1j
@@ -335,6 +359,9 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             for i in range(8):
                 phase_deg = np.angle(htsig1_bpsk48[i]) * 180 / np.pi
                 print(f"[TX][QBPSK_CHECK] htsig1[{i}]={htsig1_bpsk48[i]} phase={phase_deg:.1f}deg is_pure_imag={np.abs(htsig1_bpsk48[i].real) < 0.01}", flush=True)
+
+            # DEBUG: Print L-SIG BPSK AFTER HT-SIG rotation (should NOT be affected)
+            print(f"[TX][LSIG_AFTER_ROT] lsig_bpsk48[0:8] = {lsig_bpsk48[0:8]}", flush=True)
 
             # HT-SIG pilots also need 90° rotation
             ht_sig_pilot_values = [pv * 1j for pv in self._legacy_pilot_values]
