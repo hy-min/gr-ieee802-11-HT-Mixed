@@ -752,7 +752,7 @@ static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
     std::memset(out48, 0, 48);
 
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + (k / 3) % 16;  // correct inverse of i = 3*(k%16) + k/16
+        const int j = 16 * (k % 3) + (k / 3);  // Correct inverse of i = 3*(k%16) + k/16
         out48[k] = in48[j] & 0x1;
     }
 }
@@ -1224,6 +1224,15 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     if (dbg_eqbits48) {
         std::memcpy(dbg_eqbits48, eqbits48, 48);
     }
+
+    // Debug: print hard bits BEFORE deinterleave
+    fprintf(stderr, "[RX_LSIG_HardBits] eqbits48[0:24] = ");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", eqbits48[i]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[RX_LSIG_HardBits] eqbits48[24:48] = ");
+    for (int i = 24; i < 48; i++) fprintf(stderr, "%d", eqbits48[i]);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 
     deinterleave_bpsk_48(eqbits48, deintl48);
 
@@ -2447,12 +2456,20 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                       lsig_len,
                                                       nullptr,
                                                       nullptr)) {
+                    std::fprintf(stderr, "[DEBUG_LSIG] inv_lsig=%d decode failed, continuing\n", inv_lsig);
+                    fflush(stderr);
                     continue;
                 }
 
                 if (lsig_enc != 0) {
+                    std::fprintf(stderr, "[DEBUG_LSIG] inv_lsig=%d lsig_enc=%d != 0, continuing\n", inv_lsig, lsig_enc);
+                    fflush(stderr);
                     continue;
                 }
+
+                // ADD DEBUG HERE
+                std::fprintf(stderr, "[DEBUG_LSIG] inv_lsig=%d lsig_enc=%d lsig_len=%d\n", inv_lsig, lsig_enc, lsig_len);
+                fflush(stderr);
 
                 // Detect HT-SIG QBPSK rotation
                 int detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);

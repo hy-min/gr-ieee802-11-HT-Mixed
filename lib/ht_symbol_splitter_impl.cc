@@ -159,30 +159,42 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // - We want rel_idx=0 to correspond to L-LTF0 DATA start
                 // - Therefore d_frame_start_abs = 0
 
-                // CORRECT FIX: Compute buffer-relative index where wifi_start appears
-                // tag.offset is absolute position in input stream
-                // nitems_read(0) is number of samples already consumed
-                // buffer_start_idx is position in current in[] buffer where L-LTF0 DATA starts
-                int64_t buffer_start_idx = (int64_t)tag_abs_pos - (int64_t)nitems_read(0);
+                // FIX: wifi_start tag.offset is where sync_long started writing (at rel=0).
+                // The d_frame_start VALUE (tag.value) tells us the actual L-LTF0 DATA start
+                // offset within sync_long's input stream.
+                // Since sync_long output[0] = sync_long input[d_frame_start],
+                // and this maps 1:1 to ht_symbol_splitter input,
+                // we should use d_frame_start directly as the absolute offset.
+                d_frame_start_abs = (int64_t)d_frame_start;
 
-                // d_frame_start_abs should be the position in CURRENT buffer where L-LTF0 starts
-                // Since wifi_start at buffer_start_idx corresponds to L-LTF0 DATA start,
-                // and we want rel_idx=0 at L-LTF0 DATA, set d_frame_start_abs = buffer_start_idx
-                d_frame_start_abs = buffer_start_idx;
+                // DEBUG PROBE: Trace index derivation chain
+                fprintf(stderr, "[SPLITTER_TAG] d_frame_start=%llu -> d_frame_start_abs=%lld\n",
+                        (unsigned long long)d_frame_start,
+                        (long long)d_frame_start_abs);
 
                 // Check if this is a NEW frame
                 // If d_frame_start_known is already true and we see another wifi_start,
                 // it means a new frame has started (we don't re-use wifi_start within a frame)
-                bool is_new_frame = d_frame_start_known;
+                //
+                // CRITICAL FIX: Ignore wifi_start tags while still processing preamble symbols.
+                // HT-Mixed preamble has ~7 symbols (2 L-LTF + 1 L-SIG + 2 HT-SIG + 1 HT-STF) = 448 samples before HT-DATA.
+                // If d_items_processed < 500, we're still in preamble - ignore this wifi_start.
+                bool is_new_frame = d_frame_start_known && (d_items_processed >= 500);
 
-                d_frame_start_known = true;
+                if (!is_new_frame && d_frame_start_known) {
+                    // We're seeing wifi_start during preamble processing - ignore it
+                    fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu\n",
+                            (unsigned long long)d_items_processed);
+                } else {
+                    d_frame_start_known = true;
 
-                // Critical state reset for multi-frame handling:
-                // When a new wifi_start is detected, reset all CP-skip state variables
-                // to ensure the second frame's L-LTF CP is correctly skipped, just like the first frame.
-                d_buffer_count = 0;
-                d_items_processed = 0;
-                fprintf(stderr, "[HT_SPLITTER] wifi_start detected! Reset buffer_count=0, items_processed=0.\n");
+                    // Critical state reset for multi-frame handling:
+                    // When a new wifi_start is detected, reset all CP-skip state variables
+                    // to ensure the second frame's L-LTF CP is correctly skipped, just like the first frame.
+                    d_buffer_count = 0;
+                    d_items_processed = 0;
+                    fprintf(stderr, "[HT_SPLITTER] wifi_start detected! Reset buffer_count=0, items_processed=0.\n");
+                }
 
                 // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
                 add_item_tag(0,  // output port 0
@@ -351,6 +363,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
             }
 
+            // DEBUG PROBE: Track rel_idx and buffer position for key indices
+            static int debug_rel_idx = 0;
+            if (debug_rel_idx < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 80 || rel_idx == 144 || rel_idx == 160)) {
+                fprintf(stderr, "[SPLITTER_REL] rel_idx=%llu current_idx=%llu should_buffer=%d d_buffer_count=%d\n",
+                        (unsigned long long)rel_idx,
+                        (unsigned long long)current_idx,
+                        should_buffer ? 1 : 0,
+                        d_buffer_count);
+                debug_rel_idx++;
+            }
+
             if (should_buffer && !d_buffer_filled) {
                 d_buffer[d_buffer_count++] = in[i];
                 // PROBE: Check buffer fill progress for first few samples of each symbol
@@ -361,11 +384,47 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             in[i].real(), in[i].imag(), std::abs(in[i]));
                     htsig0_buffer_probe++;
                 }
+                // PROBE: Print first 10 samples of L-LTF0 buffer to verify alignment
+                static int ltf0_buffer_probe = 0;
+                if (ltf0_buffer_probe < 2 && rel_idx < 64 && should_buffer) {
+                    fprintf(stderr, "[SPLITTER_LTF0_PROBE] rel_idx=%llu buf[%d]=%.6f%+.6fi amp=%.6f\n",
+                            (unsigned long long)rel_idx, d_buffer_count-1, in[i].real(), in[i].imag(), std::abs(in[i]));
+                    if (d_buffer_count == 64) {  // Last sample of LTF0
+                        fprintf(stderr, "[SPLITTER_LTF0_END] LTF0 buffer complete, first 5 samples:\n");
+                        for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
+                            fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
+                        }
+                        ltf0_buffer_probe++;
+                    }
+                }
+                // PROBE: Print samples 80-90 of L-LTF1 buffer
+                static int ltf1_buffer_probe = 0;
+                if (ltf1_buffer_probe < 2 && rel_idx >= 80 && rel_idx < 90 && should_buffer) {
+                    fprintf(stderr, "[SPLITTER_LTF1_PROBE] rel_idx=%llu buf[%d]=%.6f%+.6fi amp=%.6f\n",
+                            (unsigned long long)rel_idx, d_buffer_count-1, in[i].real(), in[i].imag(), std::abs(in[i]));
+                    if (d_buffer_count == 64) {  // Last sample of LTF1 (buffer resets after LTF0)
+                        fprintf(stderr, "[SPLITTER_LTF1_END] LTF1 buffer complete, first 5 samples (idx 0-4):\n");
+                        for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
+                            fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
+                        }
+                        ltf1_buffer_probe++;
+                    }
+                }
             }
 
             // Check boundary conditions when buffer is full
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
+
+                // PROBE: Print LTF1 buffer at boundary (out_rel_idx == 143)
+                static int ltf1_boundary_probe = 0;
+                if (ltf1_boundary_probe < 2 && out_rel_idx == 143) {
+                    fprintf(stderr, "[SPLITTER_LTF1_END] LTF1 buffer complete at boundary, first 5 samples:\n");
+                    for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
+                        fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
+                    }
+                    ltf1_boundary_probe++;
+                }
 
                 // Explicit boundary positions for HT-mixed 20MHz (IEEE 802.11n):
                 // L-LTF0 DATA: ends at out_rel_idx=63

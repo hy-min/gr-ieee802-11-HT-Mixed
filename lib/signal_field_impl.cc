@@ -143,6 +143,16 @@ static void generate_l_sig_header(char* out,
 
     char encoded[48];
     convolutional_encoding(signal_header, encoded, sig_frame);
+
+    // Debug: print TX L-SIG encoded bits after convolutional encoding (before interleave)
+    fprintf(stderr, "[TX_LSIG_Coded] encoded[0:24] = ");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", encoded[i] & 0x1);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[TX_LSIG_Coded] encoded[24:48] = ");
+    for (int i = 24; i < 48; i++) fprintf(stderr, "%d", encoded[i] & 0x1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+
     interleave(encoded, out, sig_frame, sig_ofdm);
 }
 

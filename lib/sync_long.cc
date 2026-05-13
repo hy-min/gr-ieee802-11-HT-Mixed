@@ -132,18 +132,7 @@ public:
             break;
 
         case COPY: {
-            // PROBE: Check amplitude at start of COPY state and at key rel positions
-            static int copy_amp_probe_count = 0;
-            int rel_for_probe = d_offset - d_frame_start;
-            // Probe at key positions: rel=128 (HT-SIG0 CP start), rel=144 (L-SIG DATA start), rel=240 (HT-SIG0 DATA start), rel=320 (HT-SIG1 DATA start)
-            if (copy_amp_probe_count < 20 && i < ninput && (rel_for_probe == 128 || rel_for_probe == 144 || rel_for_probe == 240 || rel_for_probe == 304 || rel_for_probe == 320)) {
-                float amp = std::abs(in_delayed[i]);
-                fprintf(stderr, "[SYNC_LONG_AMP] d_offset=%d rel=%d amp=%.4f sample=%.4f%+.4fi%s\n",
-                        d_offset, rel_for_probe, amp, in_delayed[i].real(), in_delayed[i].imag(),
-                        (amp < 0.1) ? " ** LOW **" : "");
-                copy_amp_probe_count++;
-            }
-
+            
             while (i < ninput && o < noutput) {
 
                 int rel = d_offset - d_frame_start;
@@ -165,6 +154,25 @@ public:
                                  pmt::from_double(d_frame_start),
                                  pmt::string_to_symbol(name()));
                     d_wifi_start_added = true;
+                }
+
+                // PROBE: L-LTF periodicity check (samples[0]≈samples[64], samples[32]≈samples[96])
+                // Also probe key HT-SIG/L-SIG positions
+                static int periodicity_probe_count = 0;
+                if (periodicity_probe_count < 20 && (rel == 0 || rel == 32 || rel == 64 || rel == 96 || rel == 128 || rel == 144 || rel == 240 || rel == 304 || rel == 320)) {
+                    const char* pos_label = "";
+                    if (rel == 0) pos_label = "LTF0_START";
+                    else if (rel == 32) pos_label = "LTF0_MID";
+                    else if (rel == 64) pos_label = "LTF1_START";
+                    else if (rel == 96) pos_label = "LTF1_MID";
+                    else if (rel == 128) pos_label = "LSIG_CP";
+                    else if (rel == 144) pos_label = "LSIG_DATA";
+                    else if (rel == 240) pos_label = "HTSIG0_DATA";
+                    else if (rel == 304) pos_label = "HTSIG1_CP";
+                    else if (rel == 320) pos_label = "HTSIG1_DATA";
+                    fprintf(stderr, "[SYNC_LONG_PERIODICITY] d_offset=%d rel=%d out_idx=%d amp=%.4f sample=%.4f%+.4fi [%s]\n",
+                            d_offset, rel, o, std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag(), pos_label);
+                    periodicity_probe_count++;
                 }
 
                 // Output all samples from d_frame_start onwards (1:1 mapping)
@@ -338,7 +346,7 @@ public:
 
         // If we found a valid HT candidate
         if (best_ht_i >= 0 && best_ht_k >= 0) {
-            d_frame_start = best_ht_lower_peak + 2;
+            d_frame_start = best_ht_lower_peak + 1;
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
@@ -414,7 +422,7 @@ public:
 
         // If we found a valid Legacy candidate
         if (best_leg_i >= 0 && best_leg_k >= 0) {
-            d_frame_start = best_leg_lower_peak + 2;
+            d_frame_start = best_leg_lower_peak + 1;
             mode = "Legacy-mode-plateau";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] Legacy-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
@@ -428,7 +436,7 @@ public:
         // ONLY use this if the peak magnitude is above the noise floor
         if (!vec.empty() && top_mag >= MIN_ABS_MAGNITUDE) {
             int peak_pos = get<1>(vec[0]);
-            d_frame_start = peak_pos + 2;
+            d_frame_start = peak_pos + 1;
             mode = "Method2-peak";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
