@@ -408,14 +408,24 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     }
                     fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
                             symbol_type, (unsigned long long)out_rel_idx);
-                    // FFT input timing probe
+                    // Time-domain energy probe using norm (magnitude squared)
                     float total_energy = 0.0f;
+                    float peak_mag = 0.0f;
+                    int peak_idx = 0;
                     for (int zz = 0; zz < 64; zz++) {
-                        total_energy += std::abs(d_buffer[zz]);
+                        float n = std::norm(d_buffer[zz]);  // magnitude squared
+                        total_energy += n;
+                        if (std::abs(d_buffer[zz]) > peak_mag) {
+                            peak_mag = std::abs(d_buffer[zz]);
+                            peak_idx = zz;
+                        }
                     }
-                    fprintf(stderr, "[SPLITTER_FFTPROBE] type=%d rel_idx=%llu total_energy=%.4f first_sample=%.4f%+.4fi\n",
+                    fprintf(stderr, "[SPLITTER_FFTPROBE] type=%d rel_idx=%llu td_energy=%.4f peak_mag=%.4f@%d first=%.4f%+.4fi last=%.4f%+.4fi buf_filled=%d\n",
                             symbol_type, (unsigned long long)out_rel_idx, total_energy,
-                            d_buffer[0].real(), d_buffer[0].imag());
+                            peak_mag, peak_idx,
+                            d_buffer[0].real(), d_buffer[0].imag(),
+                            d_buffer[63].real(), d_buffer[63].imag(),
+                            d_buffer_filled);
                     fflush(stderr);
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
