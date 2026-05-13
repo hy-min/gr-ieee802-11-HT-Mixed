@@ -113,11 +113,17 @@ public:
                 d_offset++;
 
                 if (d_offset == SYNC_LENGTH) {
-                    search_frame_start();
+                    bool detected = search_frame_start();
                     mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                     d_offset = 0;
                     d_count = 0;
-                    d_state = COPY;
+                    if (detected) {
+                        d_state = COPY;
+                    } else {
+                        // No valid detection - stay in SYNC state, clear correlation for new search
+                        d_cor.clear();
+                        d_state = SYNC;
+                    }
 
                     break;
                 }
@@ -230,8 +236,10 @@ public:
         }
     }
 
-    void search_frame_start()
+    bool search_frame_start()
     {
+        bool valid = false;
+
         // sort list (highest correlation first)
         assert(d_cor.size() == SYNC_LENGTH);
         d_cor.sort(compare_abs);
@@ -336,7 +344,8 @@ public:
             fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
                     best_ht_i, get<1>(vec[best_ht_i]), best_ht_k, get<1>(vec[best_ht_k]),
                     best_ht_diff, best_ht_lower_peak, d_frame_start, best_ht_score);
-            return;
+            valid = true;
+            return valid;
         }
 
         // ============================================================
@@ -411,7 +420,8 @@ public:
             fprintf(stderr, "[SYNC_LONG] Legacy-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
                     best_leg_i, get<1>(vec[best_leg_i]), best_leg_k, get<1>(vec[best_leg_k]),
                     best_leg_diff, best_leg_lower_peak, d_frame_start, best_leg_score);
-            return;
+            valid = true;
+            return valid;
         }
 
         // Method 2: Use the highest correlation peak as frame start
@@ -423,12 +433,14 @@ public:
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
                     d_frame_start, mode, peak_pos);
-            return;
+            valid = true;
+            return valid;
         }
 
-        // Fallback: use SYNC_LENGTH (no detection)
+        // Fallback: no valid detection - return false
         d_frame_start = SYNC_LENGTH;
         d_freq_offset = 0.0f;
+        return valid;
     }
 
 private:
