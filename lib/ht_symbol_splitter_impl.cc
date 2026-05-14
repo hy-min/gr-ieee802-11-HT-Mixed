@@ -480,27 +480,42 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 //     ltf1_boundary_probe++;
                 // }
 
-                // Explicit boundary positions for HT-mixed 20MHz (IEEE 802.11n):
-                // L-LTF0 DATA: ends at out_rel_idx=63
-                // L-LTF1 DATA: ends at out_rel_idx=143
-                // L-SIG DATA: ends at out_rel_idx=223 (64 samples: rel_idx 160-223)
-                // HT-SIG0 DATA: ends at out_rel_idx=303 (64 samples: rel_idx 240-303)
-                // HT-SIG1 DATA: ends at out_rel_idx=383 (64 samples: rel_idx 320-383)
-                // HT-STF DATA: ends at out_rel_idx=463 (64 samples: rel_idx 400-463)
-                // HT-DATA: 464 + n*80 (for n >= 0)
+                // ============================================================
+                // Boundary trigger: output FFT window when 64 samples collected
+                // Single Source of Truth: rel_idx (not out_rel_idx)
+                // ============================================================
                 bool at_boundary = false;
-                if (out_rel_idx == 63 || out_rel_idx == 143 || out_rel_idx == 223) {
-                    // L-LTF/L-SIG boundaries
-                    at_boundary = true;
-                } else if (out_rel_idx == 303 || out_rel_idx == 383) {
-                    // HT-SIG boundaries
-                    at_boundary = true;
-                } else if (out_rel_idx == 463) {
-                    // HT-STF boundary
-                    at_boundary = true;
-                } else if (rel_idx >= 464) {
+                if (rel_idx < 64) {
+                    // LTF0 boundary: output at rel_idx=63
+                    at_boundary = (rel_idx == 63);
+                } else if (rel_idx < 128) {
+                    // LTF1 boundary: output at rel_idx=127 (NOT 143 - no CP!)
+                    at_boundary = (rel_idx == 127);
+                } else if (rel_idx < 144) {
+                    // L-SIG CP: no output
+                    at_boundary = false;
+                } else if (rel_idx < 208) {
+                    // L-SIG boundary: output at rel_idx=207
+                    at_boundary = (rel_idx == 207);
+                } else if (rel_idx < 240) {
+                    // 32-point gap: no output
+                    at_boundary = false;
+                } else if (rel_idx < 304) {
+                    // HT-SIG0 boundary: output at rel_idx=303
+                    at_boundary = (rel_idx == 303);
+                } else if (rel_idx < 320) {
+                    // HT-SIG1 CP: no output
+                    at_boundary = false;
+                } else if (rel_idx < 384) {
+                    // HT-SIG1 boundary: output at rel_idx=383
+                    at_boundary = (rel_idx == 383);
+                } else if (rel_idx < 464) {
+                    // HT-STF boundary: output at rel_idx=463
+                    at_boundary = (rel_idx == 463);
+                } else {
                     // HT-DATA and beyond: 80-sample periodicity
-                    at_boundary = ((out_rel_idx - 464) % 80 == 0);
+                    uint64_t sym_offset = (rel_idx - 464) % 80;
+                    at_boundary = (sym_offset == 0);
                 }
 
                 // [DEBUG_SPLITTER_REL] - REMOVED: rel_idx debug (excessive spam)
@@ -516,7 +531,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // rel_idx=303: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 303)
                     // rel_idx=383: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 383)
                     int symbol_type = -1;
-                    if (out_rel_idx == 63 || out_rel_idx == 143) {
+                    if (out_rel_idx == 63 || out_rel_idx == 127) {
                         symbol_type = 0; // L-LTF FFT
                     } else if (out_rel_idx == 223) {
                         symbol_type = 2; // L-SIG FFT
@@ -563,9 +578,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             fprintf(stderr, "  TD[%d] = %.6f%+.6fi\n",
                                     dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
                         }
-                    } else if (out_rel_idx == 143 && have_ltf0) {
+                    } else if (out_rel_idx == 127 && have_ltf0) {
                         // This is LTF1 - compare with saved LTF0
-                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 (rel_idx=143) first 8 TD samples:\n");
+                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 (rel_idx=127) first 8 TD samples:\n");
                         for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
                             fprintf(stderr, "  TD[%d] = %.6f%+.6fi  (LTF0[0]=%.6f%+.6fi diff=%.6f%+.6fi)\n",
                                     dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag(),
