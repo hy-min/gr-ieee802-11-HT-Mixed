@@ -391,33 +391,37 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // HT-STF DATA: rel_idx 400-463 (64 samples) -> BUFFER
             // HT-DATA: rel_idx 464+ (80-sample period: 16 CP + 64 Data)
             // ============================================================
+            // ============================================================
+            // HT-Mixed 20MHz Preamble Structure (IEEE 802.11n)
+            // L-LTF: T1 (0-63) + T2 (64-127) 无缝连接，无 CP
+            // 后续符号: 16 CP + 64 DATA = 80 点
+            // ============================================================
             if (rel_idx < 64) {
                 // Stage 1: L-LTF0 DATA (rel_idx 0-63)
                 should_buffer = true;
-            } else if (rel_idx < 80) {
-                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - SKIP!
-                should_buffer = false;
-            } else if (rel_idx < 144) {
-                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
+            } else if (rel_idx < 128) {
+                // Stage 1b: L-LTF1 DATA (rel_idx 64-127) - 无 CP，无缝衔接！
                 should_buffer = true;
-            } else if (rel_idx < 224) {
-                // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
-                should_buffer = (rel_idx >= 160);
-                // [SPLITTER_RESET_CHECK, SPLITTER_LSIG_ABS] - REMOVED: debug probes
+            } else if (rel_idx < 144) {
+                // Stage 2: L-SIG CP (rel_idx 128-143) - 跳过
+                should_buffer = false;
+            } else if (rel_idx < 208) {
+                // Stage 2b: L-SIG DATA (rel_idx 144-207)
+                should_buffer = true;
             } else if (rel_idx < 240) {
-                // Stage 3: HT-SIG0 CP (rel_idx 224-239) - SKIP
+                // Stage 3: 32点间隙 (rel_idx 208-239) - 跳过
                 should_buffer = false;
             } else if (rel_idx < 304) {
                 // Stage 3b: HT-SIG0 DATA (rel_idx 240-303)
                 should_buffer = true;
             } else if (rel_idx < 320) {
-                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - SKIP
+                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - 跳过
                 should_buffer = false;
             } else if (rel_idx < 384) {
                 // Stage 4b: HT-SIG1 DATA (rel_idx 320-383)
                 should_buffer = true;
             } else if (rel_idx < 400) {
-                // Stage 5: HT-STF CP (rel_idx 384-399) - SKIP
+                // Stage 5: HT-STF CP (rel_idx 384-399) - 跳过
                 should_buffer = false;
             } else if (rel_idx < 464) {
                 // Stage 5b: HT-STF DATA (rel_idx 400-463)
@@ -544,6 +548,39 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             d_buffer[63].real(), d_buffer[63].imag(),
                             d_buffer_filled);
                     fflush(stderr);
+                    // PROBE: Print time-domain buffer at boundary (LTF0 vs LTF1 comparison)
+                    // If LTF1 is negated version of LTF0, we'll see d_buffer[i] ≈ -first_ltf0_sample
+                    static gr_complex saved_first_ltf0[8] = {gr_complex(0,0)};
+                    static bool have_ltf0 = false;
+                    if (out_rel_idx == 63 && !have_ltf0) {
+                        // This is LTF0 - save first 8 samples
+                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
+                            saved_first_ltf0[dbg_i] = d_buffer[dbg_i];
+                        }
+                        have_ltf0 = true;
+                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF0 (rel_idx=63) first 8 TD samples:\n");
+                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
+                            fprintf(stderr, "  TD[%d] = %.6f%+.6fi\n",
+                                    dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
+                        }
+                    } else if (out_rel_idx == 143 && have_ltf0) {
+                        // This is LTF1 - compare with saved LTF0
+                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 (rel_idx=143) first 8 TD samples:\n");
+                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
+                            fprintf(stderr, "  TD[%d] = %.6f%+.6fi  (LTF0[0]=%.6f%+.6fi diff=%.6f%+.6fi)\n",
+                                    dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag(),
+                                    saved_first_ltf0[dbg_i].real(), saved_first_ltf0[dbg_i].imag(),
+                                    (d_buffer[dbg_i] + saved_first_ltf0[dbg_i]).real(),
+                                    (d_buffer[dbg_i] + saved_first_ltf0[dbg_i]).imag());
+                        }
+                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 vs LTF0 negation check:\n");
+                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
+                            gr_complex diff = d_buffer[dbg_i] + saved_first_ltf0[dbg_i];  // Should be ~0 if LTF1 = -LTF0
+                            fprintf(stderr, "  TD[%d]: LTF1 + LTF0 = %.6f%+.6fi (should be ~0 if negated)\n",
+                                    dbg_i, diff.real(), diff.imag());
+                        }
+                        have_ltf0 = false;  // Reset for next frame
+                    }
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     // [SPLITTER_DUMP] - REMOVED: debug probe
