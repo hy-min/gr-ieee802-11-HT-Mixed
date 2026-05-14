@@ -85,7 +85,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     static int work_call = 0;
     int this_call = work_call++;
     uint64_t start_abs_idx = nitems_read(0);
-    fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d start_abs_idx=%llu\n", this_call, ninput_items[0], (unsigned long long)start_abs_idx);
+    fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d start_abs_idx=%llu d_frame_start_abs=%lld\n",
+            this_call, ninput_items[0], (unsigned long long)start_abs_idx, (long long)d_frame_start_abs);
 
     // PROBE: Check what sync_long actually produced in its output buffer
     // This reads directly from the input buffer at key positions
@@ -184,13 +185,34 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // CRITICAL FIX: Ignore wifi_start tags while still processing preamble symbols.
                 // HT-Mixed preamble has ~7 symbols (2 L-LTF + 1 L-SIG + 2 HT-SIG + 1 HT-STF) = 448 samples before HT-DATA.
                 // If d_items_processed < 500, we're still in preamble - ignore this wifi_start.
-                bool is_new_frame = d_frame_start_known && (d_items_processed >= 500);
+                //
+                // The previous condition "!is_new_frame && d_frame_start_known" was wrong:
+                // it only ignored if d_frame_start_known was already true. But on the FIRST
+                // wifi_start, d_frame_start_known is false, so the tag was always accepted,
+                // causing d_frame_start_abs to change from 0 to 176 MID-PREAMBLE, corrupting
+                // the rel_idx calculation for buffered symbols.
+                //
+                // FIX: Ignore wifi_start if d_items_processed < 500 (still in preamble).
+                // This applies regardless of whether d_frame_start_known is true.
+                // However, we still need to set d_frame_start_known=true so that buffering is enabled.
+                bool is_in_preamble = (d_items_processed < 500);
 
-                if (!is_new_frame && d_frame_start_known) {
-                    // We're seeing wifi_start during preamble processing - ignore it
+                if (is_in_preamble) {
+                    // We're seeing wifi_start during preamble processing - ignore the new value
+                    // but KEEP the current d_frame_start_abs to avoid corrupting buffered symbols
                     fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu\n",
                             (unsigned long long)d_items_processed, (unsigned long long)d_frame_start);
-                    d_wifi_start_accepted = false;
+                    // CRITICAL: Still enable buffering by setting d_frame_start_known=true
+                    // if this is the first wifi_start we received
+                    if (!d_frame_start_known) {
+                        d_frame_start_known = true;
+                        // d_frame_start_abs stays at initial value (0) during preamble
+                        // We'll compute rel_idx correctly because input[0] = L-LTF0 DATA
+                    }
+                    // CRITICAL: Still propagate wifi_start so downstream (FFT/equalizer) knows
+                    // where the frame starts. Use d_frame_start_abs=0 since that's our
+                    // internal coordinate during preamble.
+                    d_wifi_start_accepted = true;  // Propagate wifi_start!
                 } else {
                     // FIX: Only set d_frame_start_abs when wifi_start is ACCEPTED, not when ignored.
                     // Previously, d_frame_start_abs was set BEFORE the preamble check, causing
@@ -254,10 +276,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
 
             // STARVATION PROTECTION: If not enough items remain to complete current symbol,
+            // AND we're not in the middle of buffering a symbol (d_buffer_count == 0),
             // consume what we've processed and return. GNU Radio scheduler will wake us
             // again when more data is available.
             // CRITICAL: Reset buffer state to prevent stale data on next call.
-            if (remaining_items < items_needed_for_current_symbol) {
+            if (remaining_items < items_needed_for_current_symbol && d_buffer_count == 0) {
                 fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, returning early\n",
                         remaining_items, items_needed_for_current_symbol);
                 d_items_processed += items_consumed_this_call;
@@ -438,9 +461,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
-                // TEMP DEBUG: Track d_buffer_filled when buffer fills
-                fprintf(stderr, "[DEBUG_BCKT] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d out_rel_idx=%llu\n",
-                        (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, (unsigned long long)out_rel_idx);
+                // [DEBUG_BCKT] - REMOVED: boundary check debug (excessive spam)
+                // fprintf(stderr, "[DEBUG_BCKT] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d out_rel_idx=%llu\n",
+                //         (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, (unsigned long long)out_rel_idx);
 
                 // [SPLITTER_LTF1_END] - REMOVED: boundary debug probe
                 // PROBE: Print LTF1 buffer at boundary (out_rel_idx == 143)
@@ -476,11 +499,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     at_boundary = ((out_rel_idx - 464) % 80 == 0);
                 }
 
-                // TEMP DEBUG: Track out_rel_idx and d_buffer_filled at all boundary checks
-                if (out_rel_idx >= 130 && out_rel_idx <= 240) {
-                    fprintf(stderr, "[DEBUG_SPLITTER_REL] out_rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d at_boundary=%d\n",
-                            (unsigned long long)out_rel_idx, d_buffer_count, d_buffer_filled, at_boundary);
-                }
+                // [DEBUG_SPLITTER_REL] - REMOVED: rel_idx debug (excessive spam)
+                // if (out_rel_idx >= 130 && out_rel_idx <= 240) {
+                //     fprintf(stderr, "[DEBUG_SPLITTER_REL] out_rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d at_boundary=%d\n",
+                //             (unsigned long long)out_rel_idx, d_buffer_count, d_buffer_filled, at_boundary);
+                // }
 
                 if (at_boundary) {
                     // Debug: Print symbol type based on rel_idx
@@ -531,8 +554,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 } else {
                     // Buffer filled at non-boundary - hold for next boundary
                     d_buffer_filled = true;
-                    fprintf(stderr, "[DEBUG_FILL] d_buffer_filled set TRUE at rel_idx=%llu out_rel_idx=%llu\n",
-                            (unsigned long long)rel_idx, (unsigned long long)out_rel_idx);
+                    // [DEBUG_FILL] - REMOVED: buffer fill debug (excessive spam)
+                    // fprintf(stderr, "[DEBUG_FILL] d_buffer_filled set TRUE at rel_idx=%llu out_rel_idx=%llu\n",
+                    //         (unsigned long long)rel_idx, (unsigned long long)out_rel_idx);
                     // Don't reset d_buffer_count - keep at 64
                 }
             }
