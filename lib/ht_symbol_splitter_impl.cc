@@ -402,7 +402,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 should_buffer = true;
             } else if (rel_idx < 224) {
                 // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
-                should_buffer = (rel_idx >= 160);
+                should_buffer = (rel_idx >= 159);
                 // [SPLITTER_RESET_CHECK, SPLITTER_LSIG_ABS] - REMOVED: debug probes
             } else if (rel_idx < 240) {
                 // Stage 3: HT-SIG0 CP (rel_idx 224-239) - SKIP

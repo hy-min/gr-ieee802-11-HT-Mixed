@@ -40,6 +40,14 @@ void ls::equalize(gr_complex* in,
             fprintf(stderr, "%.3f+%.3fi ", d_H[i].real(), d_H[i].imag());
         }
         fprintf(stderr, "\n");
+        // FFT shift verification: print d_H[6] (first positive freq) and d_H[58] (last negative freq)
+        fprintf(stderr, "[FFT_SHIFT_CHECK] n=0: d_H[6]=%.4f%+.4fi d_H[58]=%.4f%+.4fi\n",
+                d_H[6].real(), d_H[6].imag(),
+                d_H[58].real(), d_H[58].imag());
+        // Also print kLltf64Binned[6] and kLltf64Binned[58] for comparison
+        fprintf(stderr, "[FFT_SHIFT_CHECK] n=0: kLltf64Binned[6]=%.4f%+.4fi kLltf64Binned[58]=%.4f%+.4fi\n",
+                kLltf64Binned[6].real(), kLltf64Binned[6].imag(),
+                kLltf64Binned[58].real(), kLltf64Binned[58].imag());
 
     } else if (n == 1) {
         double signal = 0;

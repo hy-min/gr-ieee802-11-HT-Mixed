@@ -506,12 +506,32 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
                 std::abs(sym64[7]), std::arg(sym64[7])*180/M_PI,
                 sym64[7].real(), sym64[7].imag());
         std::fprintf(stderr, "[EXTRACT] called, first 5 subcarriers:\n");
+        // RAW RX PHASE CHECK: Print raw FFT phase at key subcarriers
+        // Compare with kLltf64Binned reference to detect window misalignment
+        static int raw_rx_check_count = 0;
+        if (raw_rx_check_count < 2) {
+            fprintf(stderr, "\n[RAW_RX_PHASE] extract_call=%d\n", extract_call_count);
+            int check_idx[] = {7, 14, 21};
+            for (int c = 0; c < 3; c++) {
+                int i = check_idx[c];
+                int fft_bin = kHeader48Bin[i];
+                int sc = kHeader48Sc[i];
+                gr_complex rx_val = sym64[fft_bin];
+                float rx_phase = std::arg(rx_val) * 180 / M_PI;
+                float kRef_phase = std::arg(kLltf64Binned[fft_bin]) * 180 / M_PI;
+                fprintf(stderr, "  i=%d sc=%+3d bin=%2d: rx=%.4f%+.4fi phase=%+7.1fdeg kRef=%.4f%+.4fi ref_phase=%+7.1fdeg\n",
+                        i, sc, fft_bin,
+                        rx_val.real(), rx_val.imag(), rx_phase,
+                        kLltf64Binned[fft_bin].real(), kLltf64Binned[fft_bin].imag(), kRef_phase);
+            }
+            raw_rx_check_count++;
+        }
         for (int i = 0; i < 5 && i < 48; i++) {
             int fft_bin = kHeader48Bin[i];  // EXPLICIT bin mapping!
             gr_complex val = sym64[fft_bin];
-            std::fprintf(stderr, "  i=%d, sc=%d, bin=%d, val=%.3f+%.3fi\n",
+            std::fprintf(stderr, "  i=%d, sc=%d, bin=%d, val=%.3f+%.3fi |val|=%.4f\n",
                         i, kHeader48Sc[i], fft_bin,
-                        val.real(), val.imag());
+                        val.real(), val.imag(), std::abs(val));
         }
         // NAKED_TEST: Print specific FFT bins for physical layer verification
         // These are actual bin indices, not subcarrier indices
@@ -602,11 +622,16 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex tx = kLltf48TX[i];
 
         if (std::abs(tx) > 0.001f) {
-            H52_from_ltf0[i] = (lltf0 / tx) / kFftNormalize;
+            H52_from_ltf0[i] = lltf0 / tx;  // Remove kFftNormalize
             H52[i] = H52_from_ltf0[i];  // Output H is from LTF0
         } else {
-            H52_from_ltf0[i] = lltf0 / kFftNormalize;  // fallback for null subcarriers
+            H52_from_ltf0[i] = lltf0;  // fallback for null subcarriers (no normalization)
             H52[i] = H52_from_ltf0[i];
+        }
+        // Debug: trace channel estimation
+        if (i == 0) {
+            fprintf(stderr, "[CHAN_EST_DEBUG] i=%d lltf0=%.4f%+.4fi tx=%.4f%+.4fi H=%.4f%+.4fi kFftNormalize=%.4f\n",
+                    i, lltf0.real(), lltf0.imag(), tx.real(), tx.imag(), H52[i].real(), H52[i].imag(), kFftNormalize);
         }
         // Probe raw FFT values before channel estimation
         if (i == 7) {  // SC+7
@@ -622,10 +647,10 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
 
         if (std::abs(tx) > 0.001f) {
-            H52_from_ltf0[48 + i] = (lltf0 / tx) / kFftNormalize;
+            H52_from_ltf0[48 + i] = lltf0 / tx;  // Remove kFftNormalize
             H52[48 + i] = H52_from_ltf0[48 + i];
         } else {
-            H52_from_ltf0[48 + i] = lltf0 / kFftNormalize;  // fallback
+            H52_from_ltf0[48 + i] = lltf0;  // fallback
             H52[48 + i] = H52_from_ltf0[48 + i];
         }
     }
@@ -636,9 +661,9 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex tx = kLltf48TX[i];
 
         if (std::abs(tx) > 0.001f) {
-            H52_from_ltf1[i] = (lltf1 / tx) / kFftNormalize;
+            H52_from_ltf1[i] = lltf1 / tx;  // Remove kFftNormalize
         } else {
-            H52_from_ltf1[i] = lltf1 / kFftNormalize;
+            H52_from_ltf1[i] = lltf1;  // no normalization
         }
     }
     for (int i = 0; i < 4; i++) {
@@ -646,9 +671,9 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
 
         if (std::abs(tx) > 0.001f) {
-            H52_from_ltf1[48 + i] = (lltf1 / tx) / kFftNormalize;
+            H52_from_ltf1[48 + i] = lltf1 / tx;  // Remove kFftNormalize
         } else {
-            H52_from_ltf1[48 + i] = lltf1 / kFftNormalize;
+            H52_from_ltf1[48 + i] = lltf1;  // no normalization
         }
     }
 
@@ -678,6 +703,25 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                 ratio);
     }
     std::fflush(stderr);
+
+    // Check H phase linearity across subcarriers (sign of LTF window misalignment)
+    fprintf(stderr, "[H_PHASE_CHECK] H phase at multiple subcarriers:\n");
+    int check_indices[] = {7, 14, 21, 28, 35};
+    for (int idx = 0; idx < 5; idx++) {
+        int i = check_indices[idx];
+        if (i < 48) {
+            float H_phase = std::arg(H52_from_ltf0[i]) * 180 / M_PI;
+            int sc = kHeader48Sc[i];
+            fprintf(stderr, "  i=%d SC[%+3d]: H=%.4f%+.4fi phase=%+.1fdeg\n",
+                    i, sc, H52_from_ltf0[i].real(), H52_from_ltf0[i].imag(), H_phase);
+        }
+    }
+    // Check phase difference between consecutive subcarriers
+    float phase_diff1 = (std::arg(H52_from_ltf0[14]) - std::arg(H52_from_ltf0[7])) * 180 / M_PI;
+    float phase_diff2 = (std::arg(H52_from_ltf0[21]) - std::arg(H52_from_ltf0[14])) * 180 / M_PI;
+    fprintf(stderr, "[H_PHASE_CHECK] Phase diff SC7->SC14: %+.1fdeg, SC14->SC21: %+.1fdeg\n",
+            phase_diff1, phase_diff2);
+    fflush(stderr);
 }
 
 static float estimate_header_cpe_rad(const gr_complex* rx52,
@@ -730,8 +774,8 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
                                                uint8_t* out_bits48,
                                                bool is_ht_sig)
 {
-    const float cpe = 0.0f;  // DEBUG: bypass CPE to test raw symbol
-    //const float cpe = estimate_header_cpe_rad(rx52, H52, is_ht_sig);
+    //const float cpe = 0.0f;  // DEBUG: bypass CPE to test raw symbol
+    const float cpe = estimate_header_cpe_rad(rx52, H52, is_ht_sig);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
     std::fprintf(stderr, "[EQ_HEADER] CPE estimate: %.3f rad, rot=%.3f+%.3fi\n",
@@ -753,6 +797,43 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
                         kHeader48Sc[i], i, h_mag);
         } else {
             eq = safe_div(rx52[i], H52[i]) * rot;
+        }
+        // Debug: print rx, H, rx/H (before rot), and final eq
+        if (i < 5) {
+            gr_complex rx_over_H = safe_div(rx52[i], H52[i]);
+            float rot_phase = std::arg(rot) * 180 / M_PI;
+            fprintf(stderr, "[EQ_TRACE] i=%d sc=%d rx=%.4f%+.4fi(|rx|=%.4f) H=%.4f%+.4fi(|H|=%.4f) rx/H=%.4f%+.4fi(eq_bef_rot=%.4f) rot_ph=%.1fdeg eq=%.4f%+.4fi\n",
+                    i, kHeader48Sc[i],
+                    rx52[i].real(), rx52[i].imag(), std::abs(rx52[i]),
+                    H52[i].real(), H52[i].imag(), std::abs(H52[i]),
+                    rx_over_H.real(), rx_over_H.imag(), std::abs(rx_over_H),
+                    rot_phase,
+                    eq.real(), eq.imag());
+        }
+        // THREE-STEP PHASE TRACE for SC7
+        if (i == 7) {
+            gr_complex rx = rx52[i];
+            gr_complex H = H52[i];
+            gr_complex rx_over_H = safe_div(rx, H);
+            gr_complex eq_final = rx_over_H * rot;
+
+            float rx_phase = std::arg(rx) * 180 / M_PI;
+            float H_phase = std::arg(H) * 180 / M_PI;
+            float rx_over_H_phase = std::arg(rx_over_H) * 180 / M_PI;
+            float eq_final_phase = std::arg(eq_final) * 180 / M_PI;
+
+            fprintf(stderr, "[THREE_STEP_TRACE] i=7 SC7:\n");
+            fprintf(stderr, "  Step1-RX:      val=%.4f%+.4fi |val|=%.4f phase=%+.1fdeg\n",
+                    rx.real(), rx.imag(), std::abs(rx), rx_phase);
+            fprintf(stderr, "  Step2-H:       val=%.4f%+.4fi |val|=%.4f phase=%+.1fdeg\n",
+                    H.real(), H.imag(), std::abs(H), H_phase);
+            fprintf(stderr, "  Step3-rx/H:    val=%.4f%+.4fi |val|=%.4f phase=%+.1fdeg\n",
+                    rx_over_H.real(), rx_over_H.imag(), std::abs(rx_over_H), rx_over_H_phase);
+            fprintf(stderr, "  Step4-eq*rot:  val=%.4f%+.4fi |val|=%.4f phase=%+.1fdeg\n",
+                    eq_final.real(), eq_final.imag(), std::abs(eq_final), eq_final_phase);
+            fprintf(stderr, "  CPE: cpe=%.3f rad rot_phase=%.1fdeg\n",
+                    cpe, std::arg(rot) * 180 / M_PI);
+            fflush(stderr);
         }
         out_eq48[i] = eq;
         eq_mag_sum += std::abs(eq);
