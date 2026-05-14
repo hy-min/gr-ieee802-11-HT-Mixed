@@ -137,6 +137,14 @@ static void generate_l_sig_header(char* out,
         signal_header[18 + i] = 0;
     }
 
+    // Debug: print TX L-SIG original 24 bits before convolutional encoding
+    fprintf(stderr, "[TX_LSIG_Original] bits[0:24] = ");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", signal_header[i] & 0x1);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[TX_LSIG_Original] rate=0x%X length=%d parity=%d\n",
+            rate_field, length, signal_header[17]);
+    fflush(stderr);
+
     // L-SIG always BPSK 1/2
     ofdm_param sig_ofdm(BPSK_1_2);
     frame_param sig_frame(sig_ofdm, 0); // n_data_bits=24

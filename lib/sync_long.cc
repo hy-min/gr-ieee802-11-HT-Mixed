@@ -54,6 +54,9 @@ public:
 
         set_tag_propagation_policy(block::TPP_DONT);
         d_correlation = (gr_complex*)volk_malloc(sizeof(gr_complex) * 8192, volk_get_alignment());
+
+        // Ensure adequate output buffer for HT-mixed preamble (448+ samples)
+        set_output_multiple(512);
     }
 
     ~sync_long_impl() {
@@ -132,7 +135,7 @@ public:
             break;
 
         case COPY: {
-            
+
             while (i < ninput && o < noutput) {
 
                 int rel = d_offset - d_frame_start;
@@ -197,6 +200,17 @@ public:
                                 d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag(),
                                 std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag());
                     }
+                    // PROBE: Print at out_idx=416 (HT-SIG0 DATA position)
+                    if (o == 416) {
+                        fprintf(stderr, "[SYNC_LONG_OUT_IDX416] d_offset=%d out_idx=%d amp=%.6f sample=%.6f%+.6fi in_delayed[i]=%.6f%+.6fi\n",
+                                d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag(),
+                                std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag());
+                    }
+                    // PROBE: Print when o is near 416 (within 10) to see if we approach but don't reach 416
+                    if (o >= 410 && o <= 420 && copy_probe_count < 20) {
+                        fprintf(stderr, "[SYNC_LONG_OUT_NEAR416] d_offset=%d out_idx=%d amp=%.6f\n",
+                                d_offset, o, std::abs(out[o]));
+                    }
                     o++;
                 }
 
@@ -228,6 +242,11 @@ public:
         }
 
         dout << "produced : " << o << " consumed: " << i << std::endl;
+
+        // PROBE: Track production per call
+        static int sync_work_call = 0;
+        fprintf(stderr, "[SYNC_LONG_PRODUCE] call=%d produced=%d consumed_port0=%d d_state=%d d_count=%d d_offset=%d\n",
+                sync_work_call++, o, i, d_state, d_count, d_offset);
 
         d_count += o;
         consume(0, i);

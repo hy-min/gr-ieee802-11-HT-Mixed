@@ -83,10 +83,23 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     // PROBE: Print work call info at start of each work
     static int work_call = 0;
-    fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d\n", work_call++, ninput_items[0]);
-
-    // Get absolute position of first input item
+    int this_call = work_call++;
     uint64_t start_abs_idx = nitems_read(0);
+    fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d start_abs_idx=%llu\n", this_call, ninput_items[0], (unsigned long long)start_abs_idx);
+
+    // PROBE: Check what sync_long actually produced in its output buffer
+    // This reads directly from the input buffer at key positions
+    // [SPLITTER_INPUT_CHECK] - REMOVED: excessive debug spam
+    // if (this_call == 0 && ninput_items[0] >= 448) {
+    //     fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[0]=%.6f%+.6fi in[5]=%.6f%+.6fi\n",
+    //             in[0].real(), in[0].imag(), in[5].real(), in[5].imag());
+    //     fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[383]=%.6f%+.6fi in[384]=%.6f%+.6fi in[385]=%.6f%+.6fi\n",
+    //             in[383].real(), in[383].imag(), in[384].real(), in[384].imag(),
+    //             in[385].real(), in[385].imag());
+    //     fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[415]=%.6f%+.6fi in[416]=%.6f%+.6fi in[417]=%.6f%+.6fi\n",
+    //             in[415].real(), in[415].imag(), in[416].real(), in[416].imag(),
+    //             in[417].real(), in[417].imag());
+    // }
 
     // Look for wifi_start tag - always check for new frames
     // If we see wifi_start at a position significantly beyond our current d_frame_start_abs,
@@ -164,19 +177,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // - We want rel_idx=0 to correspond to L-LTF0 DATA start
                 // - Therefore d_frame_start_abs = 0
 
-                // FIX: wifi_start tag.offset is where sync_long started writing (at rel=0).
-                // The d_frame_start VALUE (tag.value) tells us the actual L-LTF0 DATA start
-                // offset within sync_long's input stream.
-                // Since sync_long output[0] = sync_long input[d_frame_start],
-                // and this maps 1:1 to ht_symbol_splitter input,
-                // we should use d_frame_start directly as the absolute offset.
-                d_frame_start_abs = (int64_t)d_frame_start;
-
-                // DEBUG PROBE: Trace index derivation chain
-                fprintf(stderr, "[SPLITTER_TAG] d_frame_start=%llu -> d_frame_start_abs=%lld\n",
-                        (unsigned long long)d_frame_start,
-                        (long long)d_frame_start_abs);
-
                 // Check if this is a NEW frame
                 // If d_frame_start_known is already true and we see another wifi_start,
                 // it means a new frame has started (we don't re-use wifi_start within a frame)
@@ -188,10 +188,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
                 if (!is_new_frame && d_frame_start_known) {
                     // We're seeing wifi_start during preamble processing - ignore it
-                    fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu\n",
-                            (unsigned long long)d_items_processed);
+                    fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu\n",
+                            (unsigned long long)d_items_processed, (unsigned long long)d_frame_start);
                     d_wifi_start_accepted = false;
                 } else {
+                    // FIX: Only set d_frame_start_abs when wifi_start is ACCEPTED, not when ignored.
+                    // Previously, d_frame_start_abs was set BEFORE the preamble check, causing
+                    // spurious wifi_start (d_frame_start=181) to overwrite the correct value (176).
+                    d_frame_start_abs = (int64_t)d_frame_start;
+                    fprintf(stderr, "[SPLITTER_TAG] d_frame_start=%llu -> d_frame_start_abs=%lld\n",
+                            (unsigned long long)d_frame_start,
+                            (long long)d_frame_start_abs);
                     d_frame_start_known = true;
                     d_wifi_start_accepted = true;
 
@@ -219,41 +226,50 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     }
 
     int i = 0;
+    int items_consumed_this_call = 0;  // Track consumed for starvation protection
+
+    // CRITICAL SAFETY CHECK: If we don't have enough items for even one symbol, return 0.
+    // This prevents reading garbage data when GNU Radio wakes us with insufficient items.
+    if (ninput_items[0] < d_symbol_size) {
+        fprintf(stderr, "[SPLITTER_SAFETY] ninput_items[0]=%d < d_symbol_size=%d, returning 0\n",
+                ninput_items[0], d_symbol_size);
+        return 0;
+    }
     while (i < ninput_items[0]) {
         uint64_t current_idx = start_abs_idx + i;
 
+        // Compute rel_idx early for use in garbage detection
+        uint64_t rel_idx = 0;
+        bool frame_started = (d_frame_start_known && current_idx >= d_frame_start_abs);
+        if (frame_started) {
+            rel_idx = current_idx - d_frame_start_abs;
+        }
+
         // Only process after frame start is known
-        if (d_frame_start_known && current_idx >= d_frame_start_abs) {
-            uint64_t rel_idx = current_idx - d_frame_start_abs;
+        if (frame_started) {
+            // Calculate how many items we need to complete the current symbol
+            // HT-Mixed 20MHz: each OFDM symbol is 80 samples (16 CP + 64 Data)
+            // We need to know if we have enough remaining items to finish current symbol
+            int remaining_items = ninput_items[0] - i;
+            int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
+
+            // STARVATION PROTECTION: If not enough items remain to complete current symbol,
+            // consume what we've processed and return. GNU Radio scheduler will wake us
+            // again when more data is available.
+            // CRITICAL: Reset buffer state to prevent stale data on next call.
+            if (remaining_items < items_needed_for_current_symbol) {
+                fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, returning early\n",
+                        remaining_items, items_needed_for_current_symbol);
+                d_items_processed += items_consumed_this_call;
+                d_buffer_filled = false;  // Force re-buffer on next call
+                d_buffer_count = 0;       // Clear stale buffer state
+                consume(0, items_consumed_this_call);
+                return produced;
+            }
+
             bool should_buffer = false;
 
-            // PROBE: Track relationship between input index and rel_idx
-            static uint64_t first_rel_idx_input = UINT64_MAX;
-            if (first_rel_idx_input == UINT64_MAX && rel_idx == 0) {
-                first_rel_idx_input = d_items_processed + i;
-                fprintf(stderr, "[SPLITTER_START] rel_idx=0 maps to input index=%llu d_items_processed=%llu i=%d\n",
-                        (unsigned long long)first_rel_idx_input,
-                        (unsigned long long)d_items_processed, i);
-            }
-
-            // PROBE: Check input amplitude at key positions
-            static int amp_probe_count = 0;
-            static uint64_t last_current_idx = 0;
-            if (amp_probe_count < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 128 || rel_idx == 160 || rel_idx == 224 || rel_idx == 240 || rel_idx == 304 || rel_idx == 320 || rel_idx == 384 || rel_idx == 400 || rel_idx == 464)) {
-                float amp = std::abs(in[i]);
-                fprintf(stderr, "[SPLITTER_IN_AMP] rel_idx=%llu current_idx=%llu d_buffer_count=%d amp=%.4f sample=%.4f%+.4fi%s gap=%lld\n",
-                        (unsigned long long)rel_idx, (unsigned long long)current_idx, d_buffer_count, amp, in[i].real(), in[i].imag(),
-                        (amp < 0.1) ? " ** LOW **" : "",
-                        (unsigned long long)(current_idx - last_current_idx));
-                last_current_idx = current_idx;
-                amp_probe_count++;
-            }
-            // PROBE: Check if position 416 has correct data from sync_long
-            if (current_idx == 416) {
-                fprintf(stderr, "[SPLITTER_IDX416] current_idx=%llu amp=%.6f sample=%.6f%+.6fi in[i]=%.6f%+.6fi\n",
-                        (unsigned long long)current_idx, std::abs(in[i]), in[i].real(), in[i].imag(),
-                        std::abs(in[i]), in[i].real(), in[i].imag());
-            }
+            // [SPLITTER_START, SPLITTER_IN_AMP, SPLITTER_AMPLITUDE, SPLITTER_IDX_xxx] - REMOVED: excessive debug probes
 
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
             // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
@@ -364,25 +380,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             } else if (rel_idx < 224) {
                 // Stage 2: L-SIG (rel_idx 144-159 CP, 160-223 DATA)
                 should_buffer = (rel_idx >= 160);
-                // CRITICAL PROBE: Check if buffer was properly reset at L-LTF1/L-SIG boundary
-                static int lsig_buffer_reset_probe = 0;
-                if (lsig_buffer_reset_probe < 3 && rel_idx == 160) {
-                    fprintf(stderr, "[SPLITTER_RESET_CHECK] rel_idx=160 d_buffer_count=%d d_buffer_filled=%d should_buffer=%d\n",
-                            d_buffer_count, d_buffer_filled, should_buffer);
-                    if (d_buffer_count != 0) {
-                        fprintf(stderr, "[SPLITTER_RESET_CHECK] WARNING: d_buffer_count=%d at L-SIG start (expected 0)!\n",
-                                d_buffer_count);
-                    }
-                    lsig_buffer_reset_probe++;
-                }
-                // Probe: Print absolute input index when L-SIG DATA starts buffering
-                static int lsig_start_probe = 0;
-                if (lsig_start_probe < 3 && rel_idx == 160 && should_buffer) {
-                    uint64_t abs_idx = current_idx;
-                    fprintf(stderr, "[SPLITTER_LSIG_ABS] L-SIG DATA starts at abs_idx=%llu current_idx=%llu\n",
-                            (unsigned long long)abs_idx, (unsigned long long)current_idx);
-                    lsig_start_probe++;
-                }
+                // [SPLITTER_RESET_CHECK, SPLITTER_LSIG_ABS] - REMOVED: debug probes
             } else if (rel_idx < 240) {
                 // Stage 3: HT-SIG0 CP (rel_idx 224-239) - SKIP
                 should_buffer = false;
@@ -410,68 +408,50 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
             }
 
+            // [SPLITTER_REL] - REMOVED: debug probe
             // DEBUG PROBE: Track rel_idx and buffer position for key indices
-            static int debug_rel_idx = 0;
-            if (debug_rel_idx < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 80 || rel_idx == 144 || rel_idx == 160)) {
-                fprintf(stderr, "[SPLITTER_REL] rel_idx=%llu current_idx=%llu should_buffer=%d d_buffer_count=%d\n",
-                        (unsigned long long)rel_idx,
-                        (unsigned long long)current_idx,
-                        should_buffer ? 1 : 0,
-                        d_buffer_count);
-                debug_rel_idx++;
-            }
+            // static int debug_rel_idx = 0;
+            // if (debug_rel_idx < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 80 || rel_idx == 144 || rel_idx == 160)) {
+            //     fprintf(stderr, "[SPLITTER_REL] rel_idx=%llu current_idx=%llu should_buffer=%d d_buffer_count=%d\n",
+            //             (unsigned long long)rel_idx,
+            //             (unsigned long long)current_idx,
+            //             should_buffer ? 1 : 0,
+            //             d_buffer_count);
+            //     debug_rel_idx++;
+            // }
 
             if (should_buffer && !d_buffer_filled) {
                 d_buffer[d_buffer_count++] = in[i];
-                // PROBE: Print first 10 samples of L-LTF0 buffer to verify alignment
-                static int ltf0_buffer_probe = 0;
-                if (ltf0_buffer_probe < 2 && rel_idx < 64 && should_buffer) {
-                    fprintf(stderr, "[SPLITTER_LTF0_PROBE] rel_idx=%llu buf[%d]=%.6f%+.6fi amp=%.6f\n",
-                            (unsigned long long)rel_idx, d_buffer_count-1, in[i].real(), in[i].imag(), std::abs(in[i]));
-                    if (d_buffer_count == 64) {  // Last sample of LTF0
-                        fprintf(stderr, "[SPLITTER_LTF0_END] LTF0 buffer complete, first 5 samples:\n");
-                        for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
-                            fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
-                        }
-                        ltf0_buffer_probe++;
-                    }
-                }
-                // PROBE: Print samples 80-90 of L-LTF1 buffer
-                static int ltf1_buffer_probe = 0;
-                if (ltf1_buffer_probe < 2 && rel_idx >= 80 && rel_idx < 90 && should_buffer) {
-                    fprintf(stderr, "[SPLITTER_LTF1_PROBE] rel_idx=%llu buf[%d]=%.6f%+.6fi amp=%.6f\n",
-                            (unsigned long long)rel_idx, d_buffer_count-1, in[i].real(), in[i].imag(), std::abs(in[i]));
-                    if (d_buffer_count == 64) {  // Last sample of LTF1 (buffer resets after LTF0)
-                        fprintf(stderr, "[SPLITTER_LTF1_END] LTF1 buffer complete, first 5 samples (idx 0-4):\n");
-                        for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
-                            fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
-                        }
-                        ltf1_buffer_probe++;
-                    }
-                }
+                // [SPLITTER_LTF0_PROBE, SPLITTER_LTF1_PROBE] - REMOVED: debug probes
             }
 
+            // [SPLITTER_LSIG_BUF] - REMOVED: debug probe
             // Probe: Check buffer state at L-SIG boundary rel_idx
-            static int lsig_boundary_probe = 0;
-            if (lsig_boundary_probe < 3 && (rel_idx == 160 || rel_idx == 223)) {
-                fprintf(stderr, "[SPLITTER_LSIG_BUF] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d should_buffer=%d\n",
-                        (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, should_buffer);
-                lsig_boundary_probe++;
-            }
+            // static int lsig_boundary_probe = 0;
+            // if (lsig_boundary_probe < 3 && (rel_idx == 160 || rel_idx == 223)) {
+            //     fprintf(stderr, "[SPLITTER_LSIG_BUF] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d should_buffer=%d\n",
+            //             (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, should_buffer);
+            //     lsig_boundary_probe++;
+            // }
 
             // Check boundary conditions when buffer is full
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
+                // TEMP DEBUG: Track d_buffer_filled when buffer fills
+                fprintf(stderr, "[DEBUG_BCKT] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d out_rel_idx=%llu\n",
+                        (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, (unsigned long long)out_rel_idx);
+
+                // [SPLITTER_LTF1_END] - REMOVED: boundary debug probe
                 // PROBE: Print LTF1 buffer at boundary (out_rel_idx == 143)
-                static int ltf1_boundary_probe = 0;
-                if (ltf1_boundary_probe < 2 && out_rel_idx == 143) {
-                    fprintf(stderr, "[SPLITTER_LTF1_END] LTF1 buffer complete at boundary, first 5 samples:\n");
-                    for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
-                        fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
-                    }
-                    ltf1_boundary_probe++;
-                }
+                // static int ltf1_boundary_probe = 0;
+                // if (ltf1_boundary_probe < 2 && out_rel_idx == 143) {
+                //     fprintf(stderr, "[SPLITTER_LTF1_END] LTF1 buffer complete at boundary, first 5 samples:\n");
+                //     for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
+                //         fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
+                //     }
+                //     ltf1_boundary_probe++;
+                // }
 
                 // Explicit boundary positions for HT-mixed 20MHz (IEEE 802.11n):
                 // L-LTF0 DATA: ends at out_rel_idx=63
@@ -496,6 +476,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     at_boundary = ((out_rel_idx - 464) % 80 == 0);
                 }
 
+                // TEMP DEBUG: Track out_rel_idx and d_buffer_filled at all boundary checks
+                if (out_rel_idx >= 130 && out_rel_idx <= 240) {
+                    fprintf(stderr, "[DEBUG_SPLITTER_REL] out_rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d at_boundary=%d\n",
+                            (unsigned long long)out_rel_idx, d_buffer_count, d_buffer_filled, at_boundary);
+                }
+
                 if (at_boundary) {
                     // Debug: Print symbol type based on rel_idx
                     // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
@@ -512,9 +498,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     } else if (out_rel_idx == 383) {
                         symbol_type = 4; // HT-SIG1 FFT
                     }
-                    fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
-                            symbol_type, (unsigned long long)out_rel_idx);
+                    // [SPLITTER] output - REMOVED: excessive debug spam
+                    // fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
+                    //         symbol_type, (unsigned long long)out_rel_idx);
                     // Time-domain energy probe using norm (magnitude squared)
+                    // [SPLITTER_FFTPROBE] - KEPT: useful for FFT verification
                     float total_energy = 0.0f;
                     float peak_mag = 0.0f;
                     int peak_idx = 0;
@@ -535,46 +523,28 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     fflush(stderr);
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                    // Debug: Dump L-SIG FFT first 8 bins to stderr
-                    if (out_rel_idx == 223) {
-                        fprintf(stderr, "[SPLITTER_DUMP] L-SIG FFT samples (bins 0-7):\n");
-                        for (int di = 0; di < 8 && di < d_fft_size; di++) {
-                            fprintf(stderr, "  bin[%d]=%.6f%+.6fi\n",
-                                    di, d_buffer[di].real(), d_buffer[di].imag());
-                        }
-                    }
-                    // L-LTF FFT verification: for ideal channel with taps=[1.0], bins should be ±1 real
-                    if (symbol_type == 0) {
-                        fprintf(stderr, "[SPLITTER_LLTF_VERIFY] First 8 bins:\n");
-                        for (int i = 0; i < 8; i++) {
-                            fprintf(stderr, "  bin[%d]=%.4f%+.4fi\n", i, d_buffer[i].real(), d_buffer[i].imag());
-                        }
-                        fflush(stderr);
-                    }
+                    // [SPLITTER_DUMP] - REMOVED: debug probe
+                    // [SPLITTER_LLTF_VERIFY] - REMOVED: debug probe
                     produced += d_fft_size;
                     d_buffer_count = 0;
                     d_buffer_filled = false;
                 } else {
                     // Buffer filled at non-boundary - hold for next boundary
                     d_buffer_filled = true;
+                    fprintf(stderr, "[DEBUG_FILL] d_buffer_filled set TRUE at rel_idx=%llu out_rel_idx=%llu\n",
+                            (unsigned long long)rel_idx, (unsigned long long)out_rel_idx);
                     // Don't reset d_buffer_count - keep at 64
                 }
             }
         }
 
+        items_consumed_this_call++;
         i++;
         consumed++;
     }
 
+    // Update d_items_processed for normal completion (starvation return already updates it)
     d_items_processed += consumed;
-
-    // PROBE: Print consumption at end of work
-    static uint64_t last_consumed = 0;
-    if (consumed > 0 || last_consumed > 0) {
-        fprintf(stderr, "[SPLITTER_CONSUME] consumed=%d produced=%d d_items_processed=%llu\n",
-                consumed, produced, (unsigned long long)d_items_processed);
-        last_consumed = consumed;
-    }
 
     consume(0, consumed);
     return produced;

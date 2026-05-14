@@ -84,7 +84,7 @@ static constexpr gr_complex kLltf64Binned[64] = {
     gr_complex(+1.0f, 0.0f),
     // bin 53: SC +21 (导频) -> 0
     gr_complex(0.0f, 0.0f),
-    // bin 54-58: SC +22 to +26 -> kLltf48TX[44-48]
+    // bin 54-58: SC +22 to +26 -> kLltf48TX[43-47]
     gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
     gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
     // bin 59-63: SC +27 to +31 (超出范围) -> 0

@@ -805,18 +805,22 @@ static void equalize_header52_to_bits48(const gr_complex* rx52,
 // BPSK deinterleaver / Viterbi / CRC
 // ============================================================
 
-// TX interleave:
-//   out[k] = in[i], i = 3*(k mod 16) + floor(k/16)
+// TX interleave (802.11a/g clause 17.3.9.6):
+//   out[i] = in[k], where i = 3*(k mod 16) + floor(k/16)
 //
-// RX inverse:
-//   out[i] = in[k]
+// RX deinterleave (inverse operation):
+//   out[k] = in[j], where j = 16*(i mod 3) + floor(i/3)
+//   Since i = 3*(k mod 16) + floor(k/16), we need to solve for k in terms of i
+//
+// Key insight: k = 16*(i mod 3) + floor(i/3) is NOT the same as 16*(k%3) + k/3
 static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
 {
     std::memset(out48, 0, 48);
 
-    for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + (k / 3);  // Correct inverse of i = 3*(k%16) + k/16
-        out48[k] = in48[j] & 0x1;
+    // Correct inverse: k = 16*(i%3) + i/3
+    for (int i = 0; i < 48; i++) {
+        const int k = 16 * (i % 3) + (i / 3);
+        out48[k] = in48[i] & 0x1;
     }
 }
 
@@ -1320,6 +1324,12 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     }
 
     const uint8_t* decoded_bits = dec24.data();
+
+    // Debug: print RX L-SIG decoded 24 bits from Viterbi
+    fprintf(stderr, "[RX_LSIG_Decoded] bits[0:24] = ");
+    for (int i = 0; i < 24; i++) fprintf(stderr, "%d", decoded_bits[i] & 0x1);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 
     const int rate_field =
         ((decoded_bits[0] & 1) << 3) |
@@ -2362,9 +2372,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 fflush(stderr);
 
-                // If HT-SIG0's E_Q/E_I ratio is significantly higher than L-SIG, it's HT-Mixed
-                // DEBUG: Force HT-Mixed for loopback testing (ratio_ht > 1.0 indicates QBPSK)
-                if (ratio_ht > 1.0 && ratio_ht > ratio_ls) {
+                // QBPSK detection: HT-SIG0 uses 90° rotated BPSK (E_Q > E_I)
+                // ratio_ht > 1.0 indicates QBPSK rotation from HT-SIG encoding
+                // Note: ratio_ls comparison is unreliable - L-SIG equalization can have
+                // high Q energy due to channel estimate issues in loopback testing
+                if (ratio_ht > 1.0) {
                     fprintf(stderr, "[FRAME_DETECT] Detected HT-Mixed frame (QBPSK rotation)\n");
                     d_is_ht_frame = true;
                 } else {
