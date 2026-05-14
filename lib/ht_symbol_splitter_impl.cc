@@ -531,13 +531,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // rel_idx=303: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 303)
                     // rel_idx=383: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 383)
                     int symbol_type = -1;
-                    if (out_rel_idx == 63 || out_rel_idx == 127) {
+                    if (rel_idx == 63 || rel_idx == 127) {
                         symbol_type = 0; // L-LTF FFT
-                    } else if (out_rel_idx == 223) {
+                    } else if (rel_idx == 207) {
                         symbol_type = 2; // L-SIG FFT
-                    } else if (out_rel_idx == 303) {
+                    } else if (rel_idx == 303) {
                         symbol_type = 3; // HT-SIG0 FFT
-                    } else if (out_rel_idx == 383) {
+                    } else if (rel_idx == 383) {
                         symbol_type = 4; // HT-SIG1 FFT
                     }
                     // [SPLITTER] output - REMOVED: excessive debug spam
