@@ -213,6 +213,11 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             fft_bin = self._sc_to_fft_bin_idx(sc)
             out_vec[fft_bin] = np.complex64(x)
 
+        # Write pilot values to pilot carrier positions
+        for sc, pv in zip(self._pilot_carriers, pilot_values):
+            fft_bin = self._sc_to_fft_bin_idx(sc)
+            out_vec[fft_bin] = np.complex64(pv)
+
         # ULTIMATE DEBUG: Print TX IFFT input physical bins (before FFT shift)
         # This is the raw 64-bin array that goes into IFFT
         # Only print FIRST HT-DATA of FIRST frame (once)

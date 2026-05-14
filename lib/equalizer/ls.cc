@@ -18,7 +18,22 @@ void ls::equalize(gr_complex* in,
 {
     fprintf(stderr, "[LS_EQ] equalize called with n=%d\n", n);
     if (n == 0) {
-        std::memcpy(d_H, in, 64 * sizeof(gr_complex));
+        for (int i = 0; i < 64; i++) {
+            if (std::abs(kLltf64Binned[i]) > 1e-9f) {
+                d_H[i] = in[i] / (kLltf64Binned[i] * kFftNormalize);
+            } else {
+                d_H[i] = gr_complex(0, 0);  // Guard bands, DC, pilots
+            }
+        }
+        // Debug probe: show raw FFT and expected H at n=0
+        fprintf(stderr, "[CHAN_EST] n=0 raw d_H[6-10] = ");
+        for (int sc = 6; sc <= 10; sc++) {
+            gr_complex expected_H = d_H[sc] / (kLltf64Binned[sc] * kFftNormalize);
+            fprintf(stderr, "%.4f%+.4fi(%.4f%+.4fi) ",
+                    d_H[sc].real(), d_H[sc].imag(),
+                    expected_H.real(), expected_H.imag());
+        }
+        fprintf(stderr, "\n");
         // Debug: print first few d_H values
         fprintf(stderr, "[LS_EQ] n=0: d_H[6-10] = ");
         for (int i = 6; i < 10; i++) {
@@ -42,6 +57,19 @@ void ls::equalize(gr_complex* in,
         }
         fprintf(stderr, "\n");
 
+        // Debug probe: show normalized H_i and d_H before averaging
+        fprintf(stderr, "[CHAN_EST] n=1 H_i[6-10] = ");
+        for (int sc = 6; sc <= 10; sc++) {
+            gr_complex H_i = in[sc] / (kLltf64Binned[sc] * kFftNormalize);
+            fprintf(stderr, "%.4f%+.4fi ", H_i.real(), H_i.imag());
+        }
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[CHAN_EST] n=1 d_H before avg[6-10] = ");
+        for (int sc = 6; sc <= 10; sc++) {
+            fprintf(stderr, "%.4f%+.4fi ", d_H[sc].real(), d_H[sc].imag());
+        }
+        fprintf(stderr, "\n");
+
         // L-LTF 只覆盖 legacy 的 52 occupied tones: 6..58 except DC=32
         for (int i = 0; i < 64; i++) {
             if ((i == 32) || (i < 6) || (i > 58)) {
@@ -51,11 +79,11 @@ void ls::equalize(gr_complex* in,
             signal += std::pow(std::abs(d_H[i] + in[i]), 2);
             // Use kLltf64Binned for channel estimation
             // Guard bands, DC, and pilots have kLltf64Binned[i] == 0, so skip those
-            // Fix: compute H separately for each LTF and average to avoid phase cancellation
-            if (std::abs(kLltf64Binned[i]) > 1e-9f) {
+            // At n=1, only compute SNR, don't update d_H (in is L-SIG FFT, not L-LTF)
+            if (n != 1 && std::abs(kLltf64Binned[i]) > 1e-9f) {
                 gr_complex H_i = in[i] / (kLltf64Binned[i] * kFftNormalize);
                 d_H[i] = (d_H[i] + H_i) * 0.5f;  // Average H estimates
-            } else {
+            } else if (n != 1) {
                 d_H[i] += in[i];  // For non-data bins, still accumulate
             }
         }
