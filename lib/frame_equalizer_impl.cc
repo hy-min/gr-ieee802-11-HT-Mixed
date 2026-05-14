@@ -616,6 +616,25 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     gr_complex H52_from_ltf0[52] = {gr_complex(0,0)};
     gr_complex H52_from_ltf1[52] = {gr_complex(0,0)};
 
+    // DEBUG: Print kLltf48TX reference sequence for verification
+    // IEEE 802.11n标准 L-LTF 序列（部分）
+    fprintf(stderr, "\n[KLTX_REF_CHECK] kLltf48TX[i] for i=0..11:\n");
+    const char* expected_kltx = "+1,+1,-1,-1,+1,-1,+1,-1,+1,+1,+1,+1";  // 标准值
+    fprintf(stderr, "  Expected (IEEE 802.11n): %s\n", expected_kltx);
+    fprintf(stderr, "  Actual kLltf48TX:  ");
+    for (int i = 0; i < 12; i++) {
+        fprintf(stderr, "%+.0f ", kLltf48TX[i].real());
+    }
+    fprintf(stderr, "\n");
+
+    // Also print kHeader48Sc[i] to show which SC each index corresponds to
+    fprintf(stderr, "  kHeader48Sc:     ");
+    for (int i = 0; i < 12; i++) {
+        fprintf(stderr, "%+3d ", kHeader48Sc[i]);
+    }
+    fprintf(stderr, "\n");
+    fflush(stderr);
+
     // Compute H from LTF0
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
