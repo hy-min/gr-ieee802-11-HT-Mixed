@@ -25,7 +25,7 @@ time_seq = np.fft.ifft(freq_seq)
 
 # 4. Generate matched filter taps: time reversal + conjugate
 # FIR convolution equals correlation, need s*[-n]
-taps = np.conj(time_seq[::-1])
+taps = np.conj(time_seq[::-1]) * 10.0
 
 # 5. Print C++ format array
 print("// IEEE 802.11 L-LTF Matched Filter Taps (Generated from LEGACY_LTF)")
@@ -35,7 +35,7 @@ for i, t in enumerate(taps):
     # Every 8 elements per line
     if i % 8 == 0:
         if i > 0:
-            print("};")
+            print("},")
         print("    // taps[{:02d}:{:02d}]".format(i, min(i+8, 64)))
     comma = "," if i < 63 else ""
     print(f"    gr_complex({t.real:+.10f}, {t.imag:+.10f}){comma}")

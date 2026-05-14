@@ -802,6 +802,7 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
 
     int zero_H_count = 0;
     float rx_mag_sum = 0.0f, eq_mag_sum = 0.0f;
+    static int probe_1_count = 0;
 
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
@@ -857,7 +858,21 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
         out_eq48[i] = eq;
         eq_mag_sum += std::abs(eq);
         out_bits48[i] = hard_bit_from_complex(eq);
+
+        // PROBE 1: LLR and Constellation Analysis
+        // For BPSK, LLR = 2 * real(eq) / noise_variance
+        // In noiseless sim, LLR is either very large or very small
+        // If LLR is near 0, the bit is uncertain
+        float llr = 2.0f * eq.real();  // LLR approximation for BPSK
+        float euclidean_dist = std::abs(eq.real());  // Distance from decision boundary
+        if (probe_1_count < 3) {
+            fprintf(stderr, "[DIAG_LLR] i=%2d SC[%3d]: eq=%.4f%+.4fi bit=%d LLR=%.4f dist=%.4f |Q|=%.4f\n",
+                    i, kHeader48Sc[i],
+                    eq.real(), eq.imag(), out_bits48[i],
+                    llr, euclidean_dist, std::abs(eq.imag()));
+        }
     }
+    probe_1_count++;
 
     // Full equalization debug output for all 48 data subcarriers
     std::fprintf(stderr, "[EQ_FULL] Equalized L-SIG symbols (48 data SC):\n");
@@ -1437,6 +1452,18 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         ((decoded_bits[2] & 1) << 1) |
         ((decoded_bits[3] & 1) << 0);
 
+    // PROBE 3: Force Rate 0x0D for testing
+    // If rate_field is not 0x0D, this will force it to 0x0D to test HT-SIG decoding
+    static int force_rate_count = 0;
+    int original_rate = rate_field;
+    if (rate_field != 0x0D && force_rate_count < 3) {
+        fprintf(stderr, "[DIAG_FORCE] Overriding rate 0x%02X to 0x0D (invert_bits=%d)\n",
+                rate_field, invert_bits ? 1 : 0);
+        force_rate_count++;
+    }
+    // Use forced rate for encoding lookup
+    const int rate_for_encoding = (rate_field != 0x0D) ? 0x0D : rate_field;
+
     int psdu_length = 0;
     for (int i = 0; i < 12; i++) {
         psdu_length |= ((decoded_bits[5 + i] & 1) << i);
@@ -1458,7 +1485,7 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         }
     }
     int encoding = -1;
-    switch (rate_field) {
+    switch (rate_for_encoding) {
     case 0x0D: encoding = 0; break;
     case 0x0F: encoding = 1; break;
     case 0x05: encoding = 2; break;
@@ -1468,7 +1495,7 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     case 0x01: encoding = 6; break;
     case 0x03: encoding = 7; break;
     default:
-        fprintf(stderr, "[LSIG_DECODE] Unknown rate field: 0x%02X\n", rate_field);
+        fprintf(stderr, "[LSIG_DECODE] Unknown rate field: 0x%02X\n", rate_for_encoding);
         return false;
     }
 
