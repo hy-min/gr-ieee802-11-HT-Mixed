@@ -401,6 +401,13 @@ static constexpr int kHeaderPilotBase[4] = {
     1, 1, 1, -1
 };
 
+// LTF pilot subcarrier values (SC -21, -7, +7, +21) from LEGACY_LTF
+// These are the TX reference values for LTF pilot channel estimation
+// kPilot4Sc order: {-21, -7, +7, +21}
+static constexpr int kLltfPilotTX[4] = {
+    1, -1, 1, 1
+};
+
 // ============================================================
 // Header direct extraction from raw 64 FFT bins
 // ============================================================
@@ -423,9 +430,23 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     if (extract_call_count == 0) {
         memcpy(saved_ltf0_fft, sym64, 64 * sizeof(gr_complex));
         ltf0_saved = true;
+        // PROBE: Print ALL 64 bins of raw FFT for LTF0
+        fprintf(stderr, "\n[RAW_FFT_64] LTF0 (call %d) - ALL 64 FFT bins:\n", extract_call_count);
+        for (int b = 0; b < 64; b++) {
+            float mag = std::abs(sym64[b]);
+            float phase = std::arg(sym64[b]) * 180 / M_PI;
+            fprintf(stderr, "  bin[%2d]: mag=%.4f phase=%+7.1fdeg\n", b, mag, phase);
+        }
     }
 
     if (extract_call_count == 1 && ltf0_saved) {
+        // PROBE: Print ALL 64 bins of raw FFT for LTF1
+        fprintf(stderr, "\n[RAW_FFT_64] LTF1 (call %d) - ALL 64 FFT bins:\n", extract_call_count);
+        for (int b = 0; b < 64; b++) {
+            float mag = std::abs(sym64[b]);
+            float phase = std::arg(sym64[b]) * 180 / M_PI;
+            fprintf(stderr, "  bin[%2d]: mag=%.4f phase=%+7.1fdeg\n", b, mag, phase);
+        }
         // This is LTF1 - compare with saved LTF0
         fprintf(stderr, "\n[NAKED_TEST] Comparing LTF0 vs LTF1 (first HT-SIG detection):\n");
         fprintf(stderr, "  Comparing raw FFT at same bins:\n");
@@ -535,7 +556,16 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         }
         // NAKED_TEST: Print specific FFT bins for physical layer verification
         // These are actual bin indices, not subcarrier indices
-        std::fprintf(stderr, "[NAKED_FFT] Physical FFT bins (not SC indices):\n");
+        // KEY TEST: Check bins 6 and 38 to verify FFT shift state
+        // - Unshifted FFT (natural order): bin 6 = SC +6, bin 38 = SC -26
+        // - Shifted FFT: bin 6 = SC -26, bin 38 = SC +6
+        // SC -26 should have HIGH energy (LTF has non-zero at SC -26)
+        // SC +6 should have HIGH energy (LTF has non-zero at SC +6)
+        std::fprintf(stderr, "[NAKED_FFT] Physical FFT bins (FFT shift verification):\n");
+        std::fprintf(stderr, "  bin[ 6] (unshifted=SC+6, shifted=SC-26): mag=%.4f phase=%+.1fdeg\n",
+                    std::abs(sym64[6]), std::arg(sym64[6])*180/M_PI);
+        std::fprintf(stderr, "  bin[38] (unshifted=SC-26, shifted=SC+6): mag=%.4f phase=%+.1fdeg\n",
+                    std::abs(sym64[38]), std::arg(sym64[38])*180/M_PI);
         std::fprintf(stderr, "  bin[10] (SC+10, pos freq):  %.3f+%.3fi | %.3f∠%.1f\n",
                     sym64[10].real(), sym64[10].imag(),
                     std::abs(sym64[10]), std::arg(sym64[10])*180/M_PI);
@@ -661,9 +691,10 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     }
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
-        // FIX: Use actual TX pilot values kHeaderPilotBase (real ±1), not kLltfPilotTX (complex FFT values)
-        // The TX pilots for L-SIG are {1, 1, 1, -1} (real), not the complex FFT of LTF sequence
-        const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+        // FIX: Use LTF pilot values kLltfPilotTX, not kHeaderPilotBase
+        // kHeaderPilotBase = {1, 1, 1, -1} is for L-SIG/HT-SIG pilots
+        // kLltfPilotTX = {1, -1, 1, 1} are the actual LTF pilot values at SC {-21, -7, +7, +21}
+        const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
 
         if (std::abs(tx) > 0.001f) {
             H52_from_ltf0[48 + i] = lltf0 / tx;  // Remove kFftNormalize
@@ -687,7 +718,8 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     }
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf1 = lltf1_52[48 + i];
-        const gr_complex tx = gr_complex((float)kHeaderPilotBase[i], 0.0f);
+        // FIX: Use LTF pilot values kLltfPilotTX, not kHeaderPilotBase
+        const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
 
         if (std::abs(tx) > 0.001f) {
             H52_from_ltf1[48 + i] = lltf1 / tx;  // Remove kFftNormalize
@@ -921,21 +953,29 @@ static void equalize_header52_to_bits48(const gr_complex* rx52,
 // ============================================================
 
 // TX interleave (802.11a/g clause 17.3.9.6):
-//   out[i] = in[k], where i = 3*(k mod 16) + floor(k/16)
+//   Forward: bit at position k goes to position i = 3*(k mod 16) + floor(k/16)
 //
 // RX deinterleave (inverse operation):
-//   out[k] = in[j], where j = 16*(i mod 3) + floor(i/3)
-//   Since i = 3*(k mod 16) + floor(k/16), we need to solve for k in terms of i
+//   To recover original position k from interleaved position i:
+//   k = inv[i] where inv[] is the precomputed inverse mapping
 //
-// Key insight: k = 16*(i mod 3) + floor(i/3) is NOT the same as 16*(k%3) + k/3
+// Precomputed inverse mapping for 48 subcarriers:
+//   i:  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
+//   k:  0 16 32  1 17 33  2 18 34  3 19 35  4 20 36  5 21 37  6 22 38  7 23 39
+//   i: 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
+//   k:  8 24 40  9 25 41 10 26 42 11 27 43 12 28 44 13 29 45 14 30 46 15 31 47
 static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
 {
+    static const int deintl_inv_48[48] = {
+        0, 16, 32,  1, 17, 33,  2, 18, 34,  3, 19, 35,  4, 20, 36,  5,
+       21, 37,  6, 22, 38,  7, 23, 39,  8, 24, 40,  9, 25, 41, 10, 26,
+       42, 11, 27, 43, 12, 28, 44, 13, 29, 45, 14, 30, 46, 15, 31, 47
+    };
     std::memset(out48, 0, 48);
 
-    // Correct inverse: k = 16*(i%3) + i/3
+    // Correct inverse: out[inv[i]] = in[i]
     for (int i = 0; i < 48; i++) {
-        const int k = 16 * (i % 3) + (i / 3);
-        out48[k] = in48[i] & 0x1;
+        out48[deintl_inv_48[i]] = in48[i] & 0x1;
     }
 }
 
@@ -1427,6 +1467,33 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         fprintf(stderr, "%d", deintl48[di]);
         if ((di+1) % 12 == 0) fprintf(stderr, "\n");
     }
+
+    // Hardcoded expected TX interleaved bits for MCS0 L-SIG
+    // TX L-SIG 24 bits: rate=0x0D len=45 parity=1
+    // TX encoded: 110110001001111111100101100100011111100011110111
+    // TX interleaved: 111111011101101010000010111001001111100101101111
+    static const uint8_t expected_tx_int_lsig[48] = {
+        1,1,1,1,1,1,0,1,1,1,0,1,1,0,1,0,
+        1,0,1,0,0,0,0,0,1,0,1,1,1,0,0,1,
+        0,0,1,1,1,1,1,0,0,1,0,1,1,0,1,1
+    };
+
+    fprintf(stderr, "[VITERBI_IN] Expected TX interleaved L-SIG:\n");
+    for (int i = 0; i < 48; i++) {
+        fprintf(stderr, "%d", expected_tx_int_lsig[i]);
+        if ((i+1) % 16 == 0) fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "[VITERBI_IN] Actual RX deintl48:\n");
+    for (int i = 0; i < 48; i++) {
+        fprintf(stderr, "%d", deintl48[i]);
+        if ((i+1) % 16 == 0) fprintf(stderr, "\n");
+    }
+    int diff = 0;
+    for (int i = 0; i < 48; i++) {
+        if (deintl48[i] != expected_tx_int_lsig[i]) diff++;
+    }
+    fprintf(stderr, "[VITERBI_IN] Hamming diff: %d/48\n", diff);
+    fflush(stderr);
 
     std::vector<uint8_t> dec24;
     if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
