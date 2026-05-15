@@ -46,6 +46,7 @@ private:
     bool d_frame_start_known;       // Have we seen wifi_start tag?
     int64_t d_items_processed;      // Total items we've processed
     bool d_wifi_start_accepted;    // true if last wifi_start was accepted, false if ignored
+    bool d_prev_should_buffer;  // Track previous should_buffer state to detect region transitions
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);
