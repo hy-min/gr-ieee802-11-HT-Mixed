@@ -371,7 +371,13 @@ public:
 
         // If we found a valid HT candidate
         if (best_ht_i >= 0 && best_ht_k >= 0) {
-            d_frame_start = best_ht_lower_peak + 1;
+            // FIX: Subtract 13 to compensate for group delay in correlation peak detection
+            // The lower_peak is typically 13 samples AFTER the true LTF0 start due to
+            // FIR matched filter group delay. Without this fix, the FFT window captures
+            // 13 samples of L-SIG CP (dirty data) instead of LTF0, causing massive ISI.
+            int offset_compensation = 13;
+            d_frame_start = best_ht_lower_peak + 1 - offset_compensation;
+            if (d_frame_start < 0) d_frame_start = 0;
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
@@ -447,7 +453,10 @@ public:
 
         // If we found a valid Legacy candidate
         if (best_leg_i >= 0 && best_leg_k >= 0) {
-            d_frame_start = best_leg_lower_peak + 1;
+            // FIX: Same offset compensation for Legacy mode
+            int offset_compensation = 13;
+            d_frame_start = best_leg_lower_peak + 1 - offset_compensation;
+            if (d_frame_start < 0) d_frame_start = 0;
             mode = "Legacy-mode-plateau";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] Legacy-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
@@ -460,8 +469,11 @@ public:
         // Method 2: Use the highest correlation peak as frame start
         // ONLY use this if the peak magnitude is above the noise floor
         if (!vec.empty() && top_mag >= MIN_ABS_MAGNITUDE) {
+            // FIX: Same offset compensation for peak-based detection
             int peak_pos = get<1>(vec[0]);
-            d_frame_start = peak_pos + 1;
+            int offset_compensation = 13;
+            d_frame_start = peak_pos + 1 - offset_compensation;
+            if (d_frame_start < 0) d_frame_start = 0;
             mode = "Method2-peak";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
