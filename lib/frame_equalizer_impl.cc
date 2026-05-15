@@ -829,6 +829,34 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
     const float cpe = estimate_header_cpe_rad(rx52, H52, is_ht_sig);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
+    // Hardcoded TX L-SIG interleaved bits -> BPSK symbols
+    // tx_int = 111111011101101010000010111001001111100101101111
+    // BPSK: bit 1 -> +1, bit 0 -> -1
+    // We only print first 8 to avoid log spam
+    static const gr_complex tx_lsig_bpsk_first8[8] = {
+        // First 8 bits of tx_int: 1,1,1,1,1,1,0,1 -> +1,+1,+1,+1,+1,+1,-1,+1
+        gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+        gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+        gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+        gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f)
+    };
+
+    static int eq_ref_count = 0;
+    if (eq_ref_count < 2) {
+        fprintf(stderr, "[EQ_REF] TX L-SIG BPSK first 8: ");
+        for (int i = 0; i < 8; i++) {
+            fprintf(stderr, "%.1f%+.1fi ", tx_lsig_bpsk_first8[i].real(), tx_lsig_bpsk_first8[i].imag());
+        }
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[EQ_REF] RX L-SIG raw FFT first 8: ");
+        for (int i = 0; i < 8; i++) {
+            fprintf(stderr, "%.4f%+.4fi ", rx52[i].real(), rx52[i].imag());
+        }
+        fprintf(stderr, "\n");
+        eq_ref_count++;
+        fflush(stderr);
+    }
+
     std::fprintf(stderr, "[EQ_HEADER] CPE estimate: %.3f rad, rot=%.3f+%.3fi\n",
                 cpe, rot.real(), rot.imag());
 
