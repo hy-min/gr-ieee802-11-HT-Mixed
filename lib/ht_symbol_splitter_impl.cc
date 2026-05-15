@@ -278,18 +278,27 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
 
             // STARVATION PROTECTION: If not enough items remain to complete current symbol,
-            // AND we're not in the middle of buffering a symbol (d_buffer_count == 0),
-            // consume what we've processed and return. GNU Radio scheduler will wake us
-            // again when more data is available.
-            // CRITICAL: Reset buffer state to prevent stale data on next call.
+            // AND we're in a DATA region (should_buffer=true), AND we're not mid-buffer
+            // (d_buffer_count == 0), consume what we've processed and return.
+            // NOTE: We only check this when in_data_region=true because in CP/gap regions
+            // (should_buffer=false), we don't need a full symbol - we're just skipping.
             if (remaining_items < items_needed_for_current_symbol && d_buffer_count == 0) {
-                fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, returning early\n",
-                        remaining_items, items_needed_for_current_symbol);
-                d_items_processed += items_consumed_this_call;
-                d_buffer_filled = false;  // Force re-buffer on next call
-                d_buffer_count = 0;       // Clear stale buffer state
-                consume(0, items_consumed_this_call);
-                return produced;
+                // Only trigger starvation if we're in a DATA region
+                // HT-Mixed preamble DATA regions: rel_idx 0-63 (LTF0), 80-143 (LTF1), 160-223 (L-SIG),
+                // 240-303 (HT-SIG0), 320-383 (HT-SIG1), 400-463 (HT-STF), 464+ (HT-DATA)
+                bool in_data_region = (rel_idx < 64) || (rel_idx >= 80 && rel_idx < 144) ||
+                                     (rel_idx >= 160 && rel_idx < 224) || (rel_idx >= 240 && rel_idx < 304) ||
+                                     (rel_idx >= 320 && rel_idx < 384) || (rel_idx >= 400 && rel_idx < 464) ||
+                                     (rel_idx >= 464);
+                if (in_data_region) {
+                    fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, returning early\n",
+                            remaining_items, items_needed_for_current_symbol);
+                    d_items_processed += items_consumed_this_call;
+                    d_buffer_filled = false;
+                    d_buffer_count = 0;
+                    consume(0, items_consumed_this_call);
+                    return produced;
+                }
             }
 
             bool should_buffer = false;
@@ -409,26 +418,29 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (rel_idx < 64) {
                 // Stage 1: L-LTF0 DATA (rel_idx 0-63)
                 should_buffer = true;
-            } else if (rel_idx < 128) {
-                // Stage 1b: L-LTF1 DATA (rel_idx 64-127) - NO CP between LTF symbols!
-                should_buffer = true;
+            } else if (rel_idx < 80) {
+                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - 跳过！
+                should_buffer = false;
             } else if (rel_idx < 144) {
-                // Stage 2: L-SIG CP (rel_idx 128-143) - 跳过
-                should_buffer = false;
-            } else if (rel_idx < 208) {
-                // Stage 2b: L-SIG DATA (rel_idx 144-207)
+                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
                 should_buffer = true;
-            } else if (rel_idx < 224) {
-                // Stage 3: HT-SIG0 CP (rel_idx 208-223) - 跳过
+            } else if (rel_idx < 160) {
+                // Stage 2: L-SIG CP (rel_idx 144-159) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 288) {
-                // Stage 3b: HT-SIG0 DATA (rel_idx 224-287) - 64 samples
+            } else if (rel_idx < 240) {
+                // Stage 2b: L-SIG DATA (rel_idx 160-223)
                 should_buffer = true;
-            } else if (rel_idx < 320) {
-                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - 跳过
+            } else if (rel_idx < 304) {
+                // Stage 3: HT-SIG0 CP (rel_idx 240-303) - 跳过
                 should_buffer = false;
+            } else if (rel_idx < 368) {
+                // Stage 3b: HT-SIG0 DATA (rel_idx 304-367) - 64 samples
+                should_buffer = true;
             } else if (rel_idx < 384) {
-                // Stage 4b: HT-SIG1 DATA (rel_idx 320-383)
+                // Stage 4: HT-SIG1 CP (rel_idx 368-383) - 跳过
+                should_buffer = false;
+            } else if (rel_idx < 448) {
+                // Stage 4b: HT-SIG1 DATA (rel_idx 384-447)
                 should_buffer = true;
             } else if (rel_idx < 400) {
                 // Stage 5: HT-STF CP (rel_idx 384-399) - 跳过
@@ -499,25 +511,25 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 if (rel_idx < 64) {
                     // LTF0 boundary: output at rel_idx=63
                     at_boundary = (rel_idx == 63);
-                } else if (rel_idx < 128) {
-                    // LTF1 boundary: output at rel_idx=127 (NOT 143 - no CP!)
-                    at_boundary = (rel_idx == 127);
                 } else if (rel_idx < 144) {
+                    // LTF1 DATA boundary: output at rel_idx=143 (end of LTF1 DATA)
+                    at_boundary = (rel_idx == 143);
+                } else if (rel_idx < 160) {
                     // L-SIG CP: no output
                     at_boundary = false;
-                } else if (rel_idx < 208) {
-                    // L-SIG boundary: output at rel_idx=207
-                    at_boundary = (rel_idx == 207);
                 } else if (rel_idx < 224) {
+                    // L-SIG boundary: output at rel_idx=223
+                    at_boundary = (rel_idx == 223);
+                } else if (rel_idx < 304) {
                     // HT-SIG0 CP: no output
                     at_boundary = false;
-                } else if (rel_idx < 288) {
-                    // HT-SIG0 boundary: output at rel_idx=287
-                    at_boundary = (rel_idx == 287);
-                } else if (rel_idx < 320) {
+                } else if (rel_idx < 368) {
+                    // HT-SIG0 boundary: output at rel_idx=303
+                    at_boundary = (rel_idx == 303);
+                } else if (rel_idx < 384) {
                     // HT-SIG1 CP: no output
                     at_boundary = false;
-                } else if (rel_idx < 384) {
+                } else if (rel_idx < 448) {
                     // HT-SIG1 boundary: output at rel_idx=383
                     at_boundary = (rel_idx == 383);
                 } else if (rel_idx < 464) {
@@ -540,15 +552,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
                     // rel_idx=223: output is L-SIG FFT (L-SIG DATA ends at 223)
                     // rel_idx=303: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 303)
-                    // rel_idx=383: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 383)
+                    // rel_idx=447: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 447)
                     int symbol_type = -1;
-                    if (rel_idx == 63 || rel_idx == 127) {
+                    if (rel_idx == 63 || rel_idx == 143) {
                         symbol_type = 0; // L-LTF FFT
-                    } else if (rel_idx == 207) {
+                    } else if (rel_idx == 223) {
                         symbol_type = 2; // L-SIG FFT
-                    } else if (rel_idx == 287) {
+                    } else if (rel_idx == 303) {
                         symbol_type = 3; // HT-SIG0 FFT
-                    } else if (rel_idx == 383) {
+                    } else if (rel_idx == 447) {
                         symbol_type = 4; // HT-SIG1 FFT
                     } else if (rel_idx == 463) {
                         symbol_type = 5; // HT-STF FFT
