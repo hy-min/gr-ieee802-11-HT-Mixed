@@ -294,6 +294,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             bool should_buffer = false;
 
+            // FIX: When entering a new buffering region (should_buffer just became true),
+            // reset d_buffer_filled so we can start buffering the new symbol.
+            if (should_buffer && !prev_should_buffer) {
+                d_buffer_filled = false;
+                d_buffer_count = 0;
+            }
+            prev_should_buffer = should_buffer;
+
             // [SPLITTER_START, SPLITTER_IN_AMP, SPLITTER_AMPLITUDE, SPLITTER_IDX_xxx] - REMOVED: excessive debug probes
 
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
@@ -610,12 +618,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     d_buffer_count = 0;
                     d_buffer_filled = false;
                 } else {
-                    // Buffer filled at non-boundary - hold for next boundary
-                    d_buffer_filled = true;
-                    // [DEBUG_FILL] - REMOVED: buffer fill debug (excessive spam)
-                    // fprintf(stderr, "[DEBUG_FILL] d_buffer_filled set TRUE at rel_idx=%llu out_rel_idx=%llu\n",
-                    //         (unsigned long long)rel_idx, (unsigned long long)out_rel_idx);
-                    // Don't reset d_buffer_count - keep at 64
+                    // Buffer filled at non-boundary position
+                    // Output the buffered data and reset state so next symbol can be buffered
+                    memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+                    produced += d_fft_size;
+                    d_buffer_count = 0;
+                    d_buffer_filled = false;
                 }
             }
         }
