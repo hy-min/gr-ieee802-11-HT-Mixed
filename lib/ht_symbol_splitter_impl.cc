@@ -250,6 +250,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int i = 0;
     int items_consumed_this_call = 0;  // Track consumed for starvation protection
 
+    bool prev_should_buffer = false;  // Track previous should_buffer for region transition detection
+
     // CRITICAL SAFETY CHECK: If we don't have enough items for even one symbol, return 0.
     // This prevents reading garbage data when GNU Radio wakes us with insufficient items.
     if (ninput_items[0] < d_symbol_size) {
@@ -450,7 +452,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //     debug_rel_idx++;
             // }
 
-            if (should_buffer && !d_buffer_filled) {
+            // Always buffer when should_buffer is true
+            if (should_buffer) {
                 d_buffer[d_buffer_count++] = in[i];
                 // [SPLITTER_LTF0_PROBE, SPLITTER_LTF1_PROBE] - REMOVED: debug probes
             }
