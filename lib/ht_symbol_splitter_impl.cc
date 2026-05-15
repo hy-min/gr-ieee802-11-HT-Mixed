@@ -198,20 +198,21 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 bool is_in_preamble = (d_items_processed < 500);
 
                 if (is_in_preamble) {
-                    // We're seeing wifi_start during preamble processing - ignore the new value
-                    // but KEEP the current d_frame_start_abs to avoid corrupting buffered symbols
-                    fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu\n",
+                    // We're seeing wifi_start during preamble processing.
+                    // FIX: We MUST set d_frame_start_abs to the actual d_frame_start value,
+                    // NOT keep it at 0. The sync_long outputs from position d_frame_start,
+                    // which is the CP start (e.g., 160), not the DATA start (176).
+                    // Without this fix, rel_idx calculations are wrong and we buffer
+                    // the wrong samples (including CP data).
+                    fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu -> d_frame_start_abs\n",
                             (unsigned long long)d_items_processed, (unsigned long long)d_frame_start);
-                    // CRITICAL: Still enable buffering by setting d_frame_start_known=true
-                    // if this is the first wifi_start we received
+                    // CRITICAL: Enable buffering and set d_frame_start_abs to actual value
                     if (!d_frame_start_known) {
                         d_frame_start_known = true;
-                        // d_frame_start_abs stays at initial value (0) during preamble
-                        // We'll compute rel_idx correctly because input[0] = L-LTF0 DATA
                     }
-                    // CRITICAL: Still propagate wifi_start so downstream (FFT/equalizer) knows
-                    // where the frame starts. Use d_frame_start_abs=0 since that's our
-                    // internal coordinate during preamble.
+                    d_frame_start_abs = (int64_t)d_frame_start;
+                    fprintf(stderr, "[SPLITTER_TAG] Set d_frame_start_abs=%lld during preamble\n",
+                            (long long)d_frame_start_abs);
                     d_wifi_start_accepted = true;  // Propagate wifi_start!
                 } else {
                     // FIX: Only set d_frame_start_abs when wifi_start is ACCEPTED, not when ignored.
@@ -278,18 +279,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
 
             // STARVATION PROTECTION: If not enough items remain to complete current symbol,
-            // AND we're in a DATA region (should_buffer=true), AND we're not mid-buffer
-            // (d_buffer_count == 0), consume what we've processed and return.
+            // AND we're in a DATA region (should_buffer=true), AND we're mid-buffer
+            // (d_buffer_count > 0), consume what we've processed and return.
             // NOTE: We only check this when in_data_region=true because in CP/gap regions
             // (should_buffer=false), we don't need a full symbol - we're just skipping.
-            if (remaining_items < items_needed_for_current_symbol && d_buffer_count == 0) {
-                // Only trigger starvation if we're in a DATA region
-                // HT-Mixed preamble DATA regions: rel_idx 0-63 (LTF0), 80-143 (LTF1), 160-223 (L-SIG),
-                // 240-303 (HT-SIG0), 320-383 (HT-SIG1), 400-463 (HT-STF), 464+ (HT-DATA)
-                bool in_data_region = (rel_idx < 64) || (rel_idx >= 80 && rel_idx < 144) ||
-                                     (rel_idx >= 160 && rel_idx < 224) || (rel_idx >= 240 && rel_idx < 304) ||
-                                     (rel_idx >= 320 && rel_idx < 384) || (rel_idx >= 400 && rel_idx < 464) ||
-                                     (rel_idx >= 464);
+            // CRITICAL FIX: Only starve if we have PARTIALLY buffered a symbol (d_buffer_count > 0).
+            // If d_buffer_count == 0, we haven't started buffering yet, so keep consuming.
+            bool in_data_region = (rel_idx < 64) || (rel_idx >= 80 && rel_idx < 144) ||
+                                 (rel_idx >= 160 && rel_idx < 224) || (rel_idx >= 240 && rel_idx < 304) ||
+                                 (rel_idx >= 320 && rel_idx < 384) || (rel_idx >= 400 && rel_idx < 464) ||
+                                 (rel_idx >= 464);
+            if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0) {
                 if (in_data_region) {
                     fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, returning early\n",
                             remaining_items, items_needed_for_current_symbol);
@@ -434,18 +434,18 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // Stage 3: HT-SIG0 CP (rel_idx 240-303) - 跳过
                 should_buffer = false;
             } else if (rel_idx < 368) {
-                // Stage 3b: HT-SIG0 DATA (rel_idx 304-367) - 64 samples
+                // Stage 3b: HT-SIG0 DATA (rel_idx 240-303) - 64 samples
                 should_buffer = true;
             } else if (rel_idx < 384) {
-                // Stage 4: HT-SIG1 CP (rel_idx 368-383) - 跳过
+                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 448) {
-                // Stage 4b: HT-SIG1 DATA (rel_idx 384-447)
-                should_buffer = true;
             } else if (rel_idx < 400) {
+                // Stage 4b: HT-SIG1 DATA (rel_idx 320-383) - 64 samples
+                should_buffer = true;
+            } else if (rel_idx < 416) {
                 // Stage 5: HT-STF CP (rel_idx 384-399) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 464) {
+            } else if (rel_idx < 480) {
                 // Stage 5b: HT-STF DATA (rel_idx 400-463)
                 should_buffer = true;
             } else {
@@ -523,7 +523,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 } else if (rel_idx < 304) {
                     // HT-SIG0 CP: no output
                     at_boundary = false;
-                } else if (rel_idx < 368) {
+                } else if (rel_idx < 384) {
                     // HT-SIG0 boundary: output at rel_idx=303
                     at_boundary = (rel_idx == 303);
                 } else if (rel_idx < 384) {
@@ -552,7 +552,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
                     // rel_idx=223: output is L-SIG FFT (L-SIG DATA ends at 223)
                     // rel_idx=303: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 303)
-                    // rel_idx=447: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 447)
+                    // rel_idx=383: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 383)
+                    // rel_idx=463: output is HT-STF FFT (HT-STF DATA ends at 463)
                     int symbol_type = -1;
                     if (rel_idx == 63 || rel_idx == 143) {
                         symbol_type = 0; // L-LTF FFT
@@ -560,7 +561,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         symbol_type = 2; // L-SIG FFT
                     } else if (rel_idx == 303) {
                         symbol_type = 3; // HT-SIG0 FFT
-                    } else if (rel_idx == 447) {
+                    } else if (rel_idx == 383) {
                         symbol_type = 4; // HT-SIG1 FFT
                     } else if (rel_idx == 463) {
                         symbol_type = 5; // HT-STF FFT
@@ -603,9 +604,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             fprintf(stderr, "  TD[%d] = %.6f%+.6fi\n",
                                     dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
                         }
-                    } else if (out_rel_idx == 127 && have_ltf0) {
+                    } else if (out_rel_idx == 143 && have_ltf0) {
                         // This is LTF1 - compare with saved LTF0
-                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 (rel_idx=127) first 8 TD samples:\n");
+                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 (rel_idx=143) first 8 TD samples:\n");
                         for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
                             fprintf(stderr, "  TD[%d] = %.6f%+.6fi  (LTF0[0]=%.6f%+.6fi diff=%.6f%+.6fi)\n",
                                     dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag(),
