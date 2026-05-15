@@ -409,23 +409,20 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (rel_idx < 64) {
                 // Stage 1: L-LTF0 DATA (rel_idx 0-63)
                 should_buffer = true;
-            } else if (rel_idx < 80) {
-                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - 跳过
-                should_buffer = false;
-            } else if (rel_idx < 144) {
-                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
+            } else if (rel_idx < 128) {
+                // Stage 1b: L-LTF1 DATA (rel_idx 64-127) - NO CP between LTF symbols!
                 should_buffer = true;
-            } else if (rel_idx < 160) {
+            } else if (rel_idx < 144) {
                 // Stage 2: L-SIG CP (rel_idx 128-143) - 跳过
                 should_buffer = false;
             } else if (rel_idx < 208) {
                 // Stage 2b: L-SIG DATA (rel_idx 144-207)
                 should_buffer = true;
-            } else if (rel_idx < 240) {
-                // Stage 3: 32点间隙 (rel_idx 208-239) - 跳过
+            } else if (rel_idx < 224) {
+                // Stage 3: HT-SIG0 CP (rel_idx 208-223) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 304) {
-                // Stage 3b: HT-SIG0 DATA (rel_idx 240-303)
+            } else if (rel_idx < 288) {
+                // Stage 3b: HT-SIG0 DATA (rel_idx 224-287) - 64 samples
                 should_buffer = true;
             } else if (rel_idx < 320) {
                 // Stage 4: HT-SIG1 CP (rel_idx 304-319) - 跳过
@@ -511,12 +508,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 } else if (rel_idx < 208) {
                     // L-SIG boundary: output at rel_idx=207
                     at_boundary = (rel_idx == 207);
-                } else if (rel_idx < 240) {
-                    // 32-point gap: no output
+                } else if (rel_idx < 224) {
+                    // HT-SIG0 CP: no output
                     at_boundary = false;
-                } else if (rel_idx < 304) {
-                    // HT-SIG0 boundary: output at rel_idx=303
-                    at_boundary = (rel_idx == 303);
+                } else if (rel_idx < 288) {
+                    // HT-SIG0 boundary: output at rel_idx=287
+                    at_boundary = (rel_idx == 287);
                 } else if (rel_idx < 320) {
                     // HT-SIG1 CP: no output
                     at_boundary = false;
@@ -549,10 +546,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         symbol_type = 0; // L-LTF FFT
                     } else if (rel_idx == 207) {
                         symbol_type = 2; // L-SIG FFT
-                    } else if (rel_idx == 303) {
+                    } else if (rel_idx == 287) {
                         symbol_type = 3; // HT-SIG0 FFT
                     } else if (rel_idx == 383) {
                         symbol_type = 4; // HT-SIG1 FFT
+                    } else if (rel_idx == 463) {
+                        symbol_type = 5; // HT-STF FFT
                     }
                     // [SPLITTER] output - REMOVED: excessive debug spam
                     // fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
