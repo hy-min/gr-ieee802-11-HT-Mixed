@@ -87,7 +87,7 @@ public:
                         d_plateau = 0;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i);
                         dout << "SHORT Frame!" << std::endl;
-                        std::fprintf(stderr, "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.3f\n",
+                        std::fprintf(stderr, "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
                                      i, in_cor[i], d_freq_offset);
                         break;
                     }
@@ -123,7 +123,7 @@ public:
                     d_plateau = 0;
                 }
 
-                out[o] = in[o] * exp(gr_complex(0, -d_freq_offset * d_copied));
+                out[o] = in[o];  // CFO compensation disabled - no real CFO in simulation
                 o++;
                 d_copied++;
             }

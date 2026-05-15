@@ -399,10 +399,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             if (rel_idx < 64) {
                 // Stage 1: L-LTF0 DATA (rel_idx 0-63)
                 should_buffer = true;
-            } else if (rel_idx < 128) {
-                // Stage 1b: L-LTF1 DATA (rel_idx 64-127) - 无 CP，无缝衔接！
-                should_buffer = true;
+            } else if (rel_idx < 80) {
+                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - 跳过
+                should_buffer = false;
             } else if (rel_idx < 144) {
+                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
+                should_buffer = true;
+            } else if (rel_idx < 160) {
                 // Stage 2: L-SIG CP (rel_idx 128-143) - 跳过
                 should_buffer = false;
             } else if (rel_idx < 208) {
