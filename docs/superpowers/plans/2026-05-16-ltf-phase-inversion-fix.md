@@ -99,7 +99,57 @@ SC[-26] bin[38]: H0=0.8252+0.5225i mag=0.9768 | H1=0.8228+0.5650i mag=0.9981 | r
 
 ---
 
-## Task 2: 检查 FFT 窗口是否对齐
+## Task 2: 检查 FFT 窗口是否对齐 ✅ (分析完成)
+
+### HT-SIG Bit Error Analysis (2026-05-16)
+
+**CRC 错误模式：**
+```
+RX_CRC decoded_bits[0:34] = 1110010111011011000110001000010001
+RX_CRC computed_crc=0xB7 rx_crc=0xB6  <- 只有1位错误!
+```
+
+**发现：**
+1. HT-SIG CRC 错误始终很小（1-6位），不是完全随机
+2. 某些情况下只有1位错误（rx_crc=0xB6 vs computed=0xB7）
+3. Viterbi 解码器正在部分纠正错误，但不完全
+
+**旋转检测冲突：**
+```
+[HT_SIG] pilot-based rotation=0
+[HT_SIG] energy-based rotation=1
+[HT_SIG] Energy vote overrides pilot: 0 -> 1
+```
+- 能量投票（ratio=1.094 > 1.0）检测到 QBPSK 旋转
+- 导频投票返回无旋转（可能是导频子载波的相位问题）
+
+**HT-SIG0 子载波分析：**
+```
+[ 0] sc=-26 bin=38 val=1.1972-0.0383i |I|=1.1972 |Q|=0.0383 bit=1
+[ 1] sc=-25 bin=39 val=2.4632-0.3615i |I|=2.4632 |Q|=0.3615 bit=1
+[ 2] sc=-24 bin=40 val=-3.2292+4.0950i |I|=3.2292 |Q|=4.0950 bit=0
+```
+- 值[0]和[1]有 |I| >> |Q|，这不是正确的 QBPSK 旋转
+- QBPSK 应该有 |Q| >> |I|（虚轴编码）
+
+**FFT 窗口时间假设：**
+- d_frame_start_abs=176 可能与 HT-SIG 符号边界不完全对齐
+- SPLITTER 在 rel_idx=3 输出 HT-SIG0（sample 368）
+- 标准 HT-Mixed 将 HT-SIG0 放在 sample 240
+- 48-sample 差异可能导致 HT-SIG FFT 窗口的 CP 污染
+
+**可能的根本原因：**
+1. SPLITTER 的 FFT 窗口边界对于 HT-SIG 符号不正确
+2. 信道估计 H 用于 HT-SIG 解码时有轻微的相位偏移
+3. QBPSK 旋转补偿应用不正确
+
+**待验证：**
+- SPLITTER 是否在正确的样本位置输出 HT-SIG FFT？
+- HT-SIG 解码时使用的信道估计是否正确？
+
+---
+
+## Task 3: 修复 LTF 相位问题
 
 **Files:**
 - Analyze: `lib/ht_symbol_splitter_impl.cc` - FFT 边界条件
