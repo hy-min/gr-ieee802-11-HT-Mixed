@@ -1801,8 +1801,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             eq = safe_div(rx52_a[i], H52[i]);
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        // bit 0 → +j (imag >= 0), bit 1 → -j (imag < 0)
-        eqbits48_a[i] = (eq.imag() >= 0.0f) ? 0 : 1;
+        // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
+        eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
     }
 
     // Extract bits from HT-SIG1 (rx52_b)
@@ -1815,7 +1815,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             eq = safe_div(rx52_b[i], H52[i]);
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        eqbits48_b[i] = (eq.imag() >= 0.0f) ? 0 : 1;
+        // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
+        eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
     }
 
     if (invert_a) {
