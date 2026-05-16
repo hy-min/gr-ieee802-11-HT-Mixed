@@ -64,6 +64,10 @@ private:
     gr_complex d_early_eqsym[8][52];
     bool d_early_eqsym_valid[8];
 
+    // Channel estimate for 52 HT-DATA subcarriers (tx_order)
+    gr_complex d_H52_tx_order[52] = {gr_complex(0.0f, 0.0f)};
+    bool d_H52_tx_order_valid = false;
+
     // dynamic header detection state
     bool d_have_lsig;
     int d_lsig_rel;

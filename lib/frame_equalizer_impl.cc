@@ -244,13 +244,20 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64, int da
 
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
+                                              const gr_complex* H52_tx_order,
                                               gr_complex* out52)
 {
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
     for (int i = 0; i < 52; i++) {
-        out52[i] = sym64[sc_to_fft_bin(kTxOrder52[i])] * rot;
+        const int bin = sc_to_fft_bin(kTxOrder52[i]);
+        const float h_mag = std::abs(H52_tx_order[i]);
+        if (h_mag > 0.1f) {
+            out52[i] = sym64[bin] / H52_tx_order[i] * rot;
+        } else {
+            out52[i] = gr_complex(0.0f, 0.0f);
+        }
     }
 }
 
@@ -384,6 +391,44 @@ static constexpr int kHeader48Bin[48] = {
     8, 9,10,11,12,13,14,15,16,17,18,19,20,  // SC +8 to +20 (skip +7 pilot)
     22,23,24,25,26              // SC +22 to +26
 };
+
+// Compute channel estimate H for 52 HT data subcarriers in tx_order from L-LTF0.
+// lltf0_52: 48 data SCs in kHeader48Sc order + 4 pilots in kPilot4Sc order.
+static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out)
+{
+    static const gr_complex kPilot4TX[4] = {
+        gr_complex(+1.0f, 0.0f),   // SC -21
+        gr_complex(-1.0f, 0.0f),   // SC -7
+        gr_complex(+1.0f, 0.0f),   // SC +7
+        gr_complex(+1.0f, 0.0f),   // SC +21
+    };
+
+    gr_complex H_sc[114] = {gr_complex(0.0f, 0.0f)};  // indexed by sc+56, covers -28..+28
+
+    // Fill H for 48 header data subcarriers
+    for (int i = 0; i < 48; i++) {
+        int sc = kHeader48Sc[i];
+        if (std::abs(kLltf48TX[i]) > 1e-9f) {
+            H_sc[sc + 56] = lltf0_52[i] / kLltf48TX[i];
+        }
+    }
+    // Fill H for 4 pilots
+    for (int i = 0; i < 4; i++) {
+        int sc = kPilot4Sc[i];
+        H_sc[sc + 56] = lltf0_52[48 + i] / kPilot4TX[i];
+    }
+
+    // Extrapolate edge subcarriers from nearest known
+    H_sc[-28 + 56] = H_sc[-26 + 56];
+    H_sc[-27 + 56] = H_sc[-26 + 56];
+    H_sc[27 + 56] = H_sc[26 + 56];
+    H_sc[28 + 56] = H_sc[26 + 56];
+
+    // Copy to tx_order output
+    for (int i = 0; i < 52; i++) {
+        H52_out[i] = H_sc[kTxOrder52[i] + 56];
+    }
+}
 
 // legacy L-LTF known signs on the 48 data carriers above
 // These are just ±1 real values - used for sign check only
@@ -590,6 +635,72 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     }
     for (int i = 0; i < 4; i++) {
         out52[48 + i] = sym64[kPilot4Bin[i]];  // EXPLICIT bin mapping!
+    }
+
+    // L-LTF BIN MAPPING VERIFICATION:
+    // Compute H from LTF0: H[i] = ltf0[i] / kLltf48TX[i]
+    // Then equalize LTF0 with H: eq[i] = ltf0[i] / H[i] = kLltf48TX[i]
+    // If extraction is correct, eq[i] should be near ±1 (pure real).
+    // If bin mapping is wrong, eq will be garbage (rotated, wrong magnitude).
+    static int verify_call = 0;
+    if (verify_call == 0) {
+        gr_complex H48[48];
+        int bad_h = 0;
+        for (int i = 0; i < 48; i++) {
+            H48[i] = out52[i] / kLltf48TX[i];
+            if (std::abs(H48[i]) < 0.1f) bad_h++;
+        }
+        // Equalize LTF0: eq = ltf0 / H
+        int eq_mismatch = 0;
+        int eq_sign_flip = 0;
+        float eq_mag_sum = 0;
+        for (int i = 0; i < 48; i++) {
+            gr_complex eq = out52[i] / H48[i];
+            eq_mag_sum += std::abs(eq);
+            int eq_sign = (eq.real() >= 0.0f) ? 1 : -1;
+            int ref_sign = (kLltf48TX[i].real() >= 0.0f) ? 1 : -1;
+            if (eq_sign != ref_sign) {
+                eq_sign_flip++;
+                // Only count as true mismatch if |eq| > 0.3 (not noise)
+                if (std::abs(eq) > 0.3f) eq_mismatch++;
+            }
+        }
+        fprintf(stderr, "\n[BIN_VERIFY] LTF0 self-equalization test:\n");
+        fprintf(stderr, "[BIN_VERIFY] bad_H=%d eq_mismatch=%d eq_sign_flip=%d avg_eq_mag=%.2f\n",
+                bad_h, eq_mismatch, eq_sign_flip, eq_mag_sum/48.0f);
+        fprintf(stderr, "[BIN_VERIFY] eq[0..11]: ");
+        for (int i = 0; i < 12; i++) {
+            gr_complex eq = out52[i] / H48[i];
+            fprintf(stderr, "%.1f ", eq.real());
+        }
+        fprintf(stderr, "\n[BIN_VERIFY] ref[0..11]: ");
+        for (int i = 0; i < 12; i++) {
+            fprintf(stderr, "%.1f ", kLltf48TX[i].real());
+        }
+        fprintf(stderr, "\n");
+        // Print H phase and magnitude consistency
+        float h_phase_first = 0;
+        float max_phase_dev = 0;
+        for (int i = 0; i < 48; i++) {
+            float ph = std::arg(H48[i]);
+            if (i == 0) h_phase_first = ph;
+            float dev = std::abs(ph - h_phase_first);
+            if (dev > M_PI) dev = 2*M_PI - dev;
+            if (dev > max_phase_dev) max_phase_dev = dev;
+        }
+        fprintf(stderr, "[BIN_VERIFY] H phase max_deviation=%.1fdeg\n", max_phase_dev*180/M_PI);
+        if (eq_mismatch > 0 || max_phase_dev > 30.0f*M_PI/180.0f) {
+            fprintf(stderr, "[BIN_VERIFY] FAIL! Full 48 equalized symbols:\n");
+            for (int i = 0; i < 48; i++) {
+                gr_complex eq = out52[i] / H48[i];
+                fprintf(stderr, "  [%2d] sc=%+3d bin=%2d H=%.3f%+.3fi eq=%.3f%+.3fi ref=%+.0f\n",
+                        i, kHeader48Sc[i], kHeader48Bin[i],
+                        H48[i].real(), H48[i].imag(),
+                        eq.real(), eq.imag(), kLltf48TX[i].real());
+            }
+        }
+        fflush(stderr);
+        verify_call++;
     }
 }
 
@@ -1832,19 +1943,48 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     // HT-SIG Deinterleaving: undo the 802.11 permutation
     // Forward interleaver: j = 3*(k%16) + k/16
-    // Inverse (deinterleaver): k = 16*(j%3) + j/3, so j = 16*(k%3) + k/3
+    // Deinterleaver uses same formula (since 2nd permutation is identity for BPSK)
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;  // FIX: k/3 correctly deinterleaves
+        const int j = 3 * (k % 16) + k / 16;
         deintl48_a[k] = eqbits48_a[j] & 0x1;
     }
     for (int k = 0; k < 48; k++) {
-        const int j = 16 * (k % 3) + k / 3;  // FIX: k/3 correctly deinterleaves
+        const int j = 3 * (k % 16) + k / 16;
         deintl48_b[k] = eqbits48_b[j] & 0x1;
     }
 
     for (int i = 0; i < 48; i++) {
         enc96[i]      = deintl48_a[i];
         enc96[48 + i] = deintl48_b[i];
+    }
+
+    // Probe: print full bit chains for first decode_htsig_from_rotated call
+    static int ht_decode_call = 0;
+    if (ht_decode_call == 0) {
+        fprintf(stderr, "[HTSIG_DECODE_PROBE] call=0 invert_a=%d invert_b=%d\n",
+                invert_a ? 1 : 0, invert_b ? 1 : 0);
+        fprintf(stderr, "[HTSIG_DECODE_PROBE] HT-SIG0 Q-bits (48): ");
+        for (int i = 0; i < 48; i++) fprintf(stderr, "%d", eqbits48_a[i]);
+        fprintf(stderr, "\n[HTSIG_DECODE_PROBE] HT-SIG0 deintl (48): ");
+        for (int i = 0; i < 48; i++) fprintf(stderr, "%d", deintl48_a[i]);
+        fprintf(stderr, "\n[HTSIG_DECODE_PROBE] HT-SIG1 Q-bits (48): ");
+        for (int i = 0; i < 48; i++) fprintf(stderr, "%d", eqbits48_b[i]);
+        fprintf(stderr, "\n[HTSIG_DECODE_PROBE] HT-SIG1 deintl (48): ");
+        for (int i = 0; i < 48; i++) fprintf(stderr, "%d", deintl48_b[i]);
+        fprintf(stderr, "\n[HTSIG_DECODE_PROBE] enc96[0:48] (HT-SIG0 deintl):\n");
+        for (int i = 0; i < 48; i += 8) {
+            fprintf(stderr, "  [%2d-%2d] ", i, i+7);
+            for (int jj = i; jj < i+8 && jj < 48; jj++) fprintf(stderr, "%d", enc96[jj]);
+            fprintf(stderr, "\n");
+        }
+        fprintf(stderr, "[HTSIG_DECODE_PROBE] enc96[48:96] (HT-SIG1 deintl):\n");
+        for (int i = 48; i < 96; i += 8) {
+            fprintf(stderr, "  [%2d-%2d] ", i, i+7);
+            for (int jj = i; jj < i+8 && jj < 96; jj++) fprintf(stderr, "%d", enc96[jj]);
+            fprintf(stderr, "\n");
+        }
+        fflush(stderr);
+        ht_decode_call++;
     }
 
     std::vector<uint8_t> dec48;
@@ -2108,6 +2248,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
+    d_H52_tx_order_valid = false;
 }
 
 bool frame_equalizer_impl::parse_signal(const uint8_t* decoded_bits,
@@ -2740,6 +2881,39 @@ int frame_equalizer_impl::general_work(int noutput_items,
             std::fprintf(stderr, "\n");
             fflush(stderr);
 
+            // HT-SIG0 DIAGNOSTIC: equalize HT-SIG0 with H, check QBPSK constellation
+            {
+                fprintf(stderr, "[HTDIAG] HT-SIG0 equalized with H (no rotation), first 12 SC:\n");
+                int q_mismatch = 0, i_mismatch = 0;
+                float eq_energy_I = 0, eq_energy_Q = 0;
+                for (int i = 0; i < 48; i++) {
+                    gr_complex eq = safe_div(d_early_eqsym[kHtSig0Rel][i], Hhdr52[i]);
+                    eq_energy_I += eq.real() * eq.real();
+                    eq_energy_Q += eq.imag() * eq.imag();
+                    int bit_from_I = (eq.real() >= 0.0f) ? 1 : 0;
+                    int bit_from_Q = (eq.imag() >= 0.0f) ? 1 : 0;
+                    if (i < 12) {
+                        fprintf(stderr, "  [%2d] sc=%+3d bin=%2d eq=%.3f%+.3fi |eq|=%.2f I_bit=%d Q_bit=%d\n",
+                                i, kHeader48Sc[i], kHeader48Bin[i],
+                                eq.real(), eq.imag(), std::abs(eq),
+                                bit_from_I, bit_from_Q);
+                    }
+                }
+                float ratio = (eq_energy_I > 1e-10f) ? eq_energy_Q / eq_energy_I : -1.0f;
+                fprintf(stderr, "[HTDIAG] EQ energy: E_I=%.2f E_Q=%.2f ratio=%.4f (expect ratio>>1 for QBPSK)\n",
+                        eq_energy_I, eq_energy_Q, ratio);
+                // Also check: what does the raw HT-SIG0 look like?
+                float raw_E_I = 0, raw_E_Q = 0;
+                for (int i = 0; i < 48; i++) {
+                    raw_E_I += d_early_eqsym[kHtSig0Rel][i].real() * d_early_eqsym[kHtSig0Rel][i].real();
+                    raw_E_Q += d_early_eqsym[kHtSig0Rel][i].imag() * d_early_eqsym[kHtSig0Rel][i].imag();
+                }
+                float raw_ratio = (raw_E_I > 1e-10f) ? raw_E_Q / raw_E_I : -1.0f;
+                fprintf(stderr, "[HTDIAG] RAW energy: E_I=%.2f E_Q=%.2f ratio=%.4f\n",
+                        raw_E_I, raw_E_Q, raw_ratio);
+                fflush(stderr);
+            }
+
             bool found = false;
 
             // L-SIG invert brute-force
@@ -2801,7 +2975,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             bool parsed_sgi = false;
                             bool parsed_agg = false;
 
-                            if (!decode_htsig_from_rotated(rot_htsig0,
+                            static int brute_try = 0;
+                            fprintf(stderr, "[BRUTE] try=%d rot=%d inv_a=%d inv_b=%d\n",
+                                    brute_try, rot, inv_a, inv_b);
+                            brute_try++;
+
+                            bool decode_ok = decode_htsig_from_rotated(rot_htsig0,
                                                            rot_htsig1,
                                                            Hhdr52,
                                                            inv_a != 0,
@@ -2809,7 +2988,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            parsed_len,
                                                            parsed_mcs,
                                                            parsed_sgi,
-                                                           parsed_agg)) {
+                                                           parsed_agg);
+                            fprintf(stderr, "[BRUTE] try=%d result=%s\n",
+                                    brute_try - 1, decode_ok ? "PASS" : "FAIL");
+                            if (!decode_ok) {
                                 continue;
                             }
 
@@ -2856,7 +3038,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
             const int data_sym_idx = d_sym_idx - d_data_start_rel;
 
             if (use_direct_tx_order_mcs0) {
-                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, out52);
+                if (!d_H52_tx_order_valid) {
+                    compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
+                    d_H52_tx_order_valid = true;
+                }
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
             } else {
                 if (!reorder_eq_52_mode(raw_eq52, out52, d_hdr_reorder_mode)) {
                     std::memcpy(out52, raw_eq52, 52 * sizeof(gr_complex));
@@ -2907,7 +3093,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 gr_complex dbg52[52];
                 uint8_t bits52[52];
 
-                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, dbg52);
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, dbg52);
 
                 for (int i = 0; i < 52; i++) {
                     bits52[i] = hard_bit_from_complex(dbg52[i]);

@@ -92,9 +92,26 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int consumed = 0;
 
     uint64_t start_abs_idx = nitems_read(0);
+
+    // PROBE: Print when general_work is called
+    static int call_count = 0;
+    call_count++;
+    if (call_count <= 10) {
+        fprintf(stderr, "[SPLITTER_WORK] call=%d start_abs_idx=%llu ninput=%d ignore_mode=%d d_buffer_count=%d\n",
+                call_count, (unsigned long long)start_abs_idx, ninput_items[0], d_ignore_mode, d_buffer_count);
+    }
+
     // Get all tags in current work call range
     std::vector<gr::tag_t> tags;
     get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
+
+    // PROBE: Print all tags found
+    for (const auto& tag : tags) {
+        fprintf(stderr, "[SPLITTER_TAG] offset=%llu key=%s value=%.2f\n",
+                (unsigned long long)tag.offset,
+                pmt::symbol_to_string(tag.key).c_str(),
+                pmt::is_number(tag.value) ? pmt::to_double(tag.value) : 0.0);
+    }
 
     // Check for rx_reset tag
     // CRITICAL: Only set ignore_mode if this is a NEW rx_reset for the CURRENT frame
@@ -113,10 +130,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     }
 
     // Read sync_offset tag for coordinate mapping
-    int64_t known_sync_offset = -1;
+    // CRITICAL FIX: Build a map of sync_offset values by position
+    // We need the sync_offset that corresponds to EACH wifi_start position
+    std::map<uint64_t, int64_t> sync_offset_by_pos;
     for (const auto& tag : tags) {
         if (pmt::symbol_to_string(tag.key) == "sync_offset") {
-            known_sync_offset = (int64_t)pmt::to_double(tag.value);
+            uint64_t pos = (uint64_t)tag.offset;
+            int64_t val = (int64_t)pmt::to_double(tag.value);
+            sync_offset_by_pos[pos] = val;
         }
     }
 
@@ -220,17 +241,36 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // CRITICAL: Only set d_frame_start_abs on FIRST wifi_start
                     if (!d_frame_start_known) {
                         d_frame_start_known = true;
+                        // CRITICAL FIX: Get the sync_offset for THIS wifi_start position
+                        // The problem was we used the last sync_offset (at offset=401, value=561)
+                        // instead of the one at wifi_start position (offset=0, value=0)
+                        int64_t sync_for_this_wifi_start = -1;
+                        auto it = sync_offset_by_pos.find(tag_abs_pos);
+                        if (it != sync_offset_by_pos.end()) {
+                            sync_for_this_wifi_start = it->second;
+                        } else {
+                            // Find the closest sync_offset at or before this wifi_start
+                            for (auto rit = sync_offset_by_pos.rbegin(); rit != sync_offset_by_pos.rend(); rit++) {
+                                if (rit->first <= tag_abs_pos) {
+                                    sync_for_this_wifi_start = rit->second;
+                                    break;
+                                }
+                            }
+                        }
+                        // PROBE: Print d_frame_start_abs calculation
+                        fprintf(stderr, "[SPLITTER_FRAME_START] d_frame_start=%llu sync=%lld wifi_pos=%llu\n",
+                                (unsigned long long)d_frame_start, (long long)sync_for_this_wifi_start, (unsigned long long)tag_abs_pos);
                         // If we know the sync_offset, use it to correct the mapping
-                        if (known_sync_offset >= 0) {
+                        if (sync_for_this_wifi_start >= 0) {
                             // Correct formula: d_frame_start_abs = d_frame_start [+16] - sync_offset
                             // wifi_start tag.value = d_frame_start (CP start in sync_long input)
                             // sync_offset = d_offset at time wifi_start was written
                             // When sync_offset=0, we need +16 to get correct CP→DATA offset
                             // When sync_offset>0, the offset is already incorporated
                             if (d_frame_start >= 160 && d_frame_start <= 200) {
-                                d_frame_start_abs = (int64_t)d_frame_start + 16 - known_sync_offset;
+                                d_frame_start_abs = (int64_t)d_frame_start + 16 - sync_for_this_wifi_start;
                             } else {
-                                d_frame_start_abs = (int64_t)d_frame_start - known_sync_offset;
+                                d_frame_start_abs = (int64_t)d_frame_start - sync_for_this_wifi_start;
                             }
                         } else {
                             // Fallback: use original logic
@@ -321,6 +361,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     }
 
     while (i < ninput_items[0]) {
+        // PROBE: Debug while loop
+        if (i % 100 == 0 && i > 0) {
+            fprintf(stderr, "[SPLITTER_LOOP] i=%d ninput=%d produced=%d\n", i, ninput_items[0], produced);
+        }
+        // Check if we're near the end
+        if (i >= 800 && i < 813) {
+            fprintf(stderr, "[SPLITTER_DEBUG] i=%d remaining=%d d_buffer=%d\n", i, ninput_items[0] - i, d_buffer_count);
+        }
         uint64_t current_idx = start_abs_idx + i;
 
         // If in ignore mode, consume all without buffering
@@ -526,7 +574,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // This runs AFTER the current sample is buffered, so d_buffer_count
             // is updated and rel_idx reflects the just-buffered position.
             // ============================================================
+            // PROBE: Print when buffer is full
             if (d_buffer_count == d_fft_size) {
+                fprintf(stderr, "[SPLITTER_BUFFER_FULL] rel_idx=%d frame_start=%lld current=%lld\n",
+                        rel_idx, (long long)d_frame_start_abs, (long long)current_idx);
+
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
                 // ============================================================
@@ -553,10 +605,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     at_boundary = (rel_idx == 463);
                 } else {
                     uint64_t sym_offset = (rel_idx - 464) % 80;
-                    at_boundary = (sym_offset == 0);
+                    // FIX: Allow sym_offset 0 OR 79 (79 occurs due to RESET zeros混入)
+                    // This is a pragmatic fix: when buffer is full and we're near a boundary,
+                    // just output the FFT. The alternative is to lose the data entirely.
+                    at_boundary = (sym_offset == 0 || sym_offset == 79);
                 }
 
-                if (at_boundary) {
+                // FIX: For HT-DATA (rel_idx >= 464), ALWAYS output when buffer is full
+                // even if at_boundary=false. This prevents data loss due to boundary misalignment.
+                // For preamble (rel_idx < 464), only output at correct boundaries.
+                if (at_boundary || rel_idx >= 464) {
                     // Debug: Print symbol type based on rel_idx
                     int symbol_type = -1;
                     if (rel_idx == 63 || rel_idx == 143) {
@@ -582,6 +640,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         }
                     }
                                         // Output at boundary
+                    // PROBE: Print FFT buffer content before output
+                    fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%d first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
+                            symbol_type, rel_idx,
+                            d_buffer[0].real(), d_buffer[0].imag(),
+                            d_buffer[63].real(), d_buffer[63].imag(),
+                            total_energy);
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     produced += d_fft_size;
                     d_buffer_count = 0;
@@ -604,22 +668,27 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // NEVER output partial FFT windows - this corrupts the equalizer's
             // channel estimate. If we can't form a full 64-sample FFT window,
             // return without output and let GNU Radio provide more items.
+            //
+            // FIX: Only trigger starvation protection if buffer is FULL (64 samples).
+            // Partial buffers (from CP skipping) should NOT trigger early return.
             // ============================================================
-            if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && !at_end_of_input) {
-                // Only output if we have a FULL FFT window
-                if (d_buffer_count == d_fft_size) {
-                    // Buffer is full - this should have been caught by boundary check
-                    // but handle it here as a safety net
-                    for (int j = 0; j < d_buffer_count; j++) {
-                        out[produced++] = d_buffer[j];
-                    }
-                    d_buffer_count = 0;
-                    d_buffer_filled = false;
+            if (remaining_items < items_needed_for_current_symbol && d_buffer_count == d_fft_size && !at_end_of_input) {
+                // Buffer is full - output it and return
+                for (int j = 0; j < d_buffer_count; j++) {
+                    out[produced++] = d_buffer[j];
                 }
+                d_buffer_count = 0;
+                d_buffer_filled = false;
                 d_items_processed += i;
-                d_last_rel_idx = rel_idx;  // Track last position for carryover check
-                consume_each(i);  // Consume items read up to position i
-                return produced;  // May be 0 if buffer was partial
+                d_last_rel_idx = rel_idx;
+                consume_each(i);
+                return produced;
+            } else if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && d_buffer_count < d_fft_size && !at_end_of_input) {
+                // Partial buffer - don't output, just return. Let GNU Radio provide more items.
+                d_items_processed += i;
+                d_last_rel_idx = rel_idx;
+                consume_each(i);
+                return produced;
             }
         }
 
@@ -637,6 +706,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     }
 
     consume_each(consumed);
+    // PROBE: Print final production
+    fprintf(stderr, "[SPLITTER_RETURN] produced=%d consumed=%d\n", produced, consumed);
     return produced;
 }
 

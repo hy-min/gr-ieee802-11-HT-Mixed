@@ -95,7 +95,31 @@ public:
                     throw std::runtime_error("wtf");
                 }
                 if (d_state == COPY) {
-                    d_state = RESET;
+                    // FIX: Don't transition to RESET when wifi_start arrives during HT-Mixed preamble!
+                    // In Legacy mode (802.11a/g), wifi_start at end of preamble means DATA follows.
+                    // In HT-Mixed mode, HT-SIG comes after L-SIG, so we need to continue COPY.
+                    // Only transition to RESET if we've processed enough samples to cover the full HT preamble.
+                    std::string tag_key = pmt::symbol_to_string(d_tags.front().key);
+                    if (tag_key == "wifi_start") {
+                        // wifi_start during COPY - this is HT-Mixed second frame starting
+                        // Check if we've output enough to cover HT preamble + HT-LTF (720 samples)
+                        // HT preamble: L-STF(160) + L-LTF(160) + L-SIG(80) + HT-SIG(160) + HT-STF(80) = 640
+                        // For absolute safety, wait until we're well into HT-DATA region (d_count >= 720)
+                        // If d_count >= 720, we've passed HT-LTF, safe to RESET
+                        // If d_count < 720, we're still in preamble/training - DON'T RESET, continue COPY
+                        if (d_count < 720) {
+                            // We're still in HT-Mixed preamble/training, ignore this wifi_start
+                            // It will be processed when we exit COPY naturally
+                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed preamble d_count=%d\n", d_count);
+                        } else {
+                            // We've passed HT-DATA region, safe to RESET
+                            d_state = RESET;
+                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] RESET after HT-DATA start d_count=%d\n", d_count);
+                        }
+                    } else {
+                        // Other tag - use original behavior
+                        d_state = RESET;
+                    }
                 }
                 d_freq_offset_short = pmt::to_double(d_tags.front().value);
             }
@@ -214,6 +238,13 @@ public:
         dout << "produced : " << o << " consumed: " << i << std::endl;
 
         d_count += o;
+
+        // PROBE: Print production info AFTER d_count update
+        static int sync_call_count = 0;
+        sync_call_count++;
+        fprintf(stderr, "[SYNC_LONG_WORK] call=%d state=%d produced=%d consumed=%d d_count=%d\n",
+                sync_call_count, d_state, o, i, d_count);
+
         consume(0, i);
         consume(1, i);
         return o;
