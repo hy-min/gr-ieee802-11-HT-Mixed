@@ -270,3 +270,48 @@ cd /home/hy/gr-ieee802-11 && LD_PRELOAD=./wrap_rpc2.so /home/hy/conda/envs/gnura
 git add -A
 git commit -m "feat: fix HT-SIG high bit error rate"
 ```
+
+---
+
+## Task 6 验证结果 (2026-05-17)
+
+### 测试结果
+
+```
+[SPLITTER_FFTPROBE] type=3 rel_idx=303 td_energy=35.0901 peak_mag=1.8896@41 first=0.0000+0.0000i last=0.6811-0.7192i buf_filled=0
+[EQ][HT-SIG] parse failed: lsig=2 htsig=3/4
+```
+
+### 关键发现
+
+1. **HT-SIG0 d_buffer[0]=0 问题仍然存在**
+   - type=3 rel_idx=303 的 FFT 输出显示 first=0.0000+0.0000i
+   - 这表明 FFT 窗口捕获了错误的数据
+
+2. **td_energy=35.1 是 L-SIG (64.3) 的一半**
+   - 这符合 QBPSK 的预期能量
+   - 但第一个样本为零是不合理的
+
+3. **Carryover 边界修复 (b2db89f) 已应用但未解决问题**
+   - 修复将边界从 271/351/431 更正为 303/383/463
+   - 但 HT-SIG0 的 d_buffer[0]=0 问题仍然存在
+
+4. **d_frame_start_abs 的影响**
+   - d_frame_start_abs=176 对某些符号有效但破坏 HT-SIG0
+   - d_frame_start_abs=0 修复 HT-SIG0 但破坏 HT-STF
+   - 这表明边界条件与特定的 d_frame_start_abs 值耦合
+
+### 根本原因分析
+
+HT-SIG0 的 FFT 窗口正在捕获 CP/过渡区域而不是实际的 HT-SIG0 DATA 部分。
+
+可能的原因：
+1. SPLITTER 在错误的 rel_idx 位置开始填充缓冲区
+2. CP 跳过逻辑在 HT-SIG0 DATA 开始前没有正确重置缓冲区
+3. d_frame_start_abs 在不同的工作调用之间发生变化
+
+### 下一步
+
+1. 追踪 SPLITTER_WORK 日志以了解 d_frame_start_abs 的实际值
+2. 检查第二个工作调用中的缓冲区状态
+3. 验证在 HT-SIG0 DATA 开始时 (rel_idx=240) 缓冲区是否正确重置
