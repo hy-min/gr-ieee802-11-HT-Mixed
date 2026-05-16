@@ -467,20 +467,20 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             } else if (rel_idx < 240) {
                 // Stage 3: HT-SIG0 CP (rel_idx 224-239) - CORRECTED
                 should_buffer = false;
-            } else if (rel_idx < 272) {
-                // Stage 3b: HT-SIG0 DATA (rel_idx 240-271) - 64 samples - CORRECTED
+            } else if (rel_idx < 304) {
+                // Stage 3b: HT-SIG0 DATA (rel_idx 240-303) - 64 samples
                 should_buffer = true;
-            } else if (rel_idx < 288) {
-                // Stage 4: HT-SIG1 CP (rel_idx 272-287) - 跳过
+            } else if (rel_idx < 320) {
+                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 352) {
-                // Stage 4b: HT-SIG1 DATA (rel_idx 288-351) - 64 samples
+            } else if (rel_idx < 384) {
+                // Stage 4b: HT-SIG1 DATA (rel_idx 320-383) - 64 samples
                 should_buffer = true;
-            } else if (rel_idx < 368) {
-                // Stage 5: HT-STF CP (rel_idx 352-367) - 跳过
+            } else if (rel_idx < 400) {
+                // Stage 5: HT-STF CP (rel_idx 384-399) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 432) {
-                // Stage 5b: HT-STF DATA (rel_idx 368-431)
+            } else if (rel_idx < 464) {
+                // Stage 5b: HT-STF DATA (rel_idx 400-463)
                 should_buffer = true;
             } else {
                 // Stage 6: HT-DATA and beyond (80-sample period: 16 CP + 64 Data)
@@ -538,16 +538,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     at_boundary = false;
                 } else if (rel_idx < 224) {
                     at_boundary = (rel_idx == 223);
-                } else if (rel_idx < 272) {
-                    at_boundary = (rel_idx == 271);
-                } else if (rel_idx < 288) {
+                } else if (rel_idx < 304) {
+                    at_boundary = (rel_idx == 303);
+                } else if (rel_idx < 320) {
                     at_boundary = false;
-                } else if (rel_idx < 352) {
-                    at_boundary = (rel_idx == 351);
-                } else if (rel_idx < 368) {
+                } else if (rel_idx < 384) {
+                    at_boundary = (rel_idx == 383);
+                } else if (rel_idx < 400) {
                     at_boundary = false;
-                } else if (rel_idx < 432) {
-                    at_boundary = (rel_idx == 431);
+                } else if (rel_idx < 464) {
+                    at_boundary = (rel_idx == 463);
                 } else {
                     uint64_t sym_offset = (rel_idx - 464) % 80;
                     at_boundary = (sym_offset == 0);
@@ -560,11 +560,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         symbol_type = 0; // L-LTF FFT
                     } else if (rel_idx == 223) {
                         symbol_type = 2; // L-SIG FFT
-                    } else if (rel_idx == 271) {
+                    } else if (rel_idx == 303) {
                         symbol_type = 3; // HT-SIG0 FFT
-                    } else if (rel_idx == 351) {
+                    } else if (rel_idx == 383) {
                         symbol_type = 4; // HT-SIG1 FFT
-                    } else if (rel_idx == 431) {
+                    } else if (rel_idx == 463) {
                         symbol_type = 5; // HT-STF FFT
                     }
                     static int fft_probe_count = 0;
