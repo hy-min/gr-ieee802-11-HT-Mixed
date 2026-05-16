@@ -140,12 +140,6 @@ public:
 
                 int rel = d_offset - d_frame_start;
 
-                // Debug: trace d_offset and rel in COPY loop
-                if (d_offset < 10 || d_offset == d_frame_start) {
-                    fprintf(stderr, "[SYNC_LONG_COPY] d_offset=%d, d_frame_start=%d, rel=%d\n",
-                            d_offset, d_frame_start, rel);
-                }
-
                 // Add wifi_start tag at L-LTF0 DATA start (rel=0)
                 // Only add if we haven't already added one for this detection
                 if (rel == 0 && !d_wifi_start_added) {
@@ -159,25 +153,6 @@ public:
                     d_wifi_start_added = true;
                 }
 
-                // PROBE: L-LTF periodicity check (samples[0]≈samples[64], samples[32]≈samples[96])
-                // Also probe key HT-SIG/L-SIG positions
-                static int periodicity_probe_count = 0;
-                if (periodicity_probe_count < 20 && (rel == 0 || rel == 32 || rel == 64 || rel == 96 || rel == 128 || rel == 144 || rel == 240 || rel == 304 || rel == 320)) {
-                    const char* pos_label = "";
-                    if (rel == 0) pos_label = "LTF0_START";
-                    else if (rel == 32) pos_label = "LTF0_MID";
-                    else if (rel == 64) pos_label = "LTF1_START";
-                    else if (rel == 96) pos_label = "LTF1_MID";
-                    else if (rel == 128) pos_label = "LSIG_CP";
-                    else if (rel == 144) pos_label = "LSIG_DATA";
-                    else if (rel == 240) pos_label = "HTSIG0_DATA";
-                    else if (rel == 304) pos_label = "HTSIG1_CP";
-                    else if (rel == 320) pos_label = "HTSIG1_DATA";
-                    fprintf(stderr, "[SYNC_LONG_PERIODICITY] d_offset=%d rel=%d out_idx=%d amp=%.4f sample=%.4f%+.4fi [%s]\n",
-                            d_offset, rel, o, std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag(), pos_label);
-                    periodicity_probe_count++;
-                }
-
                 // Output all samples from d_frame_start onwards (1:1 mapping)
                 // CP removal is handled by ht_symbol_splitter downstream
                 if (rel >= 0) {
@@ -186,30 +161,6 @@ public:
                         out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
                     } else {
                         out[o] = in_delayed[i];
-                    }
-                    // PROBE: Print first 10 output samples to verify sync_long output
-                    static int copy_probe_count = 0;
-                    if (copy_probe_count < 10) {
-                        fprintf(stderr, "[SYNC_LONG_OUT] d_offset=%d out_idx=%d amp=%.6f sample=%.6f%+.6fi\n",
-                                d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag());
-                        copy_probe_count++;
-                    }
-                    // PROBE: Print at out_idx=240 (HTSIG0_DATA position)
-                    if (o == 240) {
-                        fprintf(stderr, "[SYNC_LONG_OUT_IDX240] d_offset=%d out_idx=%d amp=%.6f sample=%.6f%+.6fi in_delayed[i]=%.6f%+.6fi\n",
-                                d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag(),
-                                std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag());
-                    }
-                    // PROBE: Print at out_idx=416 (HT-SIG0 DATA position)
-                    if (o == 416) {
-                        fprintf(stderr, "[SYNC_LONG_OUT_IDX416] d_offset=%d out_idx=%d amp=%.6f sample=%.6f%+.6fi in_delayed[i]=%.6f%+.6fi\n",
-                                d_offset, o, std::abs(out[o]), out[o].real(), out[o].imag(),
-                                std::abs(in_delayed[i]), in_delayed[i].real(), in_delayed[i].imag());
-                    }
-                    // PROBE: Print when o is near 416 (within 10) to see if we approach but don't reach 416
-                    if (o >= 410 && o <= 420 && copy_probe_count < 20) {
-                        fprintf(stderr, "[SYNC_LONG_OUT_NEAR416] d_offset=%d out_idx=%d amp=%.6f\n",
-                                d_offset, o, std::abs(out[o]));
                     }
                     o++;
                 }
@@ -232,6 +183,16 @@ public:
                     d_state = SYNC;
                     break;
                 } else {
+                    // PROBE: Add rx_reset tag at start of RESET zeros output
+                    if (o == 0) {
+                        // First zero sample - mark it with rx_reset tag
+                        add_item_tag(0,  // output port 0
+                                     nitems_written(0) + o,  // absolute output position
+                                     pmt::string_to_symbol("rx_reset"),
+                                     pmt::from_double(d_count),  // value = d_count (for debugging)
+                                     pmt::string_to_symbol(name()));
+                        fprintf(stderr, "[SYNC_LONG_RESET_TAG] Added rx_reset tag at out_idx=%d d_count=%d\n", o, d_count);
+                    }
                     out[o] = 0;
                     o++;
                 }
@@ -242,11 +203,6 @@ public:
         }
 
         dout << "produced : " << o << " consumed: " << i << std::endl;
-
-        // PROBE: Track production per call
-        static int sync_work_call = 0;
-        fprintf(stderr, "[SYNC_LONG_PRODUCE] call=%d produced=%d consumed_port0=%d d_state=%d d_count=%d d_offset=%d\n",
-                sync_work_call++, o, i, d_state, d_count, d_offset);
 
         d_count += o;
         consume(0, i);
@@ -283,14 +239,6 @@ public:
 
         // ESSENTIAL DEBUG: d_frame_start detection
         const char* mode = "unknown";
-
-        // Print Top 20 peaks to diagnose plateau effect
-        fprintf(stderr, "[SYNC_LONG_DEBUG] Top 20 peaks: ");
-        for (int m = 0; m < 20 && m < (int)vec.size(); m++) {
-            fprintf(stderr, "%d(%.1f) ", get<1>(vec[m]), abs(get<0>(vec[m])));
-        }
-        fprintf(stderr, "\n");
-        fflush(stderr);
 
         // Method 1: Plateau-aware L-LTF peak pair detection
         // Problem: The correlation peak can form a "plateau" (wide peak)
@@ -354,11 +302,6 @@ public:
             double position_score = 1.0 - std::abs(lower_peak - ideal_lower_peak) / 50.0;
             position_score = std::max(0.0, position_score);
             double score = ratio * (1.0 + position_score);
-
-            fprintf(stderr, "[SYNC_LONG] HT Candidate: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d ratio=%.2f lower_peak=%d score=%.2f\n",
-                    i, get<1>(vec[i]), abs(get<0>(vec[i])),
-                    k, get<1>(vec[k]), abs(get<0>(vec[k])),
-                    diff, ratio, lower_peak, score);
 
             if (score > best_ht_score) {
                 best_ht_score = score;
@@ -436,11 +379,6 @@ public:
             }
 
             double score = ratio + position_bonus;
-
-            fprintf(stderr, "[SYNC_LONG] Legacy Candidate: i=%d(idx=%d,amp=%.2f) k=%d(idx=%d,amp=%.2f) diff=%d ratio=%.2f lower_peak=%d score=%.2f\n",
-                    i, get<1>(vec[i]), abs(get<0>(vec[i])),
-                    k, get<1>(vec[k]), abs(get<0>(vec[k])),
-                    diff, ratio, lower_peak, score);
 
             if (score > best_leg_score) {
                 best_leg_score = score;

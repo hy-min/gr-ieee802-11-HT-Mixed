@@ -48,6 +48,8 @@ private:
     uint64_t d_last_rel_idx;       // rel_idx at end of last work call (for carryover buffer check)
     bool d_wifi_start_accepted;    // true if last wifi_start was accepted, false if ignored
     bool d_prev_should_buffer;  // Track previous should_buffer state to detect region transitions
+    bool d_ignore_mode;  // When rx_reset tag is received, enter ignore mode
+    int64_t d_rx_reset_offset;  // Store rx_reset offset to know when to exit ignore mode
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);

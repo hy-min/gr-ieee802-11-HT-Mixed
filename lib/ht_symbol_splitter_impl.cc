@@ -40,7 +40,9 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_frame_start_known(false),
       d_items_processed(0),
       d_last_rel_idx(0),
-      d_wifi_start_accepted(false)
+      d_wifi_start_accepted(false),
+      d_ignore_mode(false),
+      d_rx_reset_offset(-1)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -89,35 +91,29 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int produced = 0;
     int consumed = 0;
 
-    // PROBE: Print work call info at start of each work
-    static int work_call = 0;
-    int this_call = work_call++;
     uint64_t start_abs_idx = nitems_read(0);
-    fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d start_abs_idx=%llu d_frame_start_abs=%lld\n",
-            this_call, ninput_items[0], (unsigned long long)start_abs_idx, (long long)d_frame_start_abs);
-    fprintf(stderr, "[SPLITTER_DBG] call=%d ninput_items[0]=%d start_abs_idx=%llu d_frame_start_abs=%lld d_frame_start_known=%d\n",
-            this_call, ninput_items[0], (unsigned long long)start_abs_idx, (long long)d_frame_start_abs, d_frame_start_known);
+    // Get all tags in current work call range
+    std::vector<gr::tag_t> tags;
+    get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
 
-    // PROBE: Check what sync_long actually produced in its output buffer
-    // This reads directly from the input buffer at key positions
-    if (this_call == 0 && ninput_items[0] >= 448) {
-        fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[0]=%.6f%+.6fi in[5]=%.6f%+.6fi\n",
-                in[0].real(), in[0].imag(), in[5].real(), in[5].imag());
-        fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[383]=%.6f%+.6fi in[384]=%.6f%+.6fi in[385]=%.6f%+.6fi\n",
-                in[383].real(), in[383].imag(), in[384].real(), in[384].imag(),
-                in[385].real(), in[385].imag());
-        fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[415]=%.6f%+.6fi in[416]=%.6f%+.6fi in[417]=%.6f%+.6fi\n",
-                in[415].real(), in[415].imag(), in[416].real(), in[416].imag(),
-                in[417].real(), in[417].imag());
+    // Check for rx_reset tag
+    for (const auto& tag : tags) {
+        if (pmt::symbol_to_string(tag.key) == "rx_reset") {
+            fprintf(stderr, "[SPLITTER_TAG] rx_reset tag detected at offset=%llu, entering ignore mode\n",
+                    (unsigned long long)tag.offset);
+            d_ignore_mode = true;
+            d_buffer_count = 0;  // Clear current buffer
+            d_buffer_filled = false;
+            d_rx_reset_offset = (int64_t)tag.offset;  // Store rx_reset position
+            fprintf(stderr, "[SPLITTER_TAG] Stored rx_reset offset=%lld for ignore mode exit\n",
+                    (long long)d_rx_reset_offset);
+        }
     }
 
     // Look for wifi_start tag - always check for new frames
     // If we see wifi_start at a position significantly beyond our current d_frame_start_abs,
     // it indicates a new frame has started and we should update our reference.
     if (true) {
-        std::vector<gr::tag_t> tags;
-        get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
-
         for (const auto& tag : tags) {
             if (pmt::symbol_to_string(tag.key) == "wifi_start") {
                 // sync_long writes wifi_start at nitems_written(0) when rel=0.
@@ -211,8 +207,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // FIX: We MUST set d_frame_start_abs ONLY on the FIRST wifi_start.
                     // Subsequent wifi_start tags during preamble are spurious and should be ignored.
                     // Also, d_frame_start (160) is the CP start, but we want L-LTF0 DATA start (176).
-                    fprintf(stderr, "[SPLITTER_TAG] wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu\n",
-                            (unsigned long long)d_items_processed, (unsigned long long)d_frame_start);
                     // CRITICAL: Only set d_frame_start_abs on FIRST wifi_start
                     if (!d_frame_start_known) {
                         d_frame_start_known = true;
@@ -220,18 +214,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         // Add +16 to get the correct DATA start offset
                         if (d_frame_start >= 160 && d_frame_start <= 200) {
                             d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176
-                            fprintf(stderr, "[SPLITTER_TAG] Set d_frame_start_abs=%lld (d_frame_start=%llu + 16 for DATA start)\n",
-                                    (long long)d_frame_start_abs, (unsigned long long)d_frame_start);
                         } else {
                             // Sanity check - reject spurious values like 173
                             d_frame_start_abs = (int64_t)d_frame_start;
-                            fprintf(stderr, "[SPLITTER_TAG] WARNING: d_frame_start=%llu outside expected range, using as-is\n",
-                                    (unsigned long long)d_frame_start);
                         }
                         d_wifi_start_accepted = true;  // Propagate wifi_start!
                     } else {
                         // Already have frame start - ignore this wifi_start
-                        fprintf(stderr, "[SPLITTER_TAG] Ignoring duplicate wifi_start (d_frame_start_known already true)\n");
                         d_wifi_start_accepted = false;
                     }
                 } else {
@@ -239,9 +228,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // Previously, d_frame_start_abs was set BEFORE the preamble check, causing
                     // spurious wifi_start (d_frame_start=181) to overwrite the correct value (176).
                     d_frame_start_abs = (int64_t)d_frame_start;
-                    fprintf(stderr, "[SPLITTER_TAG] d_frame_start=%llu -> d_frame_start_abs=%lld\n",
-                            (unsigned long long)d_frame_start,
-                            (long long)d_frame_start_abs);
                     d_frame_start_known = true;
                     d_wifi_start_accepted = true;
 
@@ -250,7 +236,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // to ensure the second frame's L-LTF CP is correctly skipped, just like the first frame.
                     d_buffer_count = 0;
                     d_items_processed = 0;
-                    fprintf(stderr, "[HT_SPLITTER] wifi_start detected! Reset buffer_count=0, items_processed=0.\n");
                 }
 
                 // Only propagate wifi_start if SPLITTER accepted it (not ignored)
@@ -310,6 +295,22 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     while (i < ninput_items[0]) {
         uint64_t current_idx = start_abs_idx + i;
 
+        // If in ignore mode, consume all without buffering
+        if (d_ignore_mode) {
+            if (current_idx > (uint64_t)d_rx_reset_offset) {
+                fprintf(stderr, "[SPLITTER_TAG] past rx_reset (idx=%llu > reset=%lld), exiting ignore mode\n",
+                        (unsigned long long)current_idx, (long long)d_rx_reset_offset);
+                d_ignore_mode = false;
+                d_rx_reset_offset = -1;
+                d_buffer_count = 0;
+                d_items_processed = 0;
+            } else {
+                i++;
+                consumed++;
+                continue;
+            }
+        }
+
         // Compute rel_idx early for use in garbage detection
         uint64_t rel_idx = 0;
         bool frame_started = (d_frame_start_known && current_idx >= d_frame_start_abs);
@@ -343,8 +344,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
             // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
             // So rel_idx=0 in sync_long output = input 176 (L-LTF0 DATA).
-
-            // [SPLITTER_START, SPLITTER_IN_AMP, SPLITTER_AMPLITUDE, SPLITTER_IDX_xxx] - REMOVED: excessive debug probes
 
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
             // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
@@ -490,31 +489,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
             }
 
-            // [SPLITTER_REL] - REMOVED: debug probe
-            // DEBUG PROBE: Track rel_idx and buffer position for key indices
-            // static int debug_rel_idx = 0;
-            // if (debug_rel_idx < 20 && (rel_idx == 0 || rel_idx == 64 || rel_idx == 80 || rel_idx == 144 || rel_idx == 160)) {
-            //     fprintf(stderr, "[SPLITTER_REL] rel_idx=%llu current_idx=%llu should_buffer=%d d_buffer_count=%d\n",
-            //             (unsigned long long)rel_idx,
-            //             (unsigned long long)current_idx,
-            //             should_buffer ? 1 : 0,
-            //             d_buffer_count);
-            //     debug_rel_idx++;
-            // }
-
-                        // Always buffer when should_buffer is true (unless at end of input)
+            // Always buffer when should_buffer is true (unless at end of input)
             if (should_buffer && !at_end_of_input) {
                 d_buffer[d_buffer_count++] = in[i];
 }
-
-            // [SPLITTER_LSIG_BUF] - REMOVED: debug probe
-            // Probe: Check buffer state at L-SIG boundary rel_idx
-            // static int lsig_boundary_probe = 0;
-            // if (lsig_boundary_probe < 3 && (rel_idx == 160 || rel_idx == 223)) {
-            //     fprintf(stderr, "[SPLITTER_LSIG_BUF] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d should_buffer=%d\n",
-            //             (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, should_buffer);
-            //     lsig_boundary_probe++;
-            // }
 
             // ============================================================
             // BOUNDARY CHECK AFTER BUFFERING
@@ -692,14 +670,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         d_last_rel_idx = (start_abs_idx + consumed - 1) - d_frame_start_abs;
     }
 
-    // PROBE: consume debug - confirm consume_each updates nitems_read properly
-    fprintf(stderr, "[SPLITTER_CONSUME] before consume: consumed=%d nitems_read(0)=%llu\n",
-            consumed, (unsigned long long)nitems_read(0));
-
     consume_each(consumed);
-
-    fprintf(stderr, "[SPLITTER_CONSUME] after consume: nitems_read(0)=%llu\n",
-            (unsigned long long)nitems_read(0));
     return produced;
 }
 
