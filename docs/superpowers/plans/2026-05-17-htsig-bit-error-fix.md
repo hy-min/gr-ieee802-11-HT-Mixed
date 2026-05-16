@@ -172,6 +172,40 @@ H 的幅度应该接近信道增益（~1.0）。如果幅度太小或太大，�
 
 确保用于 HT-SIG 解码的 H 与用于 LTF 估计的 H 一致。
 
+**Task 3 分析结果:**
+
+**CHAN_EST 探针输出:**
+```
+[CHAN_EST_DEBUG] i=0 lltf0=7.3241+4.6377i tx=1.0000+0.0000i H=7.3241+4.6377i kFftNormalize=8.8752
+[EQ_TRACE] i=0 sc=-26 rx=7.1410+5.0921i(|rx|=8.7706) H=7.3241+4.6377i(|H|=8.6690) rx/H=1.0102+0.0556i(eq_bef_rot=1.0117) rot_ph=-0.2deg eq=1.0104+0.0519i
+```
+
+**H 幅度分析:**
+- H 幅度 ~8.67-8.87 (约等于 kFftNormalize=8.875)
+- kFftNormalize 未应用到 H 计算中（代码注释说"Remove kFftNormalize"但实际未执行）
+- 但这不影响均衡输出，因为 rx/H 运算会消除这个缩放因子
+
+**均衡器输出正确:**
+- rx/H 幅度 ~1.0（正确）
+- 相位 ~-0.9°（接近 0°，与预期的 HT-SIG bit 0 -> -1j + 旋转 一致）
+
+**FFT 输入数据损坏 (根本原因):**
+```
+[SPLITTER_FFTPROBE] type=2 rel_idx=223 td_energy=64.3067 first=-0.6511+0.0543i - L-SIG 正确
+[SPLITTER_FFTPROBE] type=3 rel_idx=303 td_energy=35.0901 first=0.0000+0.0000i - HT-SIG0 错误 (d_buffer[0]=0!)
+[SPLITTER_FFTPROBE] type=4 rel_idx=383 td_energy=66.3679 first=0.4112+0.0922i - HT-SIG1 正确
+[SPLITTER_FFTPROBE] type=5 rel_idx=463 td_energy=66.7442 first=-0.1119+0.9699i - HT-STF 正确
+```
+
+- HT-SIG0 的 td_energy=35.1 (约为 L-SIG 64.3 的一半)
+- HT-SIG0 的 first=0.0000+0.0000i 表示 d_buffer[0]=0
+- 这是 QBPSK 不可能出现的值 - 说明 FFT 窗口捕获了错误的数据
+
+**结论:**
+- 信道估计 H 质量可接受（rx/H 运算后幅度 ~1.0）
+- HT-SIG CRC 失败不是由信道估计引起
+- **根本原因是 SPLITTER FFT 窗口对齐问题 - HT-SIG0 的 d_buffer[0]=0**
+
 ---
 
 ## Task 4: 检查 Viterbi 解码器输入
