@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修复 LTF0 和 LTF1 之间的 180° 相位反转问题，使 HT-SIG CRC 能够通过。
+**Goal:** 修复 HT-SIG CRC 失败问题。当前状态：LTF 相位已修复，但 HT-SIG 解码仍有 1-6 位的系统误差。
 
-**Architecture:** LTF0 和 LTF1 FFT 输出之间存在恒定的 180° 相位差。这导致信道估计错误，因为 LTF0 和 LTF1 的信道估计值不一致。需要调查相位反转的根源并修复。
+**Architecture:** LTF0 和 LTF1 相位已修复（commit e33a8fc）。HT-SIG CRC 失败是因为解码的位数有 1-6 位的系统误差，可能是 QBPSK 比特映射反转或相位旋转检测问题。
 
 **Tech Stack:** GNU Radio 3.10, C++ (sync_long.cc, frame_equalizer_impl.cc, ht_symbol_splitter_impl.cc), Python (test_mcs_end_to_end.py)
 
@@ -12,38 +12,23 @@
 
 ## 问题诊断总结
 
-**当前状态：**
-- SPLITTER HT-SIG FFT 输出已修复 ✓
-- HT-SIG 符号到达均衡器 ✓
-- HT-SIG CRC 失败 ✗
+**当前状态（已更新）：**
+- LTF0 vs LTF1 相位差：~0-4°（已修复）✓
+- HT-SIG FFT 输出位置：正确（rel_idx=303, 383）✓
+- HT-SIG CRC 失败：1-6 位误差 ✗
 
-**LTF 相位反转现象：**
-- LTF0 FFT vs LTF1 FFT 输出在全频段恒定相差 ~180°
-- 相位差无斜率（排除 FFT 窗口定时偏移）
-- 仿真实环境下 SNR=30dB，无信道损伤
+**根本原因分析：**
+1. ✅ LTF 相位反转：已修复（commit e33a8fc 替换纯实数 LONG 模板为 IEEE 复数模板）
+2. ✅ SPLITTER HT-SIG FFT 边界：已修复（移位 32 样本）
+3. ❓ HT-SIG CRC：仍然失败，疑是 QBPSK 比特映射反转
+   - TX 生成：bit 0 → -j，bit 1 → +j
+   - RX 解码：imag >= 0 → bit 0，imag < 0 → bit 1
+   - 当信道相位 ≈ 0° 时，TX bit 0 (-j) 被解码为 bit 1
 
-**RAW_FFT_64 探针数据：**
-```
-| bin | SC | LTF0 Phase | LTF1 Phase | diff |
-|-----|-----|-----------|-----------|------|
-| 5 | -7 (pilot) | +90.0° | -89.7° | ~180° |
-| 6 | +6 | +160.9° | -18.7° | ~180° |
-| 37 | +4 | +178.0° | +1.6° | ~176° |
-| 38 | -26 | +176.8° | -5.5° | ~182° |
-```
-
-**已排除的嫌疑人：**
-1. ✅ FFT Shift 配置 — shift=False 确认正确
-2. ✅ kHeader48Bin 数组映射 — 数学 100% 正确
-3. ✅ TX 发射极性 — LEGACY_LTF x2 完全相同，无 P-Matrix 误用
-4. ✅ sync_long CFO 补偿 — 被阈值 >100.0 禁用，未生效
-5. ✅ 信道模型 — frequency_offset=0, taps=[1.0]
-
-**SPLITTER_TD_PROBE 探针：**
-- LTF0 TD[0] = -0.072+0.284i
-- LTF1 TD[0] = 0.206-0.526i
-- 两者既不相等，也不是简单的否定关系
-- 说明 SPLITTER 输出的可能不是完整的 LTF DATA，而是混合了 CP 和 DATA 的窗口
+**调查结论：**
+- LTF 相位反转问题已解决
+- FFT 窗口定时正确
+- HT-SIG 解码问题是 QBPSK 映射或相位旋转检测的问题，需要进一步调查
 
 ---
 
@@ -171,25 +156,21 @@ SPLITTER 应在以下位置输出 FFT：
 
 ---
 
-## Task 3: 修复 LTF 相位问题
+## Task 3: 调查 HT-SIG QBPSK 映射问题
 
 **Files:**
-- Modify: `lib/sync_long.cc` - 如果 LONG 模板有问题
-- Modify: `lib/ht_symbol_splitter_impl.cc` - 如果 FFT 窗口对齐有问题
-- Modify: `lib/frame_equalizer_impl.cc` - 如果信道估计逻辑有问题
+- Analyze: `lib/frame_equalizer_impl.cc` - HT-SIG 解码和 QBPSK 旋转检测
+- Analyze: `examples/mixed_mode_carrier_allocator.py` - TX QBPSK 生成
 
-**Step 1: 确定修复方案**
+**Step 1: 检查 QBPSK 比特映射**
 
-根据 Task 1 和 Task 2 的分析结果，确定具体的修复方案。
+TX 和 RX 的 QBPSK 映射需要一致：
+- TX: bit 0 → -j, bit 1 → +j (或反过来)
+- RX: 需要正确检测相位旋转并解码
 
-**可能的修复方案：**
-1. 如果是 LONG 模板问题：修正 sync_long.cc 中的 LONG 模板
-2. 如果是 FFT 窗口对齐问题：调整 SPLITTER 的边界条件
-3. 如果是信道估计问题：在 frame_equalizer_impl.cc 中添加相位补偿
+**Step 2: 检查相位旋转检测逻辑**
 
-**Step 2: 实现修复**
-
-根据分析结果实施修复。
+在 frame_equalizer_impl.cc 中检查 HT-SIG 的相位旋转检测逻辑。
 
 **Step 3: 运行测试验证**
 
