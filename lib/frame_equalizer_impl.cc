@@ -250,6 +250,32 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
+    // Diag probe: print all 52 equalized values and classify by axis
+    static int diag_call = 0;
+    if (diag_call == 0 && data_sym_idx == 0) {
+        int bad_real = 0;  // eq energy mostly on imag axis (should be real for BPSK)
+        fprintf(stderr, "[HTDATA_DIAG] data_sym=0 cpe=%.4f rad (%.1f deg)\n",
+                cpe, cpe * 180.0 / M_PI);
+        for (int i = 0; i < 52; i++) {
+            const int bin = sc_to_fft_bin(kTxOrder52[i]);
+            gr_complex raw = sym64[bin];
+            gr_complex eq = raw / H52_tx_order[i] * rot;
+            float re = std::abs(eq.real());
+            float im = std::abs(eq.imag());
+            if (im > re && im > 0.5f) {
+                bad_real++;
+                fprintf(stderr, "[HTDATA_DIAG] BAD i=%d sc=%d bin=%d eq=%.4f%+.4fj |H|=%.4f\n",
+                        i, kTxOrder52[i], bin, eq.real(), eq.imag(), std::abs(H52_tx_order[i]));
+            }
+        }
+        fprintf(stderr, "[HTDATA_DIAG] bad_real=%d/52 (eq energy on imag axis)\n", bad_real);
+        fprintf(stderr, "[HTDATA_DIAG] H[0]=%.4f%+.4fj H[1]=%.4f%+.4fj H[2]=%.4f%+.4fj\n",
+                H52_tx_order[0].real(), H52_tx_order[0].imag(),
+                H52_tx_order[1].real(), H52_tx_order[1].imag(),
+                H52_tx_order[2].real(), H52_tx_order[2].imag());
+        diag_call++;
+    }
+
     for (int i = 0; i < 52; i++) {
         const int bin = sc_to_fft_bin(kTxOrder52[i]);
         const float h_mag = std::abs(H52_tx_order[i]);
