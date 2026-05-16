@@ -278,29 +278,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             int remaining_items = ninput_items[0] - i;
             int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
 
-            // STARVATION PROTECTION: If not enough items remain to complete current symbol,
-            // AND we're in a DATA region (should_buffer=true), AND we're mid-buffer
-            // (d_buffer_count > 0), consume what we've processed and return.
-            // NOTE: We only check this when in_data_region=true because in CP/gap regions
-            // (should_buffer=false), we don't need a full symbol - we're just skipping.
-            // CRITICAL FIX: Only starve if we have PARTIALLY buffered a symbol (d_buffer_count > 0).
-            // If d_buffer_count == 0, we haven't started buffering yet, so keep consuming.
-            bool in_data_region = (rel_idx < 64) || (rel_idx >= 80 && rel_idx < 144) ||
-                                 (rel_idx >= 160 && rel_idx < 224) || (rel_idx >= 240 && rel_idx < 304) ||
-                                 (rel_idx >= 320 && rel_idx < 384) || (rel_idx >= 400 && rel_idx < 464) ||
-                                 (rel_idx >= 464);
-            if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0) {
-                if (in_data_region) {
-                    fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, returning early\n",
-                            remaining_items, items_needed_for_current_symbol);
-                    d_items_processed += items_consumed_this_call;
-                    d_buffer_filled = false;
-                    d_buffer_count = 0;
-                    consume(0, items_consumed_this_call);
-                    return produced;
-                }
-            }
-
+            // ============================================================
+            // MOVED: should_buffer calculation BEFORE starvation check
+            // This ensures the starvation check uses actual should_buffer
+            // rather than hardcoded region判断
+            // ============================================================
             bool should_buffer = false;
 
             // FIX: When entering a new buffering region (should_buffer just became true),
@@ -310,6 +292,30 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 d_buffer_count = 0;
             }
             prev_should_buffer = should_buffer;
+
+            // ============================================================
+            // STARVATION PROTECTION (FIXED)
+            // ============================================================
+            // If not enough items remain to complete current symbol AND we have
+            // partial buffered data (d_buffer_count > 0), output the partial
+            // buffer before returning. GNU Radio will call us again with more items.
+            //
+            // If d_buffer_count == 0, we haven't started buffering anything,
+            // so just let the loop continue normally (no starvation check needed).
+            if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0) {
+                // Output partial buffer before returning
+                fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, outputting partial buffer (d_buffer_count=%d)\n",
+                        remaining_items, items_needed_for_current_symbol, d_buffer_count);
+                for (int j = 0; j < d_buffer_count; j++) {
+                    out[produced++] = d_buffer[j];
+                }
+                d_buffer_count = 0;
+                d_buffer_filled = false;
+                d_items_processed += items_consumed_this_call;
+                consume(0, items_consumed_this_call);
+                return produced;
+            }
+            // d_buffer_count == 0: no partial buffer, just keep consuming normally
 
             // [SPLITTER_START, SPLITTER_IN_AMP, SPLITTER_AMPLITUDE, SPLITTER_IDX_xxx] - REMOVED: excessive debug probes
 
