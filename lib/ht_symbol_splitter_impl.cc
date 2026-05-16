@@ -292,7 +292,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         bool at_boundary = false;
         // Check if last_rel_idx was at a boundary position
         if (last_rel_idx == 63 || last_rel_idx == 143 || last_rel_idx == 223 ||
-            last_rel_idx == 271 || last_rel_idx == 351 || last_rel_idx == 431) {
+            last_rel_idx == 303 || last_rel_idx == 383 || last_rel_idx == 463) {
             at_boundary = true;
         } else if (last_rel_idx >= 464) {
             uint64_t sym_offset = (last_rel_idx - 464) % 80;
