@@ -199,21 +199,32 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
                 if (is_in_preamble) {
                     // We're seeing wifi_start during preamble processing.
-                    // FIX: We MUST set d_frame_start_abs to the actual d_frame_start value,
-                    // NOT keep it at 0. The sync_long outputs from position d_frame_start,
-                    // which is the CP start (e.g., 160), not the DATA start (176).
-                    // Without this fix, rel_idx calculations are wrong and we buffer
-                    // the wrong samples (including CP data).
-                    fprintf(stderr, "[SPLITTER_TAG] Ignoring wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu -> d_frame_start_abs\n",
+                    // FIX: We MUST set d_frame_start_abs ONLY on the FIRST wifi_start.
+                    // Subsequent wifi_start tags during preamble are spurious and should be ignored.
+                    // Also, d_frame_start (160) is the CP start, but we want L-LTF0 DATA start (176).
+                    fprintf(stderr, "[SPLITTER_TAG] wifi_start during preamble: d_items_processed=%llu d_frame_start=%llu\n",
                             (unsigned long long)d_items_processed, (unsigned long long)d_frame_start);
-                    // CRITICAL: Enable buffering and set d_frame_start_abs to actual value
+                    // CRITICAL: Only set d_frame_start_abs on FIRST wifi_start
                     if (!d_frame_start_known) {
                         d_frame_start_known = true;
+                        // d_frame_start=160 is CP start, but L-LTF0 DATA starts at 176
+                        // Add +16 to get the correct DATA start offset
+                        if (d_frame_start >= 160 && d_frame_start <= 200) {
+                            d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176
+                            fprintf(stderr, "[SPLITTER_TAG] Set d_frame_start_abs=%lld (d_frame_start=%llu + 16 for DATA start)\n",
+                                    (long long)d_frame_start_abs, (unsigned long long)d_frame_start);
+                        } else {
+                            // Sanity check - reject spurious values like 173
+                            d_frame_start_abs = (int64_t)d_frame_start;
+                            fprintf(stderr, "[SPLITTER_TAG] WARNING: d_frame_start=%llu outside expected range, using as-is\n",
+                                    (unsigned long long)d_frame_start);
+                        }
+                        d_wifi_start_accepted = true;  // Propagate wifi_start!
+                    } else {
+                        // Already have frame start - ignore this wifi_start
+                        fprintf(stderr, "[SPLITTER_TAG] Ignoring duplicate wifi_start (d_frame_start_known already true)\n");
+                        d_wifi_start_accepted = false;
                     }
-                    d_frame_start_abs = (int64_t)d_frame_start;
-                    fprintf(stderr, "[SPLITTER_TAG] Set d_frame_start_abs=%lld during preamble\n",
-                            (long long)d_frame_start_abs);
-                    d_wifi_start_accepted = true;  // Propagate wifi_start!
                 } else {
                     // FIX: Only set d_frame_start_abs when wifi_start is ACCEPTED, not when ignored.
                     // Previously, d_frame_start_abs was set BEFORE the preamble check, causing
@@ -577,6 +588,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     //         symbol_type, (unsigned long long)out_rel_idx);
                     // Time-domain energy probe using norm (magnitude squared)
                     // [SPLITTER_FFTPROBE] - KEPT: useful for FFT verification
+                    // ADD THIS: FFT output probe to track d_frame_start_abs
+                    static int fft_probe_count = 0;
+                    if (fft_probe_count < 10 && produced > 0) {
+                        fprintf(stderr, "[FFT_PROBE] d_frame_start_abs=%lld rel_idx=%llu produced=%d symbol_type=%d\n",
+                                (long long)d_frame_start_abs, (unsigned long long)rel_idx, produced, symbol_type);
+                        fft_probe_count++;
+                    }
                     float total_energy = 0.0f;
                     float peak_mag = 0.0f;
                     int peak_idx = 0;
