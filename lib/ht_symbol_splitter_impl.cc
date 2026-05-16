@@ -440,14 +440,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             } else if (rel_idx < 160) {
                 // Stage 2: L-SIG CP (rel_idx 144-159) - 跳过
                 should_buffer = false;
-            } else if (rel_idx < 240) {
-                // Stage 2b: L-SIG DATA (rel_idx 160-223)
+            } else if (rel_idx < 224) {
+                // Stage 2b: L-SIG DATA (rel_idx 160-223) - CORRECTED from 240 to 224
                 should_buffer = true;
-            } else if (rel_idx < 208) {
-                // Stage 3: HT-SIG0 CP (rel_idx 192-207) - 跳过
+            } else if (rel_idx < 240) {
+                // Stage 3: HT-SIG0 CP (rel_idx 224-239) - CORRECTED
                 should_buffer = false;
             } else if (rel_idx < 272) {
-                // Stage 3b: HT-SIG0 DATA (rel_idx 208-271) - 64 samples
+                // Stage 3b: HT-SIG0 DATA (rel_idx 240-271) - 64 samples - CORRECTED
                 should_buffer = true;
             } else if (rel_idx < 288) {
                 // Stage 4: HT-SIG1 CP (rel_idx 272-287) - 跳过
