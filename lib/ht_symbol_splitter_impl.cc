@@ -36,9 +36,10 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_ht_mixed(true),
       d_debug(true),
       d_debug_count(0),
-      d_frame_start_abs(0),
+      d_frame_start_abs(176),  // Expected L-LTF0 DATA start (sync_long output starts here)
       d_frame_start_known(false),
       d_items_processed(0),
+      d_last_rel_idx(0),
       d_wifi_start_accepted(false)
 {
     // Circular buffer for FFT-sized blocks
@@ -67,7 +68,14 @@ void ht_symbol_splitter_impl::forecast(int noutput_items,
 {
     // For each 64 output samples, we need up to 80 input samples due to CP skipping
     int n_blocks = (noutput_items + d_fft_size - 1) / d_fft_size;
-    ninput_items_required[0] = n_blocks * d_symbol_size;
+    int required = n_blocks * d_symbol_size;
+
+    // Request at least 640 items to cover the full HT-mixed preamble (8 symbols * 80 samples)
+    // This ensures we can output all preamble FFTs in a single call
+    if (required < 640) {
+        required = 640;
+    }
+    ninput_items_required[0] = required;
 }
 
 int ht_symbol_splitter_impl::general_work(int noutput_items,
@@ -87,6 +95,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     uint64_t start_abs_idx = nitems_read(0);
     fprintf(stderr, "[SPLITTER_WORK] call=%d ninput_items[0]=%d start_abs_idx=%llu d_frame_start_abs=%lld\n",
             this_call, ninput_items[0], (unsigned long long)start_abs_idx, (long long)d_frame_start_abs);
+    fprintf(stderr, "[SPLITTER_DBG] call=%d ninput_items[0]=%d start_abs_idx=%llu d_frame_start_abs=%lld d_frame_start_known=%d\n",
+            this_call, ninput_items[0], (unsigned long long)start_abs_idx, (long long)d_frame_start_abs, d_frame_start_known);
 
     // PROBE: Check what sync_long actually produced in its output buffer
     // This reads directly from the input buffer at key positions
@@ -272,6 +282,32 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 ninput_items[0], d_symbol_size);
         return 0;
     }
+    // ============================================================
+    // CARRYOVER BUFFER CHECK: If previous call left a full buffer
+    // at a boundary, output it first before processing new data.
+    // This prevents starvation from firing and outputting partial data.
+    // ============================================================
+    if (d_buffer_count == d_fft_size && d_frame_start_known) {
+        uint64_t last_rel_idx = d_last_rel_idx;
+        bool at_boundary = false;
+        // Check if last_rel_idx was at a boundary position
+        if (last_rel_idx == 63 || last_rel_idx == 143 || last_rel_idx == 223 ||
+            last_rel_idx == 271 || last_rel_idx == 351 || last_rel_idx == 431) {
+            at_boundary = true;
+        } else if (last_rel_idx >= 464) {
+            uint64_t sym_offset = (last_rel_idx - 464) % 80;
+            at_boundary = (sym_offset == 0);
+        }
+        if (at_boundary) {
+            fprintf(stderr, "[SPLITTER_CARRYOVER] d_buffer_count=%d full, last_rel_idx=%llu at_boundary=%d, outputting carryover\n",
+                    d_buffer_count, (unsigned long long)last_rel_idx, at_boundary);
+            memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+            produced += d_fft_size;
+            d_buffer_count = 0;
+            d_buffer_filled = false;
+        }
+    }
+
     while (i < ninput_items[0]) {
         uint64_t current_idx = start_abs_idx + i;
 
@@ -284,16 +320,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
         // Only process after frame start is known
         if (frame_started) {
-            // Calculate how many items we need to complete the current symbol
-            // HT-Mixed 20MHz: each OFDM symbol is 80 samples (16 CP + 64 Data)
-            // We need to know if we have enough remaining items to finish current symbol
+            // ============================================================
+            // Calculate remaining items EARLY so we can check boundaries
+            // before starvation fires
+            // ============================================================
             int remaining_items = ninput_items[0] - i;
             int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
 
             // ============================================================
-            // MOVED: should_buffer calculation BEFORE starvation check
-            // This ensures the starvation check uses actual should_buffer
-            // rather than hardcoded region判断
+            // should_buffer calculation - determines what region we're in
             // ============================================================
             bool should_buffer = false;
 
@@ -306,23 +341,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             prev_should_buffer = should_buffer;
 
             // ============================================================
-            // STARVATION PROTECTION
-            // ============================================================
-            // If not enough items remain to complete current symbol AND we have
-            // partial buffered data (d_buffer_count > 0), output the partial
-            // buffer and skip all further buffering until end of this call.
-            // GNU Radio will call us again with more items.
-            // ============================================================
-            if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && !at_end_of_input) {
-                fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, outputting partial buffer (d_buffer_count=%d), skipping rest of call\n",
-                        remaining_items, items_needed_for_current_symbol, d_buffer_count);
-                for (int j = 0; j < d_buffer_count; j++) {
-                    out[produced++] = d_buffer[j];
-                }
-                d_buffer_count = 0;
-                d_buffer_filled = false;
-                at_end_of_input = true;  // Skip all further buffering for this call
-            }
+            // HT-Mixed 20MHz preamble structure with explicit boundaries:
+            // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
+            // So rel_idx=0 in sync_long output = input 176 (L-LTF0 DATA).
 
             // [SPLITTER_START, SPLITTER_IN_AMP, SPLITTER_AMPLITUDE, SPLITTER_IDX_xxx] - REMOVED: excessive debug probes
 
@@ -482,11 +503,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //     debug_rel_idx++;
             // }
 
-            // Always buffer when should_buffer is true (unless at end of input)
+                        // Always buffer when should_buffer is true (unless at end of input)
             if (should_buffer && !at_end_of_input) {
                 d_buffer[d_buffer_count++] = in[i];
-                // [SPLITTER_LTF0_PROBE, SPLITTER_LTF1_PROBE] - REMOVED: debug probes
-            }
+}
 
             // [SPLITTER_LSIG_BUF] - REMOVED: debug probe
             // Probe: Check buffer state at L-SIG boundary rel_idx
@@ -497,79 +517,44 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             //     lsig_boundary_probe++;
             // }
 
-            // Check boundary conditions when buffer is full
+            // ============================================================
+            // BOUNDARY CHECK AFTER BUFFERING
+            // Check if buffer just became full at a boundary position.
+            // This runs AFTER the current sample is buffered, so d_buffer_count
+            // is updated and rel_idx reflects the just-buffered position.
+            // ============================================================
             if (d_buffer_count == d_fft_size) {
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
 
-                // [DEBUG_BCKT] - REMOVED: boundary check debug (excessive spam)
-                // fprintf(stderr, "[DEBUG_BCKT] rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d out_rel_idx=%llu\n",
-                //         (unsigned long long)rel_idx, d_buffer_count, d_buffer_filled, (unsigned long long)out_rel_idx);
-
-                // [SPLITTER_LTF1_END] - REMOVED: boundary debug probe
-                // PROBE: Print LTF1 buffer at boundary (out_rel_idx == 143)
-                // static int ltf1_boundary_probe = 0;
-                // if (ltf1_boundary_probe < 2 && out_rel_idx == 143) {
-                //     fprintf(stderr, "[SPLITTER_LTF1_END] LTF1 buffer complete at boundary, first 5 samples:\n");
-                //     for (int dbg_i = 0; dbg_i < 5; dbg_i++) {
-                //         fprintf(stderr, "  buf[%d]=%.6f%+.6fi\n", dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
-                //     }
-                //     ltf1_boundary_probe++;
-                // }
-
                 // ============================================================
                 // Boundary trigger: output FFT window when 64 samples collected
-                // Single Source of Truth: rel_idx (not out_rel_idx)
                 // ============================================================
                 bool at_boundary = false;
                 if (rel_idx < 64) {
-                    // LTF0 boundary: output at rel_idx=63
                     at_boundary = (rel_idx == 63);
                 } else if (rel_idx < 144) {
-                    // LTF1 DATA boundary: output at rel_idx=143 (end of LTF1 DATA)
                     at_boundary = (rel_idx == 143);
                 } else if (rel_idx < 160) {
-                    // L-SIG CP: no output
                     at_boundary = false;
                 } else if (rel_idx < 224) {
-                    // L-SIG boundary: output at rel_idx=223
                     at_boundary = (rel_idx == 223);
-                } else if (rel_idx < 208) {
-                    // HT-SIG0 CP: no output
-                    at_boundary = false;
                 } else if (rel_idx < 272) {
-                    // HT-SIG0 boundary: output at rel_idx=271 (end of HT-SIG0 DATA)
                     at_boundary = (rel_idx == 271);
                 } else if (rel_idx < 288) {
-                    // HT-SIG1 CP: no output
                     at_boundary = false;
                 } else if (rel_idx < 352) {
-                    // HT-SIG1 boundary: output at rel_idx=351 (end of HT-SIG1 DATA)
                     at_boundary = (rel_idx == 351);
                 } else if (rel_idx < 368) {
-                    // HT-STF CP: no output
                     at_boundary = false;
                 } else if (rel_idx < 432) {
-                    // HT-STF boundary: output at rel_idx=431 (end of HT-STF DATA)
                     at_boundary = (rel_idx == 431);
                 } else {
-                    // HT-DATA and beyond: 80-sample periodicity
                     uint64_t sym_offset = (rel_idx - 464) % 80;
                     at_boundary = (sym_offset == 0);
                 }
 
-                // [DEBUG_SPLITTER_REL] - REMOVED: rel_idx debug (excessive spam)
-                // if (out_rel_idx >= 130 && out_rel_idx <= 240) {
-                //     fprintf(stderr, "[DEBUG_SPLITTER_REL] out_rel_idx=%llu d_buffer_count=%d d_buffer_filled=%d at_boundary=%d\n",
-                //             (unsigned long long)out_rel_idx, d_buffer_count, d_buffer_filled, at_boundary);
-                // }
-
                 if (at_boundary) {
                     // Debug: Print symbol type based on rel_idx
-                    // The SPLITTER outputs FFT at the boundary where the previous symbol ends.
-                    // rel_idx=223: output is L-SIG FFT (L-SIG DATA ends at 223)
-                    // rel_idx=271: output is HT-SIG0 FFT (HT-SIG0 DATA ends at 271)
-                    // rel_idx=351: output is HT-SIG1 FFT (HT-SIG1 DATA ends at 351)
-                    // rel_idx=431: output is HT-STF FFT (HT-STF DATA ends at 431)
                     int symbol_type = -1;
                     if (rel_idx == 63 || rel_idx == 143) {
                         symbol_type = 0; // L-LTF FFT
@@ -582,12 +567,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     } else if (rel_idx == 431) {
                         symbol_type = 5; // HT-STF FFT
                     }
-                    // [SPLITTER] output - REMOVED: excessive debug spam
-                    // fprintf(stderr, "[SPLITTER] Output symbol type=%d at rel_idx=%llu\n",
-                    //         symbol_type, (unsigned long long)out_rel_idx);
-                    // Time-domain energy probe using norm (magnitude squared)
-                    // [SPLITTER_FFTPROBE] - KEPT: useful for FFT verification
-                    // ADD THIS: FFT output probe to track d_frame_start_abs
                     static int fft_probe_count = 0;
                     if (fft_probe_count < 10 && produced > 0) {
                         fprintf(stderr, "[FFT_PROBE] d_frame_start_abs=%lld rel_idx=%llu produced=%d symbol_type=%d\n",
@@ -613,7 +592,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             d_buffer_filled);
                     fflush(stderr);
                     // PROBE: Print time-domain buffer at boundary (LTF0 vs LTF1 comparison)
-                    // If LTF1 is negated version of LTF0, we'll see d_buffer[i] ≈ -first_ltf0_sample
                     static gr_complex saved_first_ltf0[8] = {gr_complex(0,0)};
                     static bool have_ltf0 = false;
                     if (out_rel_idx == 63 && !have_ltf0) {
@@ -647,19 +625,53 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     }
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                    // [SPLITTER_DUMP] - REMOVED: debug probe
-                    // [SPLITTER_LLTF_VERIFY] - REMOVED: debug probe
                     produced += d_fft_size;
                     d_buffer_count = 0;
                     d_buffer_filled = false;
                 } else {
-                    // Buffer filled at non-boundary position
-                    // Output the buffered data and reset state so next symbol can be buffered
-                    memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                    produced += d_fft_size;
+                    // Buffer filled at non-boundary position - DANGER!
+                    // We missed a boundary, so this FFT is garbage.
+                    // DO NOT output - just reset and continue buffering.
+                    // This prevents corrupting the equalizer with garbage FFTs.
+                    uint64_t out_rel_idx = current_idx - d_frame_start_abs;
+                    fprintf(stderr, "[SPLITTER_NON_BOUNDARY] current_idx=%llu d_frame_start_abs=%lld out_rel_idx=%llu d_buffer_count=%d - missed boundary, resetting buffer\n",
+                            (unsigned long long)current_idx, (long long)d_frame_start_abs, (unsigned long long)out_rel_idx, d_buffer_count);
                     d_buffer_count = 0;
                     d_buffer_filled = false;
+                    // Do NOT output - continue to next iteration
                 }
+            }
+
+            // ============================================================
+            // STARVATION PROTECTION
+            // Runs AFTER boundary check so full buffers at boundaries are output first.
+            //
+            // NEVER output partial FFT windows - this corrupts the equalizer's
+            // channel estimate. If we can't form a full 64-sample FFT window,
+            // return without output and let GNU Radio provide more items.
+            // ============================================================
+            if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && !at_end_of_input) {
+                // Only output if we have a FULL FFT window
+                if (d_buffer_count == d_fft_size) {
+                    // Buffer is full - this should have been caught by boundary check
+                    // but handle it here as a safety net
+                    fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, full buffer at boundary, outputting\n",
+                            remaining_items, items_needed_for_current_symbol, d_buffer_count);
+                    for (int j = 0; j < d_buffer_count; j++) {
+                        out[produced++] = d_buffer[j];
+                    }
+                    d_buffer_count = 0;
+                    d_buffer_filled = false;
+                } else {
+                    // Buffer is partial - DON'T output garbage!
+                    // Return with consume so GNU Radio provides more items
+                    fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, partial buffer (d_buffer_count=%d), returning without output\n",
+                            remaining_items, items_needed_for_current_symbol, d_buffer_count);
+                }
+                d_items_processed += i;
+                d_last_rel_idx = rel_idx;  // Track last position for carryover check
+                consume_each(i);  // Consume items read up to position i
+                return produced;  // May be 0 if buffer was partial
             }
         }
 
@@ -670,6 +682,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     // Update d_items_processed for normal completion
     d_items_processed += consumed;
+
+    // Track last position for carryover buffer check
+    if (consumed > 0 && d_frame_start_known) {
+        d_last_rel_idx = (start_abs_idx + consumed - 1) - d_frame_start_abs;
+    }
 
     consume_each(consumed);  // KEY FIX: consume_all consumed items properly
     return produced;
