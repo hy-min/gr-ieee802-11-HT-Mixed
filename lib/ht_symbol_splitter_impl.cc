@@ -235,6 +235,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             }
                         }
                         d_wifi_start_accepted = true;  // Propagate wifi_start!
+                        // Reset ignore_mode when new frame starts
+                        d_ignore_mode = false;
+                        d_rx_reset_offset = -1;
                     } else {
                         // Already have frame start - ignore this wifi_start
                         d_wifi_start_accepted = false;
@@ -246,6 +249,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     d_frame_start_abs = (int64_t)d_frame_start;
                     d_frame_start_known = true;
                     d_wifi_start_accepted = true;
+
+                    // Reset ignore_mode when new frame starts
+                    d_ignore_mode = false;
+                    d_rx_reset_offset = -1;
 
                     // Critical state reset for multi-frame handling:
                     // When a new wifi_start is detected, reset all CP-skip state variables
