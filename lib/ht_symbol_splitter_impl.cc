@@ -97,12 +97,18 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
 
     // Check for rx_reset tag
+    // CRITICAL: Only set ignore_mode if this is a NEW rx_reset for the CURRENT frame
+    // If rx_reset_offset is behind us (from previous frame), ignore it
     for (const auto& tag : tags) {
         if (pmt::symbol_to_string(tag.key) == "rx_reset") {
-            d_ignore_mode = true;
-            d_buffer_count = 0;  // Clear current buffer
-            d_buffer_filled = false;
-            d_rx_reset_offset = (int64_t)tag.offset;  // Store rx_reset position
+            uint64_t reset_pos = (uint64_t)tag.offset;
+            // Only enter ignore_mode if this reset is AFTER our current position
+            if (reset_pos > start_abs_idx) {
+                d_ignore_mode = true;
+                d_buffer_count = 0;  // Clear current buffer
+                d_buffer_filled = false;
+                d_rx_reset_offset = (int64_t)tag.offset;  // Store rx_reset position
+            }
         }
     }
 
@@ -241,6 +247,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     } else {
                         // Already have frame start - ignore this wifi_start
                         d_wifi_start_accepted = false;
+                        // But still reset ignore_mode since this is a NEW frame
+                        d_ignore_mode = false;
+                        d_rx_reset_offset = -1;
                     }
                 } else {
                     // FIX: Only set d_frame_start_abs when wifi_start is ACCEPTED, not when ignored.
@@ -572,14 +581,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             peak_idx = zz;
                         }
                     }
-                    fprintf(stderr, "[SPLITTER_FFTPROBE] type=%d rel_idx=%llu td_energy=%.4f peak_mag=%.4f@%d first=%.4f%+.4fi last=%.4f%+.4fi buf_filled=%d\n",
-                            symbol_type, (unsigned long long)out_rel_idx, total_energy,
-                            peak_mag, peak_idx,
-                            d_buffer[0].real(), d_buffer[0].imag(),
-                            d_buffer[63].real(), d_buffer[63].imag(),
-                            d_buffer_filled);
-                    fflush(stderr);
-                    // Output at boundary
+                                        // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     produced += d_fft_size;
                     d_buffer_count = 0;
