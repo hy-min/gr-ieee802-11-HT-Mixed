@@ -99,14 +99,18 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     // Check for rx_reset tag
     for (const auto& tag : tags) {
         if (pmt::symbol_to_string(tag.key) == "rx_reset") {
-            fprintf(stderr, "[SPLITTER_TAG] rx_reset tag detected at offset=%llu, entering ignore mode\n",
-                    (unsigned long long)tag.offset);
             d_ignore_mode = true;
             d_buffer_count = 0;  // Clear current buffer
             d_buffer_filled = false;
             d_rx_reset_offset = (int64_t)tag.offset;  // Store rx_reset position
-            fprintf(stderr, "[SPLITTER_TAG] Stored rx_reset offset=%lld for ignore mode exit\n",
-                    (long long)d_rx_reset_offset);
+        }
+    }
+
+    // Read sync_offset tag for coordinate mapping
+    int64_t known_sync_offset = -1;
+    for (const auto& tag : tags) {
+        if (pmt::symbol_to_string(tag.key) == "sync_offset") {
+            known_sync_offset = (int64_t)pmt::to_double(tag.value);
         }
     }
 
@@ -210,13 +214,25 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // CRITICAL: Only set d_frame_start_abs on FIRST wifi_start
                     if (!d_frame_start_known) {
                         d_frame_start_known = true;
-                        // d_frame_start=160 is CP start, but L-LTF0 DATA starts at 176
-                        // Add +16 to get the correct DATA start offset
-                        if (d_frame_start >= 160 && d_frame_start <= 200) {
-                            d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176
+                        // If we know the sync_offset, use it to correct the mapping
+                        if (known_sync_offset >= 0) {
+                            // Correct formula: d_frame_start_abs = d_frame_start [+16] - sync_offset
+                            // wifi_start tag.value = d_frame_start (CP start in sync_long input)
+                            // sync_offset = d_offset at time wifi_start was written
+                            // When sync_offset=0, we need +16 to get correct CP→DATA offset
+                            // When sync_offset>0, the offset is already incorporated
+                            if (d_frame_start >= 160 && d_frame_start <= 200) {
+                                d_frame_start_abs = (int64_t)d_frame_start + 16 - known_sync_offset;
+                            } else {
+                                d_frame_start_abs = (int64_t)d_frame_start - known_sync_offset;
+                            }
                         } else {
-                            // Sanity check - reject spurious values like 173
-                            d_frame_start_abs = (int64_t)d_frame_start;
+                            // Fallback: use original logic
+                            if (d_frame_start >= 160 && d_frame_start <= 200) {
+                                d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176
+                            } else {
+                                d_frame_start_abs = (int64_t)d_frame_start;
+                            }
                         }
                         d_wifi_start_accepted = true;  // Propagate wifi_start!
                     } else {
@@ -262,8 +278,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     // CRITICAL SAFETY CHECK: If we don't have enough items for even one symbol, return 0.
     // This prevents reading garbage data when GNU Radio wakes us with insufficient items.
     if (ninput_items[0] < d_symbol_size) {
-        fprintf(stderr, "[SPLITTER_SAFETY] ninput_items[0]=%d < d_symbol_size=%d, returning 0\n",
-                ninput_items[0], d_symbol_size);
         return 0;
     }
     // ============================================================
@@ -283,8 +297,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             at_boundary = (sym_offset == 0);
         }
         if (at_boundary) {
-            fprintf(stderr, "[SPLITTER_CARRYOVER] d_buffer_count=%d full, last_rel_idx=%llu at_boundary=%d, outputting carryover\n",
-                    d_buffer_count, (unsigned long long)last_rel_idx, at_boundary);
             memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
             produced += d_fft_size;
             d_buffer_count = 0;
@@ -298,8 +310,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         // If in ignore mode, consume all without buffering
         if (d_ignore_mode) {
             if (current_idx > (uint64_t)d_rx_reset_offset) {
-                fprintf(stderr, "[SPLITTER_TAG] past rx_reset (idx=%llu > reset=%lld), exiting ignore mode\n",
-                        (unsigned long long)current_idx, (long long)d_rx_reset_offset);
                 d_ignore_mode = false;
                 d_rx_reset_offset = -1;
                 d_buffer_count = 0;
@@ -544,12 +554,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     } else if (rel_idx == 463) {
                         symbol_type = 5; // HT-STF FFT
                     }
-                    static int fft_probe_count = 0;
-                    if (fft_probe_count < 10 && produced > 0) {
-                        fprintf(stderr, "[FFT_PROBE] d_frame_start_abs=%lld rel_idx=%llu produced=%d symbol_type=%d\n",
-                                (long long)d_frame_start_abs, (unsigned long long)rel_idx, produced, symbol_type);
-                        fft_probe_count++;
-                    }
                     float total_energy = 0.0f;
                     float peak_mag = 0.0f;
                     int peak_idx = 0;
@@ -568,38 +572,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             d_buffer[63].real(), d_buffer[63].imag(),
                             d_buffer_filled);
                     fflush(stderr);
-                    // PROBE: Print time-domain buffer at boundary (LTF0 vs LTF1 comparison)
-                    static gr_complex saved_first_ltf0[8] = {gr_complex(0,0)};
-                    static bool have_ltf0 = false;
-                    if (out_rel_idx == 63 && !have_ltf0) {
-                        // This is LTF0 - save first 8 samples
-                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
-                            saved_first_ltf0[dbg_i] = d_buffer[dbg_i];
-                        }
-                        have_ltf0 = true;
-                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF0 (rel_idx=63) first 8 TD samples:\n");
-                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
-                            fprintf(stderr, "  TD[%d] = %.6f%+.6fi\n",
-                                    dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag());
-                        }
-                    } else if (out_rel_idx == 143 && have_ltf0) {
-                        // This is LTF1 - compare with saved LTF0
-                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 (rel_idx=143) first 8 TD samples:\n");
-                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
-                            fprintf(stderr, "  TD[%d] = %.6f%+.6fi  (LTF0[0]=%.6f%+.6fi diff=%.6f%+.6fi)\n",
-                                    dbg_i, d_buffer[dbg_i].real(), d_buffer[dbg_i].imag(),
-                                    saved_first_ltf0[dbg_i].real(), saved_first_ltf0[dbg_i].imag(),
-                                    (d_buffer[dbg_i] + saved_first_ltf0[dbg_i]).real(),
-                                    (d_buffer[dbg_i] + saved_first_ltf0[dbg_i]).imag());
-                        }
-                        fprintf(stderr, "\n[SPLITTER_TD_PROBE] LTF1 vs LTF0 negation check:\n");
-                        for (int dbg_i = 0; dbg_i < 8; dbg_i++) {
-                            gr_complex diff = d_buffer[dbg_i] + saved_first_ltf0[dbg_i];  // Should be ~0 if LTF1 = -LTF0
-                            fprintf(stderr, "  TD[%d]: LTF1 + LTF0 = %.6f%+.6fi (should be ~0 if negated)\n",
-                                    dbg_i, diff.real(), diff.imag());
-                        }
-                        have_ltf0 = false;  // Reset for next frame
-                    }
                     // Output at boundary
                     memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                     produced += d_fft_size;
@@ -610,9 +582,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     // We missed a boundary, so this FFT is garbage.
                     // DO NOT output - just reset and continue buffering.
                     // This prevents corrupting the equalizer with garbage FFTs.
-                    uint64_t out_rel_idx = current_idx - d_frame_start_abs;
-                    fprintf(stderr, "[SPLITTER_NON_BOUNDARY] current_idx=%llu d_frame_start_abs=%lld out_rel_idx=%llu d_buffer_count=%d - missed boundary, resetting buffer\n",
-                            (unsigned long long)current_idx, (long long)d_frame_start_abs, (unsigned long long)out_rel_idx, d_buffer_count);
                     d_buffer_count = 0;
                     d_buffer_filled = false;
                     // Do NOT output - continue to next iteration
@@ -632,27 +601,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 if (d_buffer_count == d_fft_size) {
                     // Buffer is full - this should have been caught by boundary check
                     // but handle it here as a safety net
-                    fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, full buffer at boundary, outputting\n",
-                            remaining_items, items_needed_for_current_symbol, d_buffer_count);
                     for (int j = 0; j < d_buffer_count; j++) {
                         out[produced++] = d_buffer[j];
                     }
                     d_buffer_count = 0;
                     d_buffer_filled = false;
-                } else {
-                    // Buffer is partial - DON'T output garbage!
-                    // Return with consume so GNU Radio provides more items
-                    fprintf(stderr, "[SPLITTER_STARVATION] remaining=%d < needed=%d, partial buffer (d_buffer_count=%d), returning without output\n",
-                            remaining_items, items_needed_for_current_symbol, d_buffer_count);
                 }
                 d_items_processed += i;
                 d_last_rel_idx = rel_idx;  // Track last position for carryover check
-                // PROBE: starvation path consume
-                fprintf(stderr, "[SPLITTER_CONSUME_STARV] before consume_each(i=%d): nitems_read(0)=%llu\n",
-                        i, (unsigned long long)nitems_read(0));
                 consume_each(i);  // Consume items read up to position i
-                fprintf(stderr, "[SPLITTER_CONSUME_STARV] after consume_each(i=%d): nitems_read(0)=%llu\n",
-                        i, (unsigned long long)nitems_read(0));
                 return produced;  // May be 0 if buffer was partial
             }
         }

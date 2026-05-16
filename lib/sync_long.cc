@@ -68,6 +68,9 @@ public:
                      gr_vector_const_void_star& input_items,
                      gr_vector_void_star& output_items)
     {
+        // Work call counter for debugging
+        static int s_call_count = 0;
+        int call_count = s_call_count++;
 
         const gr_complex* in = (const gr_complex*)input_items[0];
         const gr_complex* in_delayed = (const gr_complex*)input_items[1];
@@ -135,6 +138,12 @@ public:
             break;
 
         case COPY: {
+            // Emit sync_offset tag so downstream blocks know our d_offset
+            add_item_tag(0,
+                         nitems_written(0),
+                         pmt::string_to_symbol("sync_offset"),
+                         pmt::from_double(d_offset),
+                         pmt::string_to_symbol(name()));
 
             while (i < ninput && o < noutput) {
 
@@ -191,7 +200,6 @@ public:
                                      pmt::string_to_symbol("rx_reset"),
                                      pmt::from_double(d_count),  // value = d_count (for debugging)
                                      pmt::string_to_symbol(name()));
-                        fprintf(stderr, "[SYNC_LONG_RESET_TAG] Added rx_reset tag at out_idx=%d d_count=%d\n", o, d_count);
                     }
                     out[o] = 0;
                     o++;
