@@ -100,17 +100,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     // PROBE: Check what sync_long actually produced in its output buffer
     // This reads directly from the input buffer at key positions
-    // [SPLITTER_INPUT_CHECK] - REMOVED: excessive debug spam
-    // if (this_call == 0 && ninput_items[0] >= 448) {
-    //     fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[0]=%.6f%+.6fi in[5]=%.6f%+.6fi\n",
-    //             in[0].real(), in[0].imag(), in[5].real(), in[5].imag());
-    //     fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[383]=%.6f%+.6fi in[384]=%.6f%+.6fi in[385]=%.6f%+.6fi\n",
-    //             in[383].real(), in[383].imag(), in[384].real(), in[384].imag(),
-    //             in[385].real(), in[385].imag());
-    //     fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[415]=%.6f%+.6fi in[416]=%.6f%+.6fi in[417]=%.6f%+.6fi\n",
-    //             in[415].real(), in[415].imag(), in[416].real(), in[416].imag(),
-    //             in[417].real(), in[417].imag());
-    // }
+    if (this_call == 0 && ninput_items[0] >= 448) {
+        fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[0]=%.6f%+.6fi in[5]=%.6f%+.6fi\n",
+                in[0].real(), in[0].imag(), in[5].real(), in[5].imag());
+        fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[383]=%.6f%+.6fi in[384]=%.6f%+.6fi in[385]=%.6f%+.6fi\n",
+                in[383].real(), in[383].imag(), in[384].real(), in[384].imag(),
+                in[385].real(), in[385].imag());
+        fprintf(stderr, "[SPLITTER_INPUT_CHECK] in[415]=%.6f%+.6fi in[416]=%.6f%+.6fi in[417]=%.6f%+.6fi\n",
+                in[415].real(), in[415].imag(), in[416].real(), in[416].imag(),
+                in[417].real(), in[417].imag());
+    }
 
     // Look for wifi_start tag - always check for new frames
     // If we see wifi_start at a position significantly beyond our current d_frame_start_abs,
@@ -670,7 +669,12 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
                 d_items_processed += i;
                 d_last_rel_idx = rel_idx;  // Track last position for carryover check
+                // PROBE: starvation path consume
+                fprintf(stderr, "[SPLITTER_CONSUME_STARV] before consume_each(i=%d): nitems_read(0)=%llu\n",
+                        i, (unsigned long long)nitems_read(0));
                 consume_each(i);  // Consume items read up to position i
+                fprintf(stderr, "[SPLITTER_CONSUME_STARV] after consume_each(i=%d): nitems_read(0)=%llu\n",
+                        i, (unsigned long long)nitems_read(0));
                 return produced;  // May be 0 if buffer was partial
             }
         }
@@ -688,7 +692,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         d_last_rel_idx = (start_abs_idx + consumed - 1) - d_frame_start_abs;
     }
 
-    consume_each(consumed);  // KEY FIX: consume_all consumed items properly
+    // PROBE: consume debug - confirm consume_each updates nitems_read properly
+    fprintf(stderr, "[SPLITTER_CONSUME] before consume: consumed=%d nitems_read(0)=%llu\n",
+            consumed, (unsigned long long)nitems_read(0));
+
+    consume_each(consumed);
+
+    fprintf(stderr, "[SPLITTER_CONSUME] after consume: nitems_read(0)=%llu\n",
+            (unsigned long long)nitems_read(0));
     return produced;
 }
 
