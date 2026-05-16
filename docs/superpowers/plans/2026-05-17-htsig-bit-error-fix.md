@@ -116,6 +116,39 @@ cd /home/hy/gr-ieee802-11 && LD_PRELOAD=./wrap_rpc2.so /home/hy/conda/envs/gnura
 
 检查 FFT 输出是否包含有效的复数值（不是零或 NaN）。
 
+**Task 2 分析结果:**
+
+**SPLITTER FFT 输出位置:**
+- HT-SIG0 (type=3) at rel_idx=303 - ✓ 位置正确
+- HT-SIG1 (type=4) at rel_idx=383 - ✓ 位置正确
+
+**HT-SIG0 FFT 输入数据异常:**
+```
+[SPLITTER_FFTPROBE] type=3 rel_idx=303 td_energy=35.0901 peak_mag=1.8896@41 first=0.0000+0.0000i last=0.6811-0.7192i buf_filled=0
+```
+- **问题: d_buffer[0] = 0.0000+0.0000i (第一个样本恰好为零!)**
+- td_energy=35.09 (约为 L-SIG 64.31 的一半，符合 QBPSK 的预期)
+
+**HT-SIG0 原始子载波相位 (HTSIG0_RAW):**
+```
+sc[-26]: -1.8°   sc[-25]: -8.3°   sc[-24]: +128.3°  sc[-23]: -105.3°
+sc[-22]: +101.3° sc[-20]: -45.0°  sc[-19]: -36.5°   sc[-18]: -20.1°
+```
+- 相位散落在所有象限，不是预期的 QBPSK 聚集点 (45°, 135°, 225°, 315°)
+- 表明 FFT 窗口对齐有问题或数据被破坏
+
+**信道估计 (CHAN_EST_FULL):**
+- H 幅度 ~8-9 (一致)
+- LTF0/LTF1 比率 ~1.0 (良好一致性)
+- 相位在频率上大致线性 (简单信道的合理特征)
+- **信道估计本身看起来是正确的**
+
+**结论:**
+FFT 数据被破坏。SPLITTER 在 HT-SIG0 的 FFT 窗口捕获了错误的数据区域——可能是 CP/过渡区域而不是实际的 HT-SIG0 DATA 部分。
+
+**根本原因:**
+d_buffer[0] = 0 的问题表明 SPLITTER 的 rel_idx 计算可能有偏差，导致在 HT-SIG0 DATA 开始前一个样本处开始填充缓冲区。
+
 ---
 
 ## Task 3: 检查信道估计 H 的质量
