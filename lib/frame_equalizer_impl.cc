@@ -1284,7 +1284,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        int& out_len_bytes,
                                        int& out_mcs,
                                        bool& out_sgi,
-                                       bool& out_agg)
+                                       bool& out_agg,
+                                       int rot = -1)
 {
     uint8_t eqbits48_a[48];
     uint8_t eqbits48_b[48];
@@ -1396,6 +1397,31 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     }
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
+
+    // ---- HT-SIG decode diagnostic probe (first call only) ----
+    {
+        static int decode_call_count = 0;
+        if (decode_call_count == 0) {
+            bool crc_pass = (crc_rx == crc_calc);
+            fprintf(stderr, "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x)\n",
+                    rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
+                    crc_pass ? "PASS" : "FAIL",
+                    crc_rx, crc_calc);
+            // Print equalized bits for HT-SIG0
+            fprintf(stderr, "[HTSIG_BITS] eq48=");
+            for (int i = 0; i < 48; i++) fprintf(stderr, "%d", eqbits48_a[i]);
+            fprintf(stderr, "\n");
+            // Print deinterleaved bits for HT-SIG0
+            fprintf(stderr, "[HTSIG_BITS] deint48=");
+            for (int i = 0; i < 48; i++) fprintf(stderr, "%d", deintl48_a[i]);
+            fprintf(stderr, "\n");
+            // Print decoded (viterbi) bits
+            fprintf(stderr, "[HTSIG_BITS] viterbi=");
+            for (int i = 0; i < 48; i++) fprintf(stderr, "%d", decoded_bits[i] & 1);
+            fprintf(stderr, "\n");
+        }
+        decode_call_count++;
+    }
 
     for (int i = 42; i < 48; i++) {
         if (decoded_bits[i] != 0) {
@@ -2071,7 +2097,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            parsed_len,
                                                            parsed_mcs,
                                                            parsed_sgi,
-                                                           parsed_agg);
+                                                           parsed_agg,
+                                                           rot);
                             if (!decode_ok) {
                                 continue;
                             }
