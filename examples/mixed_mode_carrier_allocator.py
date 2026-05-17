@@ -89,10 +89,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             in_sig=[np.complex64],
             out_sig=[np.dtype((np.complex64, 64))],
         )
-        print(f"[MM-CA] __init__ called, tag_key={tag_key}", flush=True)
-        self._debug_call_count = 0
-        self._first_htdata_printed = False  # Flag to print only first HT-DATA
-
         self._tag_key_str = str(tag_key)
         self._tag_key = pmt.intern(self._tag_key_str)
         self._srcid = pmt.intern(self.name())
@@ -154,15 +150,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
         return idx
 
     @staticmethod
-    def _bits01_to_str(vals):
-        """
-        只用于 header bit-domain 调试：
-        real > 0.5 -> '1'
-        否则 -> '0'
-        """
-        return ''.join('1' if np.real(v) > 0.5 else '0' for v in vals)
-
-    @staticmethod
     def _map_header_bits_to_bpsk(vals):
         """
         把 header 的 0/1 bit 映射成 BPSK:
@@ -173,29 +160,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
         for i, v in enumerate(vals):
             out[i] = np.complex64((1.0 + 0.0j) if np.real(v) > 0.5 else (-1.0 + 0.0j))
         return out
-
-    @staticmethod
-    def _bpsk_syms_to_bits_str(vals):
-        """
-        只用于 MCS0/BPSK 调试：
-          real >= 0 -> '1'
-          real <  0 -> '0'
-        """
-        return ''.join('1' if np.real(v) >= 0.0 else '0' for v in vals)
-
-    @staticmethod
-    def _write_debug_bits52_file(bits52_str: str):
-        path = "/tmp/wifi_tx_data0_bits52.txt"
-        try:
-            # 只写首帧，后续帧不覆盖
-            if not os.path.exists(path):
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(bits52_str + "\n")
-                print(f"[TX][HTDATA0] saved first-frame reference to {path}", flush=True)
-            else:
-                print(f"[TX][HTDATA0] keep existing first-frame reference: {path}", flush=True)
-        except Exception as e:
-            print(f"[TX][HTDATA0] write debug file failed: {e}", flush=True)
 
     def _ht_pilot_values(self, data_sym_idx: int):
         p = np.complex64(POLARITY_127[data_sym_idx % 127] + 0j)
@@ -218,51 +182,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             fft_bin = self._sc_to_fft_bin_idx(sc)
             out_vec[fft_bin] = np.complex64(pv)
 
-        # ULTIMATE DEBUG: Print TX IFFT input physical bins (before FFT shift)
-        # This is the raw 64-bin array that goes into IFFT
-        # Only print FIRST HT-DATA of FIRST frame (once)
-        if len(carriers) == 52 and not self._first_htdata_printed:
-            print(f"[TX_HTDATA] FIRST HT-DATA (IFFT input before FFT shift)")
-            print(f"[TX_HTDATA] First 4 kTxOrder52 subcarriers: -28,-27,-26,-25")
-            for sc in [-28, -27, -26, -25]:
-                bin_idx = self._sc_to_fft_bin_idx(sc)
-                print(f"[TX_HTDATA]   sc={sc:3d} -> bin[{bin_idx:2d}] = {out_vec[bin_idx].real:.4f}+{out_vec[bin_idx].imag:.4f}i -> bit={1 if out_vec[bin_idx].real >= 0 else 0}")
-            # TX_EDGE probe: all edge subcarriers for debugging H extrapolation
-            print(f"[TX_EDGE] sc=-28 bin=36 val={out_vec[36]:.4f} sc=-27 bin=37 val={out_vec[37]:.4f}", flush=True)
-            print(f"[TX_EDGE] sc=-26 bin=38 val={out_vec[38]:.4f} sc=+27 bin=27 val={out_vec[27]:.4f}", flush=True)
-            print(f"[TX_EDGE] sc=+28 bin=28 val={out_vec[28]:.4f} sc=+26 bin=26 val={out_vec[26]:.4f}", flush=True)
-            self._first_htdata_printed = True
-
-        # DEBUG: Print pilot subcarrier mapping for first call
-        static_debug_count = getattr(self, '_debug_fill_count', 0)
-
-        # DEBUG: Print L-SIG and HT-SIG pilot FFT bins for first few calls
-        if len(carriers) == 48:  # header symbol
-            for sc, pv in zip(self._pilot_carriers, pilot_values):
-                fft_bin = self._sc_to_fft_bin_idx(sc)
-                phase_deg = np.angle(pv) * 180 / np.pi
-                rx_pil = out_vec[fft_bin]
-                rx_phase = np.angle(rx_pil) * 180 / np.pi
-                print(f"[TX_PILOT] carriers=48 sc={sc:3d} -> bin={fft_bin:2d} TX_pilot={pv:.4f} phase={phase_deg:.1f}deg RX_bin_val={rx_pil:.4f} RX_phase={rx_phase:.1f}deg")
-            # Also print data subcarriers for first few
-            for sc in [-26, -25, -24, 1, 2, 3]:
-                if sc in carriers:
-                    idx = carriers.index(sc)
-                    bin_idx = self._sc_to_fft_bin_idx(sc)
-                    val = out_vec[bin_idx]
-                    phase_deg = np.angle(val) * 180 / np.pi
-                    print(f"[TX_DATA] sc={sc:3d} -> bin={bin_idx:2d} val={val:.4f} phase={phase_deg:.1f}deg is_pure_real={np.abs(val.imag) < 0.01}")
-
-        if static_debug_count < 3:
-            print(f"[TX_MM-CA] _fill_symbol called #{static_debug_count}")
-            print(f"[TX_MM-CA]   carriers[:8] = {carriers[:8]}")
-            print(f"[TX_MM-CA]   pilot_carriers = {self._pilot_carriers}")
-            for sc, pv in zip(self._pilot_carriers, pilot_values):
-                fft_bin = self._sc_to_fft_bin_idx(sc)
-                phase_deg = np.angle(pv) * 180 / np.pi
-                print(f"[TX_MM-CA]   PILOT sc={sc:3d} -> bin={fft_bin:2d} val={pv:.4f} phase={phase_deg:.1f}deg")
-        self._debug_fill_count = static_debug_count + 1
-
     def forecast(self, noutput_items, ninputs):
         return [max(self._hdr_len, 1)] * ninputs
 
@@ -272,14 +191,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
 
         n_in = len(inp)
         n_out = len(out)
-
-        self._debug_call_count += 1
-        if self._debug_call_count <= 3:
-            print(f"[MM-CA] general_work called #{self._debug_call_count}: n_in={n_in} n_out={n_out}", flush=True)
-            if n_in > 0:
-                print(f"[MM-CA] inp[0:8]={inp[0:8]}", flush=True)
-            if n_out > 0:
-                print(f"[MM-CA] First output symbol (64 bins): {output_items[0][0][:8]}", flush=True)
 
         produced = 0
         consumed = 0
@@ -342,35 +253,15 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             htsig1_bits48 = np.asarray(inp[consumed +  48 : consumed +  96], dtype=np.complex64)
             htsig2_bits48 = np.asarray(inp[consumed +  96 : consumed + 144], dtype=np.complex64)
 
-            print(f"[TX][MM-CA] lsig_data48={self._bits01_to_str(lsig_bits48)}", flush=True)
-            print(f"[TX][MM-CA] htsig1_data48={self._bits01_to_str(htsig1_bits48)}", flush=True)
-            print(f"[TX][MM-CA] htsig2_data48={self._bits01_to_str(htsig2_bits48)}", flush=True)
-
             # header bits -> BPSK ±1
             lsig_bpsk48   = self._map_header_bits_to_bpsk(lsig_bits48)
             htsig1_bpsk48 = self._map_header_bits_to_bpsk(htsig1_bits48)
             htsig2_bpsk48 = self._map_header_bits_to_bpsk(htsig2_bits48)
 
-            # DEBUG: Print L-SIG BPSK before any rotation - should be pure real (±1)
-            print(f"[TX][LSIG_BPSK] lsig_bpsk48[0:8] = {lsig_bpsk48[0:8]}", flush=True)
-            for i in range(8):
-                phase_deg = np.angle(lsig_bpsk48[i]) * 180 / np.pi
-                print(f"[TX][LSIG_BPSK] lsig[{i}]={lsig_bpsk48[i]} phase={phase_deg:.1f}deg is_pure_real={np.abs(lsig_bpsk48[i].imag) < 0.01}", flush=True)
-
             # HT-SIG uses QBPSK (90° rotation on Q-axis)
             # Rotate HT-SIG data symbols by multiplying by j
             htsig1_bpsk48 = htsig1_bpsk48 * 1j
             htsig2_bpsk48 = htsig2_bpsk48 * 1j
-
-            # DEBUG: Verify QBPSK rotation - should be pure imaginary (±j)
-            print(f"[TX][QBPSK_CHECK] htsig1_bpsk48[0:8] = {htsig1_bpsk48[0:8]}", flush=True)
-            print(f"[TX][QBPSK_CHECK] htsig2_bpsk48[0:8] = {htsig2_bpsk48[0:8]}", flush=True)
-            for i in range(8):
-                phase_deg = np.angle(htsig1_bpsk48[i]) * 180 / np.pi
-                print(f"[TX][QBPSK_CHECK] htsig1[{i}]={htsig1_bpsk48[i]} phase={phase_deg:.1f}deg is_pure_imag={np.abs(htsig1_bpsk48[i].real) < 0.01}", flush=True)
-
-            # DEBUG: Print L-SIG BPSK AFTER HT-SIG rotation (should NOT be affected)
-            print(f"[TX][LSIG_AFTER_ROT] lsig_bpsk48[0:8] = {lsig_bpsk48[0:8]}", flush=True)
 
             # HT-SIG pilots also need 90° rotation
             ht_sig_pilot_values = [pv * 1j for pv in self._legacy_pilot_values]
@@ -378,35 +269,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             # 1) legacy preamble
             for s, sw in enumerate(self._sync_words):
                 out[produced + s][:] = sw
-
-            # DEBUG: Print first 4 preamble symbols (L-STF, L-STF, L-LTF, L-LTF)
-            if self._debug_call_count <= 3:
-                print(f"[MM-CA][PREAMBLE] Output symbols 0-3 (should be L-STF, L-STF, L-LTF, L-LTF):")
-                for s in range(4):
-                    # L-STF has energy at bins 8, 12, 16, 20, 24, 28 (see LEGACY_STF)
-                    # L-LTF has energy at bins 1, 33, 35, 39, 41, 45, 47, 51, 53, 57, 59, 63
-                    val8 = out[produced + s][8]
-                    val12 = out[produced + s][12]
-                    val1 = out[produced + s][1]
-                    val63 = out[produced + s][63]
-                    print(f"[MM-CA][PREAMBLE] sym{s}: bin[1]={val1}, bin[8]={val8}, bin[12]={val12}, bin[63]={val63}")
-
-            # Additional debug: Print L-LTF pilot values at bins for SC{-21,-7,+7,+21}
-            # With shift=False IFFT input order: SC{-N} -> bin (64-N), SC{+N} -> bin N
-            # So SC{-21} -> bin 43, SC{-7} -> bin 57, SC{+7} -> bin 7, SC{+21} -> bin 21
-            for s in [2, 3]:  # L-LTF symbols
-                if s == 2 or s == 3:
-                    bin_21 = 43   # SC -21
-                    bin_m7 = 57   # SC -7
-                    bin_p7 = 7    # SC +7
-                    bin_p21 = 21  # SC +21
-                    v21 = out[produced + s][bin_21]
-                    vm7 = out[produced + s][bin_m7]
-                    vp7 = out[produced + s][bin_p7]
-                    vp21 = out[produced + s][bin_p21]
-                    print(f"[TX_LTF_PILOT] sym{s}: SC{{-21}}->bin{bin_21}={v21:.4f}, SC{{-7}}->bin{bin_m7}={vm7:.4f}, SC{{+7}}->bin{bin_p7}={vp7:.4f}, SC{{+21}}->bin{bin_p21}={vp21:.4f}")
-                    # Also print magnitude of each
-                    print(f"[TX_LTF_PILOT] sym{s} mag: |SC{{-21}}|={np.abs(v21):.4f}, |SC{{-7}}|={np.abs(vm7):.4f}, |SC{{+7}}|={np.abs(vp7):.4f}, |SC{{+21}}|={np.abs(vp21):.4f}")
 
             base_out = produced + self._n_sync
 
@@ -437,15 +299,6 @@ class mixed_mode_carrier_allocator(gr.basic_block):
                 b = a + self._n_data
 
                 data52 = np.asarray(inp[a:b], dtype=np.complex64)
-
-                # 仅用于 MCS0/BPSK 对拍：
-                # 这里的 data52 就是"首个 HT DATA OFDM symbol 的 52 个 mapper 输出，
-                # 且顺序正是 TX 当前喂给 carrier allocator 的顺序"
-                if s == 0:
-                    bits52 = self._bpsk_syms_to_bits_str(data52)
-                    print(f"[TX][HTDATA0] carriers52={self._data_carriers}", flush=True)
-                    print(f"[TX][HTDATA0] bits52={bits52}", flush=True)
-                    self._write_debug_bits52_file(bits52)
 
                 pilot_values = self._ht_pilot_values(s)
                 self._fill_symbol(
