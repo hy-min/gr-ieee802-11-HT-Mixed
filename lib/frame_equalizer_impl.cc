@@ -530,6 +530,11 @@ static constexpr int kHeader48Bin[48] = {
 static gr_complex saved_ltf0_raw52[52] = {gr_complex(0,0)};
 static bool have_saved_ltf0_raw52 = false;
 
+// Saved HT-LTF edge SC raw FFT values for H computation (natural FFT bins)
+// [0]=SC-28(bin36), [1]=SC-27(bin37), [2]=SC+27(bin27), [3]=SC+28(bin28)
+static gr_complex saved_htltf_edge[4] = {{0,0},{0,0},{0,0},{0,0}};
+static bool htltf_edge_saved = false;
+
 // Compute channel estimate H for 52 HT data subcarriers in tx_order from L-LTF0.
 // lltf0_52: 48 data SCs in kHeader48Sc order + 4 pilots in kPilot4Sc order.
 static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out)
@@ -556,17 +561,17 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
         H_sc[sc + 56] = lltf0_52[48 + i] / kPilot4TX[i];
     }
 
-    // Compute H for edge subcarriers directly from HT-LTF data.
-    // Edge SCs -28,-27,+27,+28 are in kTxOrder52 at indices 0,1,50,51.
+    // Compute H for edge subcarriers from saved HT-LTF raw FFT values.
+    // Edge SCs (-28,-27,+27,+28) are NOT in the 52-element input array
+    // (which contains only legacy 48 data + 4 pilots).
+    // Use the saved HT-LTF raw FFT values captured at extract_call==6.
     // HT-LTF TX reference is +1 for all 4 edge SCs.
-    static const gr_complex kEdgeHtLtfTX[4] = {
-        +1.0f, +1.0f,   // SC -28, -27
-        +1.0f, +1.0f    // SC +27, +28
-    };
-    H_sc[-28 + 56] = lltf0_52[0]  / kEdgeHtLtfTX[0];
-    H_sc[-27 + 56] = lltf0_52[1]  / kEdgeHtLtfTX[1];
-    H_sc[27 + 56]  = lltf0_52[50] / kEdgeHtLtfTX[2];
-    H_sc[28 + 56]  = lltf0_52[51] / kEdgeHtLtfTX[3];
+    if (htltf_edge_saved) {
+        H_sc[-28 + 56] = saved_htltf_edge[0] / (+1.0f);  // SC -28, natural bin 36
+        H_sc[-27 + 56] = saved_htltf_edge[1] / (+1.0f);  // SC -27, natural bin 37
+        H_sc[27 + 56]  = saved_htltf_edge[2] / (+1.0f);  // SC +27, natural bin 27
+        H_sc[28 + 56]  = saved_htltf_edge[3] / (+1.0f);  // SC +28, natural bin 28
+    }
 
     // Copy to tx_order output
     for (int i = 0; i < 52; i++) {
@@ -724,6 +729,14 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
                     (std::abs(a) > 90.0f) ? "FLIP" : "");
         }
         fprintf(stderr, "[RAW_CMP] sign_diffs=%d/48\n", sign_diffs);
+
+        // Save HT-LTF edge SC raw values for H computation
+        // Edge bins in natural FFT order: SC-28→36, SC-27→37, SC+27→27, SC+28→28
+        saved_htltf_edge[0] = sym64[36];  // SC -28
+        saved_htltf_edge[1] = sym64[37];  // SC -27
+        saved_htltf_edge[2] = sym64[27];  // SC +27
+        saved_htltf_edge[3] = sym64[28];  // SC +28
+        htltf_edge_saved = true;
     }
 
     extract_call_count++;
