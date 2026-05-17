@@ -444,11 +444,11 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
         H_sc[sc + 56] = lltf0_52[48 + i] / kPilot4TX[i];
     }
 
-    // Extrapolate edge subcarriers from nearest known
-    H_sc[-28 + 56] = H_sc[-26 + 56];
-    H_sc[-27 + 56] = H_sc[-26 + 56];
-    H_sc[27 + 56] = H_sc[26 + 56];
-    H_sc[28 + 56] = H_sc[26 + 56];
+    // Linear extrapolation for edge subcarriers using slope from adjacent known carriers
+    H_sc[-27 + 56] = 2.0f * H_sc[-26 + 56] - H_sc[-25 + 56];
+    H_sc[-28 + 56] = 3.0f * H_sc[-26 + 56] - 2.0f * H_sc[-25 + 56];
+    H_sc[27 + 56] = 2.0f * H_sc[26 + 56] - H_sc[25 + 56];
+    H_sc[28 + 56] = 3.0f * H_sc[26 + 56] - 2.0f * H_sc[25 + 56];
 
     // Copy to tx_order output
     for (int i = 0; i < 52; i++) {
