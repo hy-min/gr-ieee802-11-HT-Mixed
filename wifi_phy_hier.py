@@ -94,6 +94,10 @@ class wifi_phy_hier(gr.hier_block2):
             sync_words=None
         )
         self.mixed_mode_carrier_allocator_0.set_min_output_buffer((max_symbols * 52 * 8))
+        # Insert HT-STF and HT-LTF training symbols after 7 preamble + header symbols.
+        # Must be placed between carrier allocator and OFDM CP so the CP sees
+        # the updated packet_len tag (insert_ht_training adds N_TRAIN=2).
+        self.insert_ht_training_0 = ieee802_11.insert_ht_training("packet_len")
         # Header path: BPSK for L-SIG/HT-SIG
         self.digital_chunks_to_symbols_xx_0 = digital.chunks_to_symbols_bc([-1, 1], 1)
         self.digital_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 48 * 8 * 2))
@@ -138,7 +142,11 @@ class wifi_phy_hier(gr.hier_block2):
         self.connect((self.ieee802_11_chunks_to_symbols_xx_0, 0), (self.blocks_tagged_stream_mux_0, 1))
         # Combined: mux → mixed_mode_carrier_allocator → FFT → CP → output
         self.connect((self.blocks_tagged_stream_mux_0, 0), (self.mixed_mode_carrier_allocator_0, 0))
-        self.connect((self.mixed_mode_carrier_allocator_0, 0), (self.fft_vxx_0_0, 0))
+        # Insert HT-STF + HT-LTF between carrier allocator and OFDM CP (via IFFT)
+        self.connect((self.mixed_mode_carrier_allocator_0, 0),
+                     (self.insert_ht_training_0, 0))
+        self.connect((self.insert_ht_training_0, 0),
+                     (self.fft_vxx_0_0, 0))
         self.connect((self.fft_vxx_0_0, 0), (self.digital_ofdm_cyclic_prefixer_0_0, 0))
         self.connect((self.digital_ofdm_cyclic_prefixer_0_0, 0), (self, 0))
         self.connect((self.fft_vxx_0_1, 0), (self.ieee802_11_frame_equalizer_0, 0))
