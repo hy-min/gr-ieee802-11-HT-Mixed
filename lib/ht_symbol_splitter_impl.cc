@@ -95,6 +95,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     // PROBE: Print when general_work is called
     static int call_count = 0;
+    static int fft_out_count = 0;
     call_count++;
     if (call_count <= 10) {
         fprintf(stderr, "[SPLITTER_WORK] call=%d start_abs_idx=%llu ninput=%d ignore_mode=%d d_buffer_count=%d\n",
@@ -357,6 +358,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             produced += d_fft_size;
             d_buffer_count = 0;
             d_buffer_filled = false;
+
+            // Compute time-domain energy of the buffered 64 samples for FFT window diagnostic
+            fft_out_count++;
+            double td_energy = 0.0;
+            for (int j = 0; j < d_fft_size; j++) {
+                td_energy += std::norm(d_buffer[j]);
+            }
+            fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+                    fft_out_count, (unsigned long long)last_rel_idx, td_energy,
+                    d_buffer[0].real(), d_buffer[0].imag());
         }
     }
 
@@ -650,6 +661,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     produced += d_fft_size;
                     d_buffer_count = 0;
                     d_buffer_filled = false;
+
+                    // Compute time-domain energy of the buffered 64 samples for FFT window diagnostic
+                    fft_out_count++;
+                    double td_energy2 = 0.0;
+                    for (int j = 0; j < d_fft_size; j++) {
+                        td_energy2 += std::norm(d_buffer[j]);
+                    }
+                    fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+                            fft_out_count, (unsigned long long)rel_idx, td_energy2,
+                            d_buffer[0].real(), d_buffer[0].imag());
                 } else {
                     // Buffer filled at non-boundary position - DANGER!
                     // We missed a boundary, so this FFT is garbage.
