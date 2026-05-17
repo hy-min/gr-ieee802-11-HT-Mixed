@@ -1887,17 +1887,52 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
             // Legacy vs HT-Mixed frame type detection via QBPSK rotation
-            // HT-SIG0 uses 90 rotated BPSK: E_Q > E_I
-            if (d_internal_symbol_counter == kHtSig0Rel && d_early_eqsym_valid[kLSigRel]) {
+            // HT-SIG0 uses 90 rotated BPSK: E_Q > E_I after equalization.
+            // Using raw FFT is WRONG - channel phase smears I/Q energy equally.
+            if (d_internal_symbol_counter == kHtSig0Rel && d_early_eqsym_valid[kLSigRel] &&
+                d_early_eqsym_valid[kLltf0Rel] && d_early_eqsym_valid[kLltf1Rel]) {
+                // Equalize HT-SIG0 with L-LTF0 channel estimate
+                gr_complex H52[52];
+                estimate_header_channel_from_lltf52(d_early_eqsym[kLltf0Rel],
+                                                    d_early_eqsym[kLltf1Rel],
+                                                    H52);
+                gr_complex eq_htsig0[52];
+                for (int i = 0; i < 52; i++) {
+                    if (std::abs(H52[i]) > 0.01f) {
+                        eq_htsig0[i] = d_early_eqsym[kHtSig0Rel][i] / H52[i];
+                    } else {
+                        eq_htsig0[i] = gr_complex(0.0f, 0.0f);
+                    }
+                }
                 double E_I_ht, E_Q_ht;
-                compute_subcarrier_energy(d_early_eqsym[kHtSig0Rel], E_I_ht, E_Q_ht);
+                compute_subcarrier_energy(eq_htsig0, E_I_ht, E_Q_ht);
                 double ratio_ht = (E_I_ht > 1e-10) ? E_Q_ht / E_I_ht : 0.0;
 
-                if (ratio_ht > 1.0) {
+                fprintf(stderr, "[FRAME_DETECT] EQ ratio_ht=%.3f E_I=%.2f E_Q=%.2f\n",
+                        ratio_ht, E_I_ht, E_Q_ht);
+
+                if (ratio_ht > 1.5) {
                     d_is_ht_frame = true;
                 } else {
                     d_is_ht_frame = false;
                 }
+
+                // Also compute Legacy L-SIG ratio for comparison
+                gr_complex eq_lsig[52];
+                for (int i = 0; i < 52; i++) {
+                    if (std::abs(H52[i]) > 0.01f) {
+                        eq_lsig[i] = d_early_eqsym[kLSigRel][i] / H52[i];
+                    } else {
+                        eq_lsig[i] = gr_complex(0.0f, 0.0f);
+                    }
+                }
+                double E_I_lsig, E_Q_lsig;
+                compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
+                double ratio_lsig = (E_I_lsig > 1e-10) ? E_Q_lsig / E_I_lsig : 0.0;
+                fprintf(stderr, "[FRAME_DETECT] L-SIG EQ ratio=%.3f E_I=%.2f E_Q=%.2f (expect < 1.0 for BPSK)\n",
+                        ratio_lsig, E_I_lsig, E_Q_lsig);
+                fprintf(stderr, "[FRAME_DETECT] Detected %s frame (HT-SIG ratio=%.3f, L-SIG ratio=%.3f)\n",
+                        d_is_ht_frame ? "HT" : "Legacy", ratio_ht, ratio_lsig);
             }
         }
 
