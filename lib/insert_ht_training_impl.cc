@@ -61,7 +61,7 @@ static const std::array<gr_complex, 64> kHtStf64 = {
 static const std::array<gr_complex, 64> kHtLtf64 = {
     gr_complex( 0.f, 0.f), gr_complex( 0.f, 0.f),
     gr_complex( 0.f, 0.f), gr_complex( 0.f, 0.f),
-    gr_complex( 0.f, 0.f), gr_complex( 0.f, 0.f),
+    gr_complex( 1.f, 0.f), gr_complex( 1.f, 0.f),
     gr_complex( 1.f, 0.f), gr_complex( 1.f, 0.f),
     gr_complex(-1.f, 0.f), gr_complex(-1.f, 0.f),
     gr_complex( 1.f, 0.f), gr_complex( 1.f, 0.f),
@@ -88,8 +88,8 @@ static const std::array<gr_complex, 64> kHtLtf64 = {
     gr_complex(-1.f, 0.f), gr_complex( 1.f, 0.f),
     gr_complex(-1.f, 0.f), gr_complex( 1.f, 0.f),
     gr_complex( 1.f, 0.f), gr_complex( 1.f, 0.f),
+    gr_complex( 1.f, 0.f), gr_complex( 1.f, 0.f),
     gr_complex( 1.f, 0.f), gr_complex( 0.f, 0.f),
-    gr_complex( 0.f, 0.f), gr_complex( 0.f, 0.f),
     gr_complex( 0.f, 0.f), gr_complex( 0.f, 0.f)
 };
 
@@ -152,8 +152,16 @@ bool insert_ht_training_impl::is_used_bin(int bin) const
 
 void insert_ht_training_impl::build_training_symbols()
 {
-    std::copy(kHtStf64.begin(), kHtStf64.end(), d_ht_stf_64);
-    std::copy(kHtLtf64.begin(), kHtLtf64.end(), d_ht_ltf_64);
+    // kHtStf64 and kHtLtf64 are defined in fftshift order (index = SC + 32,
+    // i.e. negative frequencies first, then DC, then positive frequencies).
+    // But the TX IFFT and RX FFT in this flowgraph both use shift=False
+    // (natural order: DC at bin 0, positive freq at bins 1-31, negative
+    // freq at bins 32-63).  Convert fftshift → natural to avoid a 50 %
+    // sign-flip rate in the HT-DATA channel estimate computed from HT-LTF.
+    for (int k = 0; k < 64; k++) {
+        d_ht_stf_64[k] = kHtStf64[(k + 32) % 64];
+        d_ht_ltf_64[k] = kHtLtf64[(k + 32) % 64];
+    }
 }
 
 void insert_ht_training_impl::forward_tags_at_input_item(uint64_t abs_in_item,
