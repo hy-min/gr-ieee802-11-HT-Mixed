@@ -2175,6 +2175,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 message_port_pub(pmt::mp("symbols"), pmt::cons(meta, vec));
             }
 
+            fprintf(stderr, "[EQ_EMIT] sym=%d/%d produced=%d nout=%d\n", d_sym_idx, d_data_start_rel, produced, noutput_items);
+
             if (tag_this_output_as_frame_start) {
                 const uint64_t out_off = this->nitems_written(0) + produced;
 
