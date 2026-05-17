@@ -242,6 +242,13 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64, int da
     return std::arg(acc);
 }
 
+static bool read_tx_ref_bits52(uint8_t* out52, std::string& used_path);
+
+// Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
+extern gr_complex saved_ltf0_fft[64];
+extern bool ltf0_saved;
+extern bool ltf0_ever_saved;
+
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
                                               const gr_complex* H52_tx_order,
@@ -254,25 +261,127 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
     static int diag_call = 0;
     if (diag_call == 0 && data_sym_idx == 0) {
         int bad_real = 0;  // eq energy mostly on imag axis (should be real for BPSK)
+        int wrong_sign = 0;
         fprintf(stderr, "[HTDATA_DIAG] data_sym=0 cpe=%.4f rad (%.1f deg)\n",
                 cpe, cpe * 180.0 / M_PI);
+
+        // Read TX reference bits for comparison
+        uint8_t tx_ref52[52];
+        std::string ref_path;
+        bool have_ref = read_tx_ref_bits52(tx_ref52, ref_path);
+
+        fprintf(stderr, "[HTDATA_DIAG] i  sc  bin  raw.real  raw.imag  |H|     H.phase  eq.real  eq.imag  hard  tx_ref  mismatch\n");
         for (int i = 0; i < 52; i++) {
             const int bin = sc_to_fft_bin(kTxOrder52[i]);
             gr_complex raw = sym64[bin];
             gr_complex eq = raw / H52_tx_order[i] * rot;
             float re = std::abs(eq.real());
             float im = std::abs(eq.imag());
+            uint8_t hard = (eq.real() >= 0.0f) ? 1 : 0;
             if (im > re && im > 0.5f) {
                 bad_real++;
-                fprintf(stderr, "[HTDATA_DIAG] BAD i=%d sc=%d bin=%d eq=%.4f%+.4fj |H|=%.4f\n",
-                        i, kTxOrder52[i], bin, eq.real(), eq.imag(), std::abs(H52_tx_order[i]));
+            }
+            const char* mismatch_mark = "";
+            if (have_ref) {
+                if (hard != tx_ref52[i]) {
+                    wrong_sign++;
+                    mismatch_mark = " <-- MISMATCH";
+                }
+            }
+            fprintf(stderr, "[HTDATA_DIAG] %2d %3d %3d  %8.4f %8.4f  %6.2f  %7.1f  %7.4f %7.4f  %d     %d%s\n",
+                    i, kTxOrder52[i], bin,
+                    raw.real(), raw.imag(),
+                    std::abs(H52_tx_order[i]),
+                    std::arg(H52_tx_order[i]) * 180.0 / M_PI,
+                    eq.real(), eq.imag(),
+                    hard,
+                    have_ref ? (int)tx_ref52[i] : -1,
+                    mismatch_mark);
+        }
+        fprintf(stderr, "[HTDATA_DIAG] bad_real=%d/52 wrong_sign=%d/52 cpe=%.4f rad\n",
+                bad_real, wrong_sign, cpe);
+
+        // H ratio analysis: compute H_true from data symbol and compare with H_ltf0
+        if (have_ref) {
+            float ratio_mag_sum = 0;
+            float ratio_phase_180_count = 0;
+            fprintf(stderr, "[HTDATA_DIAG] H_data/H_ltf0 ratio analysis:\n");
+            fprintf(stderr, "[HTDATA_DIAG] i  sc  |H_ltf0|  |H_data|  ratio_mag  angle_diff(deg)\n");
+            for (int i = 0; i < 52; i++) {
+                const int bin = sc_to_fft_bin(kTxOrder52[i]);
+                gr_complex raw = sym64[bin];
+                // H_true = raw / TX: TX = +1 for bit 1, -1 for bit 0
+                gr_complex tx_val = (tx_ref52[i] == 1) ? gr_complex(+1.0f, 0.0f) : gr_complex(-1.0f, 0.0f);
+                gr_complex H_true = raw / tx_val;
+                gr_complex H_ltf0 = H52_tx_order[i];
+                float h_ltf0_mag = std::abs(H_ltf0);
+                float h_true_mag = std::abs(H_true);
+                float ratio_mag = 0.0f;
+                float angle_diff = 0.0f;
+                if (h_ltf0_mag > 1e-9f) {
+                    gr_complex ratio = H_true / H_ltf0;
+                    ratio_mag = std::abs(ratio);
+                    angle_diff = std::arg(ratio) * 180.0f / M_PI;
+                    // wrap to [-180, 180]
+                    if (angle_diff > 180.0f) angle_diff -= 360.0f;
+                    if (angle_diff < -180.0f) angle_diff += 360.0f;
+                }
+                ratio_mag_sum += ratio_mag;
+                if (std::abs(angle_diff) > 150.0f) {
+                    ratio_phase_180_count++;
+                }
+                fprintf(stderr, "[HTDATA_DIAG] %2d %3d  %7.2f  %7.2f  %9.4f  %+10.1f\n",
+                        i, kTxOrder52[i],
+                        h_ltf0_mag, h_true_mag,
+                        ratio_mag, angle_diff);
+            }
+            fprintf(stderr, "[HTDATA_DIAG] avg_ratio_mag=%.4f n_phase_near180=%.0f/52\n",
+                    ratio_mag_sum / 52.0f, ratio_phase_180_count);
+        }
+
+        // Raw channel comparison: raw_data / raw_ltf0 (bypassing all TX references)
+        // If channel is stable, this ratio should have ~same magnitude and phase for all SCs
+        if (ltf0_ever_saved) {
+            float raw_ratio_mag_sum = 0;
+            float raw_phase_sum = 0;
+            float raw_phase_max = -999;
+            float raw_phase_min = +999;
+            fprintf(stderr, "[HTDATA_DIAG] Raw channel ratio: raw_data / raw_ltf0 (no TX ref needed):\n");
+            fprintf(stderr, "[HTDATA_DIAG] i  sc  |raw_ltf0|  |raw_data|  ratio_mag  phase_diff(deg)\n");
+            for (int i = 0; i < 52; i++) {
+                const int bin = sc_to_fft_bin(kTxOrder52[i]);
+                gr_complex raw_ltf0 = saved_ltf0_fft[bin];
+                gr_complex raw_data = sym64[bin];
+                float ltf0_mag = std::abs(raw_ltf0);
+                float data_mag = std::abs(raw_data);
+                float ratio_mag = 0;
+                float phase_diff = 0;
+                if (ltf0_mag > 0.01f) {
+                    gr_complex ratio = raw_data / raw_ltf0;
+                    ratio_mag = std::abs(ratio);
+                    phase_diff = std::arg(ratio) * 180.0f / M_PI;
+                    if (phase_diff > 180.0f) phase_diff -= 360.0f;
+                    if (phase_diff < -180.0f) phase_diff += 360.0f;
+                }
+                raw_ratio_mag_sum += ratio_mag;
+                raw_phase_sum += phase_diff;
+                if (phase_diff > raw_phase_max) raw_phase_max = phase_diff;
+                if (phase_diff < raw_phase_min) raw_phase_min = phase_diff;
+                if (i < 10 || i >= 42) {  // Print first 10 and last 10
+                    fprintf(stderr, "[HTDATA_DIAG] %2d %3d  %8.2f  %8.2f  %9.4f  %+10.1f\n",
+                            i, kTxOrder52[i], ltf0_mag, data_mag, ratio_mag, phase_diff);
+                }
+            }
+            float raw_phase_spread = raw_phase_max - raw_phase_min;
+            fprintf(stderr, "[HTDATA_DIAG] raw_chan_avg_ratio=%.4f avg_phase=%.1fdeg spread=%.1fdeg\n",
+                    raw_ratio_mag_sum / 52.0f, raw_phase_sum / 52.0f, raw_phase_spread);
+            // If spread > 10deg, channel is NOT stable between LTF0 and HT-DATA
+            if (raw_phase_spread > 10.0f) {
+                fprintf(stderr, "[HTDATA_DIAG] *** CHANNEL NOT STABLE: phase spread %.1fdeg > 10deg ***\n",
+                        raw_phase_spread);
             }
         }
-        fprintf(stderr, "[HTDATA_DIAG] bad_real=%d/52 (eq energy on imag axis)\n", bad_real);
-        fprintf(stderr, "[HTDATA_DIAG] H[0]=%.4f%+.4fj H[1]=%.4f%+.4fj H[2]=%.4f%+.4fj\n",
-                H52_tx_order[0].real(), H52_tx_order[0].imag(),
-                H52_tx_order[1].real(), H52_tx_order[1].imag(),
-                H52_tx_order[2].real(), H52_tx_order[2].imag());
+
         diag_call++;
     }
 
@@ -418,6 +527,9 @@ static constexpr int kHeader48Bin[48] = {
     22,23,24,25,26              // SC +22 to +26
 };
 
+static gr_complex saved_ltf0_raw52[52] = {gr_complex(0,0)};
+static bool have_saved_ltf0_raw52 = false;
+
 // Compute channel estimate H for 52 HT data subcarriers in tx_order from L-LTF0.
 // lltf0_52: 48 data SCs in kHeader48Sc order + 4 pilots in kPilot4Sc order.
 static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out)
@@ -444,11 +556,12 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
         H_sc[sc + 56] = lltf0_52[48 + i] / kPilot4TX[i];
     }
 
-    // Linear extrapolation for edge subcarriers using slope from adjacent known carriers
-    H_sc[-27 + 56] = 2.0f * H_sc[-26 + 56] - H_sc[-25 + 56];
-    H_sc[-28 + 56] = 3.0f * H_sc[-26 + 56] - 2.0f * H_sc[-25 + 56];
-    H_sc[27 + 56] = 2.0f * H_sc[26 + 56] - H_sc[25 + 56];
-    H_sc[28 + 56] = 3.0f * H_sc[26 + 56] - 2.0f * H_sc[25 + 56];
+    // Nearest-neighbor H for edge subcarriers (linear extrapolation amplifies
+    // phase differences between adjacent carriers, producing wildly wrong |H|).
+    H_sc[-27 + 56] = H_sc[-26 + 56];
+    H_sc[-28 + 56] = H_sc[-26 + 56];
+    H_sc[27 + 56] = H_sc[26 + 56];
+    H_sc[28 + 56] = H_sc[26 + 56];
 
     // Copy to tx_order output
     for (int i = 0; i < 52; i++) {
@@ -489,8 +602,9 @@ static constexpr int kLltfPilotTX[4] = {
 //
 
 // NAKED_TEST: Save raw LTF0 FFT for comparison with LTF1
-static gr_complex saved_ltf0_fft[64] = {gr_complex(0,0)};
-static bool ltf0_saved = false;
+gr_complex saved_ltf0_fft[64] = {gr_complex(0,0)};
+bool ltf0_saved = false;
+bool ltf0_ever_saved = false;
 
 static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out52)
 {
@@ -501,6 +615,7 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     if (extract_call_count == 0) {
         memcpy(saved_ltf0_fft, sym64, 64 * sizeof(gr_complex));
         ltf0_saved = true;
+        ltf0_ever_saved = true;
         // PROBE: Print ALL 64 bins of raw FFT for LTF0
         fprintf(stderr, "\n[RAW_FFT_64] LTF0 (call %d) - ALL 64 FFT bins:\n", extract_call_count);
         for (int b = 0; b < 64; b++) {
@@ -582,6 +697,28 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
 
         ltf0_saved = false;
         fprintf(stderr, "[NAKED_TEST] End comparison\n\n");
+    }
+
+    if (extract_call_count == 6 && ltf0_ever_saved) {
+        fprintf(stderr, "\n[RAW_FFT_64] HT-LTF (call 6) - ALL 64 FFT bins:\n");
+        for (int b = 0; b < 64; b++) {
+            float mag = std::abs(sym64[b]);
+            float phase = std::arg(sym64[b]) * 180 / M_PI;
+            fprintf(stderr, "  bin[%2d]: mag=%.4f phase=%+7.1fdeg\n", b, mag, phase);
+        }
+        fprintf(stderr, "\n[RAW_CMP] LTF0 vs HT-LTF per-bin comparison (48 data bins):\n");
+        int sign_diffs = 0;
+        for (int i = 0; i < 48; i++) {
+            int bin = kHeader48Bin[i];
+            gr_complex ltf0 = saved_ltf0_fft[bin];
+            gr_complex htltf = sym64[bin];
+            float a = std::arg(ltf0 / htltf) * 180.0f / M_PI;
+            if (std::abs(a) > 90.0f) sign_diffs++;
+            fprintf(stderr, "  SC[%2d] bin[%2d]: angle=%+.1fdeg %s\n",
+                    kHeader48Sc[i], bin, a,
+                    (std::abs(a) > 90.0f) ? "FLIP" : "");
+        }
+        fprintf(stderr, "[RAW_CMP] sign_diffs=%d/48\n", sign_diffs);
     }
 
     extract_call_count++;
@@ -3065,7 +3202,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
             if (use_direct_tx_order_mcs0) {
                 if (!d_H52_tx_order_valid) {
-                    compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
+                    // DEBUG: test L-LTF0 H vs HT-LTF H
+                    gr_complex H_lltf[52], H_htltf[52];
+                    compute_H52_tx_order(d_early_eqsym[kLltf0Rel], H_lltf);
+                    compute_H52_tx_order(d_early_eqsym[kHtTrain1Rel], H_htltf);
+                    int sign_diffs = 0;
+                    for (int i = 0; i < 52; i++) {
+                        float a = std::arg(H_lltf[i] / H_htltf[i]) * 180.0f / M_PI;
+                        if (std::abs(a) > 90.0f) sign_diffs++;
+                    }
+                    fprintf(stderr, "[H_CMP] L-LTF0 vs HT-LTF H sign_diffs=%d/52\n", sign_diffs);
+                    // Use L-LTF0 for now
+                    std::memcpy(d_H52_tx_order, H_lltf, 52 * sizeof(gr_complex));
                     d_H52_tx_order_valid = true;
                 }
                 extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
