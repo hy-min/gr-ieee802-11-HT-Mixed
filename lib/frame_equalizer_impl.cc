@@ -556,12 +556,17 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
         H_sc[sc + 56] = lltf0_52[48 + i] / kPilot4TX[i];
     }
 
-    // Nearest-neighbor H for edge subcarriers (linear extrapolation amplifies
-    // phase differences between adjacent carriers, producing wildly wrong |H|).
-    H_sc[-27 + 56] = H_sc[-26 + 56];
-    H_sc[-28 + 56] = H_sc[-26 + 56];
-    H_sc[27 + 56] = H_sc[26 + 56];
-    H_sc[28 + 56] = H_sc[26 + 56];
+    // Compute H for edge subcarriers directly from HT-LTF data.
+    // Edge SCs -28,-27,+27,+28 are in kTxOrder52 at indices 0,1,50,51.
+    // HT-LTF TX reference is +1 for all 4 edge SCs.
+    static const gr_complex kEdgeHtLtfTX[4] = {
+        +1.0f, +1.0f,   // SC -28, -27
+        +1.0f, +1.0f    // SC +27, +28
+    };
+    H_sc[-28 + 56] = lltf0_52[0]  / kEdgeHtLtfTX[0];
+    H_sc[-27 + 56] = lltf0_52[1]  / kEdgeHtLtfTX[1];
+    H_sc[27 + 56]  = lltf0_52[50] / kEdgeHtLtfTX[2];
+    H_sc[28 + 56]  = lltf0_52[51] / kEdgeHtLtfTX[3];
 
     // Copy to tx_order output
     for (int i = 0; i < 52; i++) {
@@ -3212,8 +3217,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         if (std::abs(a) > 90.0f) sign_diffs++;
                     }
                     fprintf(stderr, "[H_CMP] L-LTF0 vs HT-LTF H sign_diffs=%d/52\n", sign_diffs);
-                    // Use L-LTF0 for now
-                    std::memcpy(d_H52_tx_order, H_lltf, 52 * sizeof(gr_complex));
+                    if (sign_diffs <= 4) {
+                        std::memcpy(d_H52_tx_order, H_htltf, 52 * sizeof(gr_complex));
+                        fprintf(stderr, "[H_CMP] Using HT-LTF H (covers all 52 SCs)\n");
+                    } else {
+                        std::memcpy(d_H52_tx_order, H_lltf, 52 * sizeof(gr_complex));
+                        fprintf(stderr, "[H_CMP] Fallback to L-LTF0 H\n");
+                    }
                     d_H52_tx_order_valid = true;
                 }
                 extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
