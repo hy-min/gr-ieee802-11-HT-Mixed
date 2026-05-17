@@ -227,6 +227,10 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             for sc in [-28, -27, -26, -25]:
                 bin_idx = self._sc_to_fft_bin_idx(sc)
                 print(f"[TX_HTDATA]   sc={sc:3d} -> bin[{bin_idx:2d}] = {out_vec[bin_idx].real:.4f}+{out_vec[bin_idx].imag:.4f}i -> bit={1 if out_vec[bin_idx].real >= 0 else 0}")
+            # TX_EDGE probe: all edge subcarriers for debugging H extrapolation
+            print(f"[TX_EDGE] sc=-28 bin=36 val={out_vec[36]:.4f} sc=-27 bin=37 val={out_vec[37]:.4f}", flush=True)
+            print(f"[TX_EDGE] sc=-26 bin=38 val={out_vec[38]:.4f} sc=+27 bin=27 val={out_vec[27]:.4f}", flush=True)
+            print(f"[TX_EDGE] sc=+28 bin=28 val={out_vec[28]:.4f} sc=+26 bin=26 val={out_vec[26]:.4f}", flush=True)
             self._first_htdata_printed = True
 
         # DEBUG: Print pilot subcarrier mapping for first call
