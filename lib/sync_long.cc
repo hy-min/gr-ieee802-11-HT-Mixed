@@ -68,6 +68,12 @@ public:
                      gr_vector_const_void_star& input_items,
                      gr_vector_void_star& output_items)
     {
+        // VERSION PROBE: Verify correct library is loaded
+        static int version_printed = 0;
+        if (version_printed == 0) {
+            fprintf(stderr, "[SYNC_LONG_VERSION] tagprobe_v2 built=%s %s\n", __DATE__, __TIME__);
+            version_printed = 1;
+        }
         // Work call counter for debugging
         static int s_call_count = 0;
         int call_count = s_call_count++;
@@ -88,8 +94,15 @@ public:
 
             const uint64_t offset = d_tags.front().offset;
 
+            // PROBE: Show tag processing details
+            std::string first_key = pmt::symbol_to_string(d_tags.front().key);
+            fprintf(stderr, "[SYNC_LONG_TAG] ntags=%zu first_key=%s offset=%llu nread=%llu state=%d d_count=%d\n",
+                    d_tags.size(), first_key.c_str(), (unsigned long long)offset,
+                    (unsigned long long)nread, d_state, d_count);
+
             if (offset > nread) {
                 ninput = offset - nread;
+                fprintf(stderr, "[SYNC_LONG_TAG] offset>nread, ninput=%d\n", ninput);
             } else {
                 if (d_offset && (d_state == SYNC)) {
                     throw std::runtime_error("wtf");
@@ -108,8 +121,8 @@ public:
                         // We need a much larger threshold to allow all DATA symbols to pass through
                         // before a subsequent wifi_start (from a second frame) triggers RESET.
                         // Use 2000000 as a safe upper bound for any realistic HT-Mixed frame.
-                        if (d_count < 2000000) {
-                            // Still in first frame's data - ignore this wifi_start
+                        if (d_count < 1000) {
+                            // Still in first frame's preamble/data - ignore this wifi_start
                             fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d\n", d_count);
                         } else {
                             // Frame complete, safe to RESET
@@ -119,6 +132,7 @@ public:
                     } else {
                         // Other tag - use original behavior
                         d_state = RESET;
+                        fprintf(stderr, "[SYNC_LONG_TAG] RESET due to non-wifi_start tag: %s\n", tag_key.c_str());
                     }
                 }
                 d_freq_offset_short = pmt::to_double(d_tags.front().value);
@@ -207,27 +221,19 @@ public:
         }
 
         case RESET: {
-            // In RESET, we output zeros until we've output at least 1 sample
-            // and the modulo condition is met. This prevents immediate
-            // COPY → RESET → SYNC transition when d_count + o is exactly 64.
-            while (o < noutput) {
+            // Output actual delayed samples (not zeros) while aligning to
+            // 64-sample boundary. Zeros would corrupt the next frame's
+            // HT-SIG0 FFT, causing QBPSK detection failure.
+            while (o < noutput && i < ninput) {
                 if (o > 0 && ((d_count + o) % 64) == 0) {
                     d_offset = 0;
-                    d_wifi_start_added = false;  // Reset so next detection can add tag
+                    d_wifi_start_added = false;
                     d_state = SYNC;
                     break;
                 } else {
-                    // PROBE: Add rx_reset tag at start of RESET zeros output
-                    if (o == 0) {
-                        // First zero sample - mark it with rx_reset tag
-                        add_item_tag(0,  // output port 0
-                                     nitems_written(0) + o,  // absolute output position
-                                     pmt::string_to_symbol("rx_reset"),
-                                     pmt::from_double(d_count),  // value = d_count (for debugging)
-                                     pmt::string_to_symbol(name()));
-                    }
-                    out[o] = 0;
+                    out[o] = in_delayed[i];
                     o++;
+                    i++;
                 }
             }
 

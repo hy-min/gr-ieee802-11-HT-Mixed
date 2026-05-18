@@ -43,7 +43,9 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_wifi_start_accepted(false),
       d_ignore_mode(false),
       d_rx_reset_offset(-1),
-      d_prev_should_buffer(false)
+      d_prev_should_buffer(false),
+      d_frame1_correction(0),
+      d_frame1_correction_stored(false)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -277,6 +279,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         // Reset ignore_mode when new frame starts
                         d_ignore_mode = false;
                         d_rx_reset_offset = -1;
+
+                        // Store the correction learned from frame 1 for multi-frame use
+                        if (!d_frame1_correction_stored) {
+                            d_frame1_correction = d_frame_start_abs - (int64_t)tag_abs_pos;
+                            d_frame1_correction_stored = true;
+                            fprintf(stderr, "[SPLITTER_FRAME1_CORRECTION] correction=%lld = d_frame_start_abs(%lld) - tag_abs_pos(%llu)\n",
+                                    (long long)d_frame1_correction, (long long)d_frame_start_abs, (unsigned long long)tag_abs_pos);
+                        }
                     } else {
                         // Already have frame start - ignore this wifi_start
                         d_wifi_start_accepted = false;
@@ -285,10 +295,50 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         d_rx_reset_offset = -1;
                     }
                 } else {
-                    // FIX: Only set d_frame_start_abs when wifi_start is ACCEPTED, not when ignored.
-                    // Previously, d_frame_start_abs was set BEFORE the preamble check, causing
-                    // spurious wifi_start (d_frame_start=181) to overwrite the correct value (176).
-                    d_frame_start_abs = (int64_t)d_frame_start;
+                    // Multi-frame: use the correction learned from frame 1
+                    // The tag_abs_pos marks L-LTF0 DATA start in the SPLITTER input stream.
+                    // d_frame1_correction is the constant offset needed to align rel_idx.
+                    // PROBE: Print ALL relevant state for multi-frame debugging
+                    fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] d_frame_start=%llu wifi_pos=%llu start_abs=%llu buf_cnt=%d items_proc=%lld\n",
+                            (unsigned long long)d_frame_start, (unsigned long long)tag_abs_pos,
+                            (unsigned long long)start_abs_idx, d_buffer_count, (long long)d_items_processed);
+                    if (d_frame1_correction_stored) {
+                        // Empirically, the SPLITTER needs the same 176-sample offset from the
+                        // tag position. The 176 samples contain L-LTF0 (64) + L-LTF1 CP (16) +
+                        // L-LTF1 DATA (64) + L-SIG CP (16) + L-SIG DATA first 16 samples.
+                        // The SPLITTER discards these and starts buffering at L-SIG DATA[16]
+                        // which gets rel_idx=0. Somehow this still produces correct FFT windows.
+                        d_frame_start_abs = (int64_t)tag_abs_pos + d_frame1_correction;
+                        fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] using stored correction: %llu + %lld = %lld\n",
+                                (unsigned long long)tag_abs_pos, (long long)d_frame1_correction, (long long)d_frame_start_abs);
+                    } else {
+                        // Fallback (should not normally happen): use sync_offset-based formula
+                        int64_t sync_for_this_wifi_start = -1;
+                        auto it = sync_offset_by_pos.find(tag_abs_pos);
+                        if (it != sync_offset_by_pos.end()) {
+                            sync_for_this_wifi_start = it->second;
+                        } else {
+                            for (auto rit = sync_offset_by_pos.rbegin(); rit != sync_offset_by_pos.rend(); rit++) {
+                                if (rit->first <= tag_abs_pos) {
+                                    sync_for_this_wifi_start = rit->second;
+                                    break;
+                                }
+                            }
+                        }
+                        if (sync_for_this_wifi_start >= 0) {
+                            if (d_frame_start >= 160 && d_frame_start <= 200) {
+                                d_frame_start_abs = (int64_t)d_frame_start + 16 - sync_for_this_wifi_start;
+                            } else {
+                                d_frame_start_abs = (int64_t)d_frame_start - sync_for_this_wifi_start;
+                            }
+                        } else {
+                            if (d_frame_start >= 160 && d_frame_start <= 200) {
+                                d_frame_start_abs = (int64_t)d_frame_start + 16;
+                            } else {
+                                d_frame_start_abs = (int64_t)d_frame_start;
+                            }
+                        }
+                    }
                     d_frame_start_known = true;
                     d_wifi_start_accepted = true;
 
@@ -724,6 +774,58 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
                 fprintf(stderr, "[SPLITTER_STARVE] PARTIAL buf=%d->%d remaining=%d rel=%llu produced=%d nout=%d\n",
                         buf_before, d_buffer_count, ninput_items[0] - i, (unsigned long long)rel_idx, produced, noutput_items);
+
+                // If buffer just became full, check boundary and output
+                if (d_buffer_count == d_fft_size) {
+                    int64_t final_rel_idx = (int64_t)(start_abs_idx + consumed - 1) - d_frame_start_abs;
+                    bool at_boundary = false;
+                    if (final_rel_idx < 64) {
+                        at_boundary = (final_rel_idx == 63);
+                    } else if (final_rel_idx < 144) {
+                        at_boundary = (final_rel_idx == 143);
+                    } else if (final_rel_idx >= 160 && final_rel_idx < 224) {
+                        at_boundary = (final_rel_idx == 223);
+                    } else if (final_rel_idx >= 240 && final_rel_idx < 304) {
+                        at_boundary = (final_rel_idx == 303);
+                    } else if (final_rel_idx >= 320 && final_rel_idx < 384) {
+                        at_boundary = (final_rel_idx == 383);
+                    } else if (final_rel_idx >= 400 && final_rel_idx < 464) {
+                        at_boundary = (final_rel_idx == 463);
+                    } else if (final_rel_idx >= 464) {
+                        uint64_t sym_offset = (final_rel_idx - 464) % 80;
+                        at_boundary = (sym_offset == 0 || sym_offset == 79);
+                    }
+                    if (at_boundary || final_rel_idx >= 464) {
+                        float total_energy = 0.0f;
+                        for (int zz = 0; zz < 64; zz++) {
+                            total_energy += std::norm(d_buffer[zz]);
+                        }
+                        if (total_energy >= 10.0f) {
+                            int symbol_type = -1;
+                            if (final_rel_idx == 63 || final_rel_idx == 143) symbol_type = 0;
+                            else if (final_rel_idx == 223) symbol_type = 2;
+                            else if (final_rel_idx == 303) symbol_type = 3;
+                            else if (final_rel_idx == 383) symbol_type = 4;
+                            else if (final_rel_idx == 463) symbol_type = 5;
+                            fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%lld first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
+                                    symbol_type, (long long)final_rel_idx,
+                                    d_buffer[0].real(), d_buffer[0].imag(),
+                                    d_buffer[63].real(), d_buffer[63].imag(),
+                                    total_energy);
+                            memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+                            produced += d_fft_size;
+                            d_buffer_count = 0;
+                            d_buffer_filled = false;
+                            fft_out_count++;
+                            fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%lld td_energy=%.1f first=%.4f%+.4fi\n",
+                                    fft_out_count, (long long)final_rel_idx, (double)total_energy,
+                                    d_buffer[0].real(), d_buffer[0].imag());
+                        }
+                    } else {
+                        d_buffer_count = 0;
+                        d_buffer_filled = false;
+                    }
+                }
                 d_items_processed += consumed;
                 d_last_rel_idx = rel_idx;
                 consume_each(consumed);

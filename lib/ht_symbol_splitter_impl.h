@@ -50,6 +50,8 @@ private:
     bool d_prev_should_buffer;  // Track previous should_buffer state to detect region transitions
     bool d_ignore_mode;  // When rx_reset tag is received, enter ignore mode
     int64_t d_rx_reset_offset;  // Store rx_reset offset to know when to exit ignore mode
+    int64_t d_frame1_correction;  // Offset learned from frame 1: d_frame_start_abs - tag_abs_pos
+    bool d_frame1_correction_stored;  // Have we stored the frame 1 correction?
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);

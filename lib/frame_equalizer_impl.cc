@@ -1879,13 +1879,23 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
         const bool wifi_start = (wifi_offsets.count(abs_in_off) != 0);
 
+        // PROBE: Track frame detection
+        static int eq_frame_seq = 0;
+        static int eq_skip_count = 0;
+        static bool eq_last_in_frame = false;
+
         if (!d_in_frame) {
             if (!wifi_start) {
+                eq_skip_count++;
                 consumed++;
                 d_current_symbol++;
                 continue;
             }
 
+            eq_frame_seq++;
+            fprintf(stderr, "[EQ_FRAME_START] frame_seq=%d abs_in_off=%llu skip_count=%d\n",
+                    eq_frame_seq, (unsigned long long)abs_in_off, eq_skip_count);
+            eq_skip_count = 0;
             d_in_frame = true;
             reset_frame_state();
 
@@ -2227,12 +2237,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
         if (d_have_ht_header && d_frame_symbols > 0) {
             const int end_rel = d_data_start_rel + d_frame_symbols;
             if (d_sym_idx >= end_rel) {
+                fprintf(stderr, "[EQ_FRAME_END] frame end reached sym_idx=%d end_rel=%d\n",
+                        d_sym_idx, end_rel);
                 reset_frame_state();
                 d_in_frame = false;
             }
         }
 
         if (d_in_frame && d_sym_idx > kMaxFrameRel) {
+            fprintf(stderr, "[EQ_FRAME_END] max frame exceeded sym_idx=%d\n", d_sym_idx);
             reset_frame_state();
             d_in_frame = false;
         }
