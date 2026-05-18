@@ -42,7 +42,8 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_last_rel_idx(0),
       d_wifi_start_accepted(false),
       d_ignore_mode(false),
-      d_rx_reset_offset(-1)
+      d_rx_reset_offset(-1),
+      d_prev_should_buffer(false)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -68,16 +69,7 @@ void ht_symbol_splitter_impl::set_ht_mixed(bool ht_mixed)
 void ht_symbol_splitter_impl::forecast(int noutput_items,
                                         gr_vector_int& ninput_items_required)
 {
-    // For each 64 output samples, we need up to 80 input samples due to CP skipping
-    int n_blocks = (noutput_items + d_fft_size - 1) / d_fft_size;
-    int required = n_blocks * d_symbol_size;
-
-    // Request at least 640 items to cover the full HT-mixed preamble (8 symbols * 80 samples)
-    // This ensures we can output all preamble FFTs in a single call
-    if (required < 640) {
-        required = 640;
-    }
-    ninput_items_required[0] = required;
+    ninput_items_required[0] = 1;
 }
 
 int ht_symbol_splitter_impl::general_work(int noutput_items,
@@ -98,8 +90,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     static int fft_out_count = 0;
     call_count++;
     if (call_count <= 10) {
-        fprintf(stderr, "[SPLITTER_WORK] call=%d start_abs_idx=%llu ninput=%d ignore_mode=%d d_buffer_count=%d\n",
-                call_count, (unsigned long long)start_abs_idx, ninput_items[0], d_ignore_mode, d_buffer_count);
+        fprintf(stderr, "[SPLITTER_WORK] call=%d noutput=%d ninput=%d start_abs=%llu ignore=%d buf_cnt=%d\n",
+                call_count, noutput_items, ninput_items[0], (unsigned long long)start_abs_idx, d_ignore_mode, d_buffer_count);
     }
 
     // Get all tags in current work call range
@@ -330,7 +322,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int items_consumed_this_call = 0;  // Track consumed for starvation protection
     bool at_end_of_input = false;  // Once true, skip all buffering until end of call
 
-    bool prev_should_buffer = false;  // Track previous should_buffer for region transition detection
 
     // CRITICAL SAFETY CHECK: If we don't have enough items for even one symbol, return 0.
     // This prevents reading garbage data when GNU Radio wakes us with insufficient items.
@@ -410,7 +401,15 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // before starvation fires
             // ============================================================
             int remaining_items = ninput_items[0] - i;
-            int items_needed_for_current_symbol = 80;  // 16 CP + 64 Data
+            // Calculate items needed dynamically based on position in 80-sample cycle.
+            // For preamble (rel_idx < 464): need full 80 (16 CP + 64 Data).
+            // For HT-DATA (rel_idx >= 464): need 80 - sym_offset remaining in current cycle.
+            uint64_t sym_offset_for_starve = 0;
+            int items_needed_for_current_symbol = 80;  // default for preamble
+            if (frame_started && rel_idx >= 464) {
+                sym_offset_for_starve = (rel_idx - 464) % 80;
+                items_needed_for_current_symbol = 80 - (int)sym_offset_for_starve;
+            }
 
             // ============================================================
             // should_buffer calculation - determines what region we're in
@@ -419,11 +418,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             // FIX: When entering a new buffering region (should_buffer just became true),
             // reset d_buffer_filled so we can start buffering the new symbol.
-            if (should_buffer && !prev_should_buffer) {
+            if (should_buffer && !d_prev_should_buffer) {
                 d_buffer_filled = false;
                 d_buffer_count = 0;
             }
-            prev_should_buffer = should_buffer;
+            d_prev_should_buffer = should_buffer;
 
             // ============================================================
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
@@ -577,7 +576,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // Always buffer when should_buffer is true (unless at end of input)
             if (should_buffer && !at_end_of_input) {
                 d_buffer[d_buffer_count++] = in[i];
-}
+            }
 
             // ============================================================
             // BOUNDARY CHECK AFTER BUFFERING
@@ -626,51 +625,54 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // even if at_boundary=false. This prevents data loss due to boundary misalignment.
                 // For preamble (rel_idx < 464), only output at correct boundaries.
                 if (at_boundary || rel_idx >= 464) {
-                    // Debug: Print symbol type based on rel_idx
-                    int symbol_type = -1;
-                    if (rel_idx == 63 || rel_idx == 143) {
-                        symbol_type = 0; // L-LTF FFT
-                    } else if (rel_idx == 223) {
-                        symbol_type = 2; // L-SIG FFT
-                    } else if (rel_idx == 303) {
-                        symbol_type = 3; // HT-SIG0 FFT
-                    } else if (rel_idx == 383) {
-                        symbol_type = 4; // HT-SIG1 FFT
-                    } else if (rel_idx == 463) {
-                        symbol_type = 5; // HT-STF FFT
-                    }
+                    // Compute energy BEFORE output to filter RESET-gap zeros
                     float total_energy = 0.0f;
-                    float peak_mag = 0.0f;
-                    int peak_idx = 0;
                     for (int zz = 0; zz < 64; zz++) {
-                        float n = std::norm(d_buffer[zz]);  // magnitude squared
-                        total_energy += n;
-                        if (std::abs(d_buffer[zz]) > peak_mag) {
-                            peak_mag = std::abs(d_buffer[zz]);
-                            peak_idx = zz;
+                        total_energy += std::norm(d_buffer[zz]);
+                    }
+                    // Skip near-zero-energy FFTs (RESET gap between frames)
+                    if (total_energy < 10.0f) {
+                        d_buffer_count = 0;
+                        d_buffer_filled = false;
+                        // DO NOT output — skip this zero-energy FFT block
+                    } else {
+                        // Debug: Print symbol type based on rel_idx
+                        int symbol_type = -1;
+                        if (rel_idx == 63 || rel_idx == 143) {
+                            symbol_type = 0; // L-LTF FFT
+                        } else if (rel_idx == 223) {
+                            symbol_type = 2; // L-SIG FFT
+                        } else if (rel_idx == 303) {
+                            symbol_type = 3; // HT-SIG0 FFT
+                        } else if (rel_idx == 383) {
+                            symbol_type = 4; // HT-SIG1 FFT
+                        } else if (rel_idx == 463) {
+                            symbol_type = 5; // HT-STF FFT
                         }
-                    }
-                                        // Output at boundary
-                    // PROBE: Print FFT buffer content before output
-                    fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%d first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
-                            symbol_type, rel_idx,
-                            d_buffer[0].real(), d_buffer[0].imag(),
-                            d_buffer[63].real(), d_buffer[63].imag(),
-                            total_energy);
-                    memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                    produced += d_fft_size;
-                    d_buffer_count = 0;
-                    d_buffer_filled = false;
+                        float peak_mag = 0.0f;
+                        int peak_idx = 0;
+                        for (int zz = 0; zz < 64; zz++) {
+                            if (std::abs(d_buffer[zz]) > peak_mag) {
+                                peak_mag = std::abs(d_buffer[zz]);
+                                peak_idx = zz;
+                            }
+                        }
+                        // PROBE: Print FFT buffer content before output
+                        fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%d first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
+                                symbol_type, rel_idx,
+                                d_buffer[0].real(), d_buffer[0].imag(),
+                                d_buffer[63].real(), d_buffer[63].imag(),
+                                total_energy);
+                        memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+                        produced += d_fft_size;
+                        d_buffer_count = 0;
+                        d_buffer_filled = false;
 
-                    // Compute time-domain energy of the buffered 64 samples for FFT window diagnostic
-                    fft_out_count++;
-                    double td_energy2 = 0.0;
-                    for (int j = 0; j < d_fft_size; j++) {
-                        td_energy2 += std::norm(d_buffer[j]);
+                        fft_out_count++;
+                        fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+                                fft_out_count, (unsigned long long)rel_idx, (double)total_energy,
+                                d_buffer[0].real(), d_buffer[0].imag());
                     }
-                    fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
-                            fft_out_count, (unsigned long long)rel_idx, td_energy2,
-                            d_buffer[0].real(), d_buffer[0].imag());
                 } else {
                     // Buffer filled at non-boundary position - DANGER!
                     // We missed a boundary, so this FFT is garbage.
@@ -695,6 +697,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // ============================================================
             if (remaining_items < items_needed_for_current_symbol && d_buffer_count == d_fft_size && !at_end_of_input) {
                 // Buffer is full - output it and return
+                fprintf(stderr, "[SPLITTER_STARVE] FULL buf=%d remaining=%d rel=%llu produced=%d nout=%d\n",
+                        d_buffer_count, remaining_items, (unsigned long long)rel_idx, produced, noutput_items);
                 for (int j = 0; j < d_buffer_count; j++) {
                     out[produced++] = d_buffer[j];
                 }
@@ -705,10 +709,24 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 consume_each(i);
                 return produced;
             } else if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && d_buffer_count < d_fft_size && !at_end_of_input) {
-                // Partial buffer - don't output, just return. Let GNU Radio provide more items.
-                d_items_processed += i;
+                // Partial buffer - buffer whatever we can now, then return.
+                // If should_buffer was true, the current item was already buffered
+                // at line 579, so skip past it to avoid duplicating it in the buffer.
+                if (should_buffer) {
+                    i++;
+                    consumed++;
+                }
+                int buf_before = d_buffer_count;
+                while (i < ninput_items[0] && d_buffer_count < d_fft_size) {
+                    d_buffer[d_buffer_count++] = in[i];
+                    i++;
+                    consumed++;
+                }
+                fprintf(stderr, "[SPLITTER_STARVE] PARTIAL buf=%d->%d remaining=%d rel=%llu produced=%d nout=%d\n",
+                        buf_before, d_buffer_count, ninput_items[0] - i, (unsigned long long)rel_idx, produced, noutput_items);
+                d_items_processed += consumed;
                 d_last_rel_idx = rel_idx;
-                consume_each(i);
+                consume_each(consumed);
                 return produced;
             }
         }

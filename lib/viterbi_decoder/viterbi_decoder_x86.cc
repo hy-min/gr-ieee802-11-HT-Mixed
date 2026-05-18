@@ -327,8 +327,8 @@ uint8_t* viterbi_decoder::decode(ofdm_param* ofdm, frame_param* frame, uint8_t* 
                 const uint8_t reg = uint8_t(((prev_state << 1) | input_bit) & 0x7f);
                 const int next_state = reg & 0x3f;
 
-                const uint8_t ex0 = parity_u8(uint8_t(reg & 0x6d));
-                const uint8_t ex1 = parity_u8(uint8_t(reg & 0x4f));
+                const uint8_t ex0 = parity_u8(uint8_t(reg & 0x5b));  // 0133 octal = IEEE 802.11 g0
+                const uint8_t ex1 = parity_u8(uint8_t(reg & 0x79));  // 0171 octal = IEEE 802.11 g1
 
                 const int cand = prev_metric + branch_metric_hard(rx0, rx1, ex0, ex1);
 

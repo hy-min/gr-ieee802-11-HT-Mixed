@@ -320,14 +320,27 @@ public:
         return block::stop();
     }
 
+    void forecast(int noutput_items, gr_vector_int& ninput_items_required) override
+    {
+        // This is a sink block (0 output ports). Force the scheduler to
+        // call us whenever input is available by requesting at least 1 item.
+        ninput_items_required[0] = 1;
+    }
+
     int general_work(int,
                      gr_vector_int& ninput_items,
                      gr_vector_const_void_star& input_items,
                      gr_vector_void_star&)
     {
+        static int gw_call_count = 0;
+        gw_call_count++;
         const gr_complex* in = (const gr_complex*)input_items[0];
         int i = 0;
         const uint64_t nread = nitems_read(0);
+        fprintf(stderr, "[DECODE_MAC_GW] call=%d ninput=%d nread=%llu in_frame=%d copied=%llu/%llu\n",
+                gw_call_count, ninput_items[0], (unsigned long long)nread,
+                d_in_frame ? 1 : 0,
+                (unsigned long long)d_items_copied, (unsigned long long)d_items_expected);
 
         while (i < ninput_items[0]) {
             std::vector<gr::tag_t> tags;
@@ -474,8 +487,10 @@ private:
 
     void decode_and_publish()
     {
+        fprintf(stderr, "[DECODE_AND_PUBLISH] called n_sym=%d n_cbps=%d n_dbps=%d d_ht_len=%d rx_eq_size=%zu\n",
+                d_ht_n_sym, d_ht_n_cbps, ht_n_dbps_from_mcs(d_ht_mcs), d_ht_len, d_rx_eq.size());
         if (d_rx_eq.empty() || d_ht_n_sym <= 0) {
-            dout << "[decode_mac] no data captured" << std::endl;
+            fprintf(stderr, "[DECODE_AND_PUBLISH] no data captured\n");
             return;
         }
 
@@ -706,7 +721,7 @@ private:
         d_frame.n_pad          = d_frame.n_data_bits - (16 + 8 * d_ht_len + 6);
 
         if (d_frame.n_pad < 0) {
-            dout << "[decode_mac] invalid HT frame params: n_pad=" << d_frame.n_pad << std::endl;
+            fprintf(stderr, "[DECODE_FAIL] invalid n_pad=%d\n", d_frame.n_pad);
             return;
         }
 
@@ -723,7 +738,7 @@ private:
         // 4) Viterbi
         uint8_t* decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deintl_bits.data());
         if (!decoded) {
-            dout << "[decode_mac] decoder returned null" << std::endl;
+            fprintf(stderr, "[DECODE_FAIL] Viterbi decoder returned null\n");
             return;
         }
 
@@ -791,10 +806,7 @@ private:
         }
 
         if (calc_fcs != rx_fcs) {
-            dout << "[decode_mac] FCS error"
-                 << " calc=0x" << std::hex << calc_fcs
-                 << " rx=0x"   << rx_fcs
-                 << std::dec << std::endl;
+            fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x\n", calc_fcs, rx_fcs);
             return;
         }
 
@@ -812,7 +824,9 @@ private:
                                pmt::mp("dlt"),
                                pmt::from_long(LINKTYPE_IEEE802_11));
 
+        fprintf(stderr, "[DECODE_SUCCESS] FCS OK, publishing message len=%d\n", d_ht_len);
         message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
+        fprintf(stderr, "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
     }
 
     void descramble(uint8_t* decoded)

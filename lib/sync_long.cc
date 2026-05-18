@@ -103,18 +103,18 @@ public:
                     if (tag_key == "wifi_start") {
                         // wifi_start during COPY - this is HT-Mixed second frame starting
                         // Check if we've output enough to cover HT preamble + HT-LTF (720 samples)
-                        // HT preamble: L-STF(160) + L-LTF(160) + L-SIG(80) + HT-SIG(160) + HT-STF(80) = 640
-                        // For absolute safety, wait until we're well into HT-DATA region (d_count >= 720)
-                        // If d_count >= 720, we've passed HT-LTF, safe to RESET
-                        // If d_count < 720, we're still in preamble/training - DON'T RESET, continue COPY
-                        if (d_count < 720) {
-                            // We're still in HT-Mixed preamble/training, ignore this wifi_start
-                            // It will be processed when we exit COPY naturally
-                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed preamble d_count=%d\n", d_count);
+                        // HT-Mixed frame can be very long (up to 65535-byte PDU at MCS0 = ~1.6M samples).
+                        // The original threshold of 720 only covers the preamble + training.
+                        // We need a much larger threshold to allow all DATA symbols to pass through
+                        // before a subsequent wifi_start (from a second frame) triggers RESET.
+                        // Use 2000000 as a safe upper bound for any realistic HT-Mixed frame.
+                        if (d_count < 2000000) {
+                            // Still in first frame's data - ignore this wifi_start
+                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d\n", d_count);
                         } else {
-                            // We've passed HT-DATA region, safe to RESET
+                            // Frame complete, safe to RESET
                             d_state = RESET;
-                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] RESET after HT-DATA start d_count=%d\n", d_count);
+                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] RESET after full HT-DATA d_count=%d\n", d_count);
                         }
                     } else {
                         // Other tag - use original behavior

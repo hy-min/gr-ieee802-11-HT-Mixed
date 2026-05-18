@@ -245,6 +245,11 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
+    fprintf(stderr, "[EQ_HTDATA] sym=%d cpe_deg=%.1f rot=%.4f%+.4fi H[0]=%.4f%+.4fi sym64[%d]=%.4f%+.4fi eq[0]=...\n",
+            data_sym_idx, cpe * 180.0f / M_PI, rot.real(), rot.imag(),
+            H52_tx_order[0].real(), H52_tx_order[0].imag(),
+            sc_to_fft_bin(kTxOrder52[0]), sym64[sc_to_fft_bin(kTxOrder52[0])].real(), sym64[sc_to_fft_bin(kTxOrder52[0])].imag());
+
     for (int i = 0; i < 52; i++) {
         const int bin = sc_to_fft_bin(kTxOrder52[i]);
         const float h_mag = std::abs(H52_tx_order[i]);
@@ -254,6 +259,8 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
             out52[i] = gr_complex(0.0f, 0.0f);
         }
     }
+    fprintf(stderr, "[EQ_HTDATA] sym=%d eq[0]=%.4f%+.4fi eq[25]=%.4f%+.4fi eq[26]=%.4f%+.4fi eq[51]=%.4f%+.4fi\n",
+            data_sym_idx, out52[0].real(), out52[0].imag(), out52[25].real(), out52[25].imag(), out52[26].real(), out52[26].imag(), out52[51].real(), out52[51].imag());
 }
 
 
