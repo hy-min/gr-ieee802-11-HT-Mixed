@@ -118,6 +118,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         d_buffer_filled = false;
         d_items_processed = 0;
         d_prev_should_buffer = false;
+        d_frame1_correction = 0;
+        d_frame1_correction_stored = false;
+        while (!d_pending_tag_queue.empty()) {
+            d_pending_tag_queue.pop();
+        }
         fprintf(stderr, "[SPLITTER_FRAME_EXIT] seq=%d buf_cleared items_reset\n",
                 d_frame_seq_counter);
     };
@@ -130,9 +135,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 d_rx_reset_offset = (int64_t)tag.offset;
                 // CRITICAL FIX: rx_reset means upstream has left the frame
                 exit_frame_state();
-                while (!d_pending_tag_queue.empty()) {
-                    d_pending_tag_queue.pop();
-                }
             }
         }
     }
@@ -193,6 +195,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         "[SPLITTER_FRAME_START] exiting old frame seq=%d\n",
                         d_frame_seq_counter);
                 exit_frame_state();
+            } else {
+                // Defensive: even if not in_frame, clear any stale buffer state
+                // from a previous partial frame that never set d_in_frame=true.
+                d_buffer_count = 0;
+                d_buffer_filled = false;
+                d_prev_should_buffer = false;
+                d_frame1_correction = 0;
+                d_frame1_correction_stored = false;
+                while (!d_pending_tag_queue.empty()) {
+                    d_pending_tag_queue.pop();
+                }
             }
 
             d_frame_seq_counter++;
