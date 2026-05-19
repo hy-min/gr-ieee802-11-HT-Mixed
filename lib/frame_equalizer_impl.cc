@@ -1950,9 +1950,19 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Only allow takeover after Frame 1 has emitted all data symbols.
                 // With correct SPLITTER tag timing, Frame 2 arrives after Frame 1 ends.
                 const int end_rel = d_data_start_rel + d_frame_symbols - 1;
-                if (d_sym_idx > end_rel) {
+                if (d_sym_idx >= end_rel) {
                     allow_takeover = true;
                 }
+            }
+
+            // If we are still inside the data region but a new wifi_start arrived,
+            // preempt the current frame. Better to lose tail of old frame than entire new frame.
+            if (!allow_takeover && d_sym_idx >= d_data_start_rel) {
+                allow_takeover = true;
+                const int end_rel = d_data_start_rel + d_frame_symbols - 1;
+                fprintf(stderr,
+                        "[EQ_FRAME_PREEMPT] abs_in_off=%llu d_sym_idx=%d end_rel=%d\n",
+                        (unsigned long long)abs_in_off, d_sym_idx, end_rel);
             }
 
             if (allow_takeover) {
