@@ -454,9 +454,11 @@ gr_complex saved_ltf0_fft[64] = {gr_complex(0,0)};
 bool ltf0_saved = false;
 bool ltf0_ever_saved = false;
 
+static int g_extract_call_count = 0;
+
 static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out52)
 {
-    static int extract_call_count = 0;
+    int extract_call_count = g_extract_call_count;
 
     // Call 0 = LTF0: save raw FFT for later edge H computation
     if (extract_call_count == 0) {
@@ -480,6 +482,7 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     }
 
     extract_call_count++;
+    g_extract_call_count = extract_call_count;
 
     for (int i = 0; i < 48; i++) {
         out52[i] = sym64[kHeader48Bin[i]];  // EXPLICIT bin mapping!
@@ -1619,6 +1622,13 @@ void frame_equalizer_impl::reset_frame_state(void)
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
     d_H52_tx_order_valid = false;
+
+    g_extract_call_count = 0;
+    htltf_edge_saved = false;
+    ltf0_ever_saved = false;
+    ltf0_saved = false;
+    std::memset(saved_ltf0_fft, 0, sizeof(saved_ltf0_fft));
+    std::memset(saved_htltf_edge, 0, sizeof(saved_htltf_edge));
 }
 
 bool frame_equalizer_impl::parse_signal(const uint8_t* decoded_bits,
