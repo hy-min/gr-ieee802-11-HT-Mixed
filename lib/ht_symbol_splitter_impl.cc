@@ -206,14 +206,6 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             d_pending_tag_queue.push(
                 std::make_pair((uint64_t)0, d_frame_start_abs));
 
-            if (!d_frame1_correction_stored) {
-                d_frame1_correction = d_frame_start_abs - (int64_t)tag_abs_pos;
-                d_frame1_correction_stored = true;
-                fprintf(stderr,
-                        "[SPLITTER_FRAME1_CORRECTION] correction=%lld\n",
-                        (long long)d_frame1_correction);
-            }
-
             break;
         }
     }
@@ -316,9 +308,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // ============================================================
             bool should_buffer = false;
 
-            // FIX: When entering a new buffering region (should_buffer just became true),
-            // reset d_buffer_filled so we can start buffering the new symbol.
+            // FIX: When entering or leaving a buffering region, reset partial buffer
+            // to prevent cross-symbol corruption. Entering: start fresh. Leaving:
+            // discard partial samples so CP regions don't bridge into next symbol.
             if (should_buffer && !d_prev_should_buffer) {
+                d_buffer_filled = false;
+                d_buffer_count = 0;
+            } else if (!should_buffer && d_prev_should_buffer) {
                 d_buffer_filled = false;
                 d_buffer_count = 0;
             }
@@ -652,129 +648,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 consume_each(i);
                 return produced;
             } else if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && d_buffer_count < d_fft_size && !at_end_of_input) {
-                // Partial buffer - buffer whatever we can now, then return.
-                // If should_buffer was true, the current item was already buffered
-                // at line 579, so skip past it to avoid duplicating it in the buffer.
+                // Can't complete the current symbol. Current item already buffered.
+                // Preserve partial buffer and return without filling more.
+                // The old while-loop fill was removed because it buffered CP samples
+                // without checking should_buffer, causing cross-symbol corruption.
                 if (should_buffer) {
                     i++;
                     consumed++;
                 }
-                int buf_before = d_buffer_count;
-                while (i < ninput_items[0] && d_buffer_count < d_fft_size) {
-                    d_buffer[d_buffer_count++] = in[i];
-                    i++;
-                    consumed++;
-                }
-                fprintf(stderr, "[SPLITTER_STARVE] PARTIAL buf=%d->%d remaining=%d rel=%llu produced=%d nout=%d\n",
-                        buf_before, d_buffer_count, ninput_items[0] - i, (unsigned long long)rel_idx, produced, noutput_items);
-
-                // If buffer just became full, check boundary and output
-                if (d_buffer_count == d_fft_size) {
-                    int64_t final_rel_idx = (int64_t)(start_abs_idx + consumed - 1) - d_frame_start_abs;
-                    bool at_boundary = false;
-                    if (final_rel_idx < 64) {
-                        at_boundary = (final_rel_idx == 63);
-                    } else if (final_rel_idx < 144) {
-                        at_boundary = (final_rel_idx == 143);
-                    } else if (final_rel_idx >= 160 && final_rel_idx < 224) {
-                        at_boundary = (final_rel_idx == 223);
-                    } else if (final_rel_idx >= 240 && final_rel_idx < 304) {
-                        at_boundary = (final_rel_idx == 303);
-                    } else if (final_rel_idx >= 320 && final_rel_idx < 384) {
-                        at_boundary = (final_rel_idx == 383);
-                    } else if (final_rel_idx >= 400 && final_rel_idx < 464) {
-                        at_boundary = (final_rel_idx == 463);
-                    } else if (final_rel_idx >= 464) {
-                        uint64_t sym_offset = (final_rel_idx - 464) % 80;
-                        at_boundary = (sym_offset == 0 || sym_offset == 79);
-                    }
-                    if (at_boundary || final_rel_idx >= 464) {
-                        float total_energy = 0.0f;
-                        for (int zz = 0; zz < 64; zz++) {
-                            total_energy += std::norm(d_buffer[zz]);
-                        }
-                        if (total_energy >= 10.0f) {
-                            int symbol_type = -1;
-                            if (final_rel_idx == 63 || final_rel_idx == 143) symbol_type = 0;
-                            else if (final_rel_idx == 223) symbol_type = 2;
-                            else if (final_rel_idx == 303) symbol_type = 3;
-                            else if (final_rel_idx == 383) symbol_type = 4;
-                            else if (final_rel_idx == 463) symbol_type = 5;
-                            fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%lld first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
-                                    symbol_type, (long long)final_rel_idx,
-                                    d_buffer[0].real(), d_buffer[0].imag(),
-                                    d_buffer[63].real(), d_buffer[63].imag(),
-                                    total_energy);
-                            uint64_t fft_pos = nitems_written(0) + produced;
-                            memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                            produced += d_fft_size;
-                            d_buffer_count = 0;
-                            d_buffer_filled = false;
-
-                            while (!d_pending_tag_queue.empty()) {
-                                auto& front = d_pending_tag_queue.front();
-                                uint64_t tag_out_pos = (front.first == 0) ? fft_pos : front.first;
-                                add_item_tag(0, tag_out_pos,
-                                             pmt::string_to_symbol("wifi_start"),
-                                             pmt::from_double(front.second),
-                                             pmt::string_to_symbol(name()));
-                                fprintf(stderr,
-                                        "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (starve)\n",
-                                        d_frame_seq_counter,
-                                        (unsigned long long)tag_out_pos,
-                                        (long long)front.second);
-                                d_pending_tag_queue.pop();
-                            }
-
-                            fft_out_count++;
-                            fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%lld td_energy=%.1f first=%.4f%+.4fi\n",
-                                    fft_out_count, (long long)final_rel_idx, (double)total_energy,
-                                    d_buffer[0].real(), d_buffer[0].imag());
-                        }
-                    } else {
-                        fprintf(stderr,
-                                "[SPLITTER_STARVE_BOUNDARY] final_rel=%lld buf=64 "
-                                "forcing output (was at_boundary=false)\n",
-                                (long long)final_rel_idx);
-                        float total_energy = 0.0f;
-                        for (int zz = 0; zz < 64; zz++) {
-                            total_energy += std::norm(d_buffer[zz]);
-                        }
-                        if (total_energy >= 10.0f) {
-                            int symbol_type = -1;
-                            if (final_rel_idx >= 0 && final_rel_idx < 64) symbol_type = 0;
-                            else if (final_rel_idx >= 80 && final_rel_idx < 144) symbol_type = 0;
-                            else if (final_rel_idx >= 160 && final_rel_idx < 224) symbol_type = 2;
-                            else if (final_rel_idx >= 240 && final_rel_idx < 304) symbol_type = 3;
-                            else if (final_rel_idx >= 320 && final_rel_idx < 384) symbol_type = 4;
-                            else if (final_rel_idx >= 400 && final_rel_idx < 464) symbol_type = 5;
-
-                            fprintf(stderr,
-                                    "[SPLITTER_FFT] type=%d rel_idx=%lld first=%.4f%+.4fi\n",
-                                    symbol_type, (long long)final_rel_idx,
-                                    d_buffer[0].real(), d_buffer[0].imag());
-
-                            uint64_t fft_pos = nitems_written(0) + produced;
-                            memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                            produced += d_fft_size;
-                            d_buffer_count = 0;
-                            d_buffer_filled = false;
-
-                            while (!d_pending_tag_queue.empty()) {
-                                auto& front = d_pending_tag_queue.front();
-                                uint64_t tag_out_pos = (front.first == 0) ? fft_pos : front.first;
-                                add_item_tag(0, tag_out_pos,
-                                             pmt::string_to_symbol("wifi_start"),
-                                             pmt::from_double(front.second),
-                                             pmt::string_to_symbol(name()));
-                                d_pending_tag_queue.pop();
-                            }
-                        } else {
-                            d_buffer_count = 0;
-                            d_buffer_filled = false;
-                        }
-                    }
-                }
+                fprintf(stderr, "[SPLITTER_STARVE] PARTIAL preserve buf=%d remaining=%d rel=%llu\n",
+                        d_buffer_count, remaining_items, (unsigned long long)rel_idx);
                 d_items_processed += consumed;
                 d_last_rel_idx = rel_idx;
                 consume_each(consumed);
