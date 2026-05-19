@@ -1915,8 +1915,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
             if (!d_have_ht_header) {
                 allow_takeover = true;
             } else {
+                // Only allow takeover after Frame 1 has emitted all data symbols.
+                // With correct SPLITTER tag timing, Frame 2 arrives after Frame 1 ends.
                 const int end_rel = d_data_start_rel + d_frame_symbols - 1;
-                if (d_sym_idx >= end_rel - 1) {
+                if (d_sym_idx > end_rel) {
                     allow_takeover = true;
                 }
             }
