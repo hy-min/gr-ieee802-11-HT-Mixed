@@ -1860,6 +1860,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
     std::set<uint64_t> wifi_offsets;
     std::map<uint64_t, double> wifi_freq_offsets;
+    static int eq_tag_probe_count = 0;
+    if (!wifi_tags.empty() && eq_tag_probe_count < 20) {
+        fprintf(stderr, "[EQ_TAGS] abs_in=%llu n_in=%d n_tags=%zu",
+                (unsigned long long)abs_in_start, n_in, wifi_tags.size());
+        for (const auto& t : wifi_tags) {
+            fprintf(stderr, " offset=%llu", (unsigned long long)t.offset);
+        }
+        fprintf(stderr, "\n");
+        eq_tag_probe_count++;
+    }
     for (const auto& t : wifi_tags) {
         wifi_offsets.insert((uint64_t)t.offset);
         if (pmt::is_real(t.value)) {
@@ -1906,14 +1916,21 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 allow_takeover = true;
             } else {
                 const int end_rel = d_data_start_rel + d_frame_symbols - 1;
-                if (d_sym_idx > end_rel) {
+                if (d_sym_idx >= end_rel - 1) {
                     allow_takeover = true;
                 }
             }
 
             if (allow_takeover) {
+                fprintf(stderr, "[EQ_FRAME_TAKEOVER] frame_seq=%d abs_in_off=%llu d_have_ht=%d d_sym_idx=%d\n",
+                        eq_frame_seq + 1, (unsigned long long)abs_in_off, d_have_ht_header, d_sym_idx);
+                eq_frame_seq++;
+                eq_skip_count = 0;
                 reset_frame_state();
                 d_in_frame = true;
+            } else {
+                fprintf(stderr, "[EQ_FRAME_TAKEOVER_REJECT] abs_in_off=%llu d_sym_idx=%d end_rel=%d\n",
+                        (unsigned long long)abs_in_off, d_sym_idx, d_data_start_rel + d_frame_symbols - 1);
             }
         }
 
@@ -2242,6 +2259,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 reset_frame_state();
                 d_in_frame = false;
             }
+        } else if (d_in_frame && !d_have_ht_header && d_sym_idx >= d_data_start_rel + 5) {
+            fprintf(stderr, "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d\n", d_sym_idx);
+            reset_frame_state();
+            d_in_frame = false;
         }
 
         if (d_in_frame && d_sym_idx > kMaxFrameRel) {
