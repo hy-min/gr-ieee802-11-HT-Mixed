@@ -20,6 +20,7 @@
 #include <ieee802_11/ht_symbol_splitter.h>
 #include <gnuradio/thread/thread.h>
 #include <vector>
+#include <queue>
 #include <cstdint>
 
 namespace gr {
@@ -52,6 +53,12 @@ private:
     int64_t d_rx_reset_offset;  // Store rx_reset offset to know when to exit ignore mode
     int64_t d_frame1_correction;  // Offset learned from frame 1: d_frame_start_abs - tag_abs_pos
     bool d_frame1_correction_stored;  // Have we stored the frame 1 correction?
+
+    // Frame lifecycle
+    bool d_in_frame;                // true when we are inside a frame's symbols
+    int  d_frame_seq_counter;       // monotonic counter for debug/logging
+    std::queue<std::pair<uint64_t,int64_t>> d_pending_tag_queue;
+                                    // (output_position, d_frame_start_abs) pairs
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);

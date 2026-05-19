@@ -219,12 +219,27 @@ static inline gr_complex ht_expected_pilot(int data_sym_idx, int pilot_idx)
     return gr_complex((float)sign, 0.0f);
 }
 
-static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64, int data_sym_idx)
+static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
+                                                 int data_sym_idx,
+                                                 const gr_complex* H52_tx_order)
 {
     gr_complex acc(0.0f, 0.0f);
+
     for (int i = 0; i < 4; i++) {
-        const gr_complex rx = sym64[kPilot4Bin[i]];  // EXPLICIT bin mapping!
-        acc += rx * std::conj(ht_expected_pilot(data_sym_idx, i));
+        const int sc = kPilot4Sc[i];
+        int h_idx = -1;
+        for (int j = 0; j < 52; j++) {
+            if (kTxOrder52[j] == sc) {
+                h_idx = j;
+                break;
+            }
+        }
+        if (h_idx < 0 || std::abs(H52_tx_order[h_idx]) < 0.1f) {
+            continue;
+        }
+        // Use EQUALIZED pilot to estimate residual CPE (not raw pilot)
+        const gr_complex eq_pilot = sym64[kPilot4Bin[i]] / H52_tx_order[h_idx];
+        acc += eq_pilot * std::conj(ht_expected_pilot(data_sym_idx, i));
     }
     if (std::abs(acc) < 1e-9f) {
         return 0.0f;
@@ -242,7 +257,7 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               const gr_complex* H52_tx_order,
                                               gr_complex* out52)
 {
-    const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx);
+    const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx, H52_tx_order);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
     fprintf(stderr, "[EQ_HTDATA] sym=%d cpe_deg=%.1f rot=%.4f%+.4fi H[0]=%.4f%+.4fi sym64[%d]=%.4f%+.4fi eq[0]=...\n",

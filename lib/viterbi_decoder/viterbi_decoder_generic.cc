@@ -430,7 +430,7 @@ void viterbi_decoder::viterbi_chunks_init_generic()
         d_path0_generic[i] = 0;
     }
 
-    int polys[2] = { 0x6d, 0x4f };
+    int polys[2] = { 0x5b, 0x79 };  // IEEE 802.11 standard: 0133, 0171
     for (i = 0; i < 32; i++) {
         d_branchtab27_generic[0].c[i] =
             (polys[0] < 0) ^ PARTAB[(2 * i) & abs(polys[0])] ? 1 : 0;

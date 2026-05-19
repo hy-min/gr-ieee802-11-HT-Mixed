@@ -37,7 +37,7 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_debug(true),
       d_debug_count(0),
       d_frame_start_abs(176),  // Expected L-LTF0 DATA start (sync_long output starts here)
-      d_frame_start_known(false),
+      d_frame_start_known(false),     // FIXED: start false
       d_items_processed(0),
       d_last_rel_idx(0),
       d_wifi_start_accepted(false),
@@ -46,8 +46,8 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_prev_should_buffer(false),
       d_frame1_correction(0),
       d_frame1_correction_stored(false),
-      d_wifi_start_tag_pending(false),
-      d_pending_tag_value(0)
+      d_in_frame(false),
+      d_frame_seq_counter(0)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -110,18 +110,29 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 pmt::is_number(tag.value) ? pmt::to_double(tag.value) : 0.0);
     }
 
-    // Check for rx_reset tag
-    // CRITICAL: Only set ignore_mode if this is a NEW rx_reset for the CURRENT frame
-    // If rx_reset_offset is behind us (from previous frame), ignore it
+    // Define exit_frame_state lambda BEFORE any code that calls it
+    auto exit_frame_state = [&]() {
+        d_in_frame = false;
+        d_frame_start_known = false;
+        d_buffer_count = 0;
+        d_buffer_filled = false;
+        d_items_processed = 0;
+        d_prev_should_buffer = false;
+        fprintf(stderr, "[SPLITTER_FRAME_EXIT] seq=%d buf_cleared items_reset\n",
+                d_frame_seq_counter);
+    };
+
     for (const auto& tag : tags) {
         if (pmt::symbol_to_string(tag.key) == "rx_reset") {
             uint64_t reset_pos = (uint64_t)tag.offset;
-            // Only enter ignore_mode if this reset is AFTER our current position
             if (reset_pos > start_abs_idx) {
                 d_ignore_mode = true;
-                d_buffer_count = 0;  // Clear current buffer
-                d_buffer_filled = false;
-                d_rx_reset_offset = (int64_t)tag.offset;  // Store rx_reset position
+                d_rx_reset_offset = (int64_t)tag.offset;
+                // CRITICAL FIX: rx_reset means upstream has left the frame
+                exit_frame_state();
+                while (!d_pending_tag_queue.empty()) {
+                    d_pending_tag_queue.pop();
+                }
             }
         }
     }
@@ -138,214 +149,72 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         }
     }
 
-    // Look for wifi_start tag - always check for new frames
-    // If we see wifi_start at a position significantly beyond our current d_frame_start_abs,
-    // it indicates a new frame has started and we should update our reference.
-    if (true) {
-        for (const auto& tag : tags) {
-            if (pmt::symbol_to_string(tag.key) == "wifi_start") {
-                // sync_long writes wifi_start at nitems_written(0) when rel=0.
-                // In COPY state, rel=0 means d_offset = d_frame_start.
-                // sync_long outputs: out[o] = in[d_offset + o] = in[d_frame_start + o]
-                // So output position 0 corresponds to input position d_frame_start.
-                //
-                // The wifi_start tag offset is the OUTPUT position in sync_long's stream.
-                // Since sync_long output[tag.offset] = sync_long input[d_frame_start],
-                // and sync_long output maps 1:1 to ht_symbol_splitter input:
-                //   ht_symbol_splitter input[tag.offset] = sync_long input[d_frame_start]
-                //
-                // But we want ht_symbol_splitter input position 0 to correspond to L-LTF DATA start.
-                // L-LTF DATA starts at input position d_frame_start in sync_long.
-                // So we need: d_frame_start_abs = tag.offset - d_frame_start
-                //
-                // Actually, simpler interpretation:
-                // - The tag.offset is where wifi_start appears in the input stream
-                // - At that position, we're reading sync_long input[d_frame_start]
-                // - We want d_frame_start_abs such that rel_idx = current_idx - d_frame_start_abs = 0
-                //   when current_idx = tag.offset
-                // - So d_frame_start_abs = tag.offset
-                //
-                // But tag.offset is the position in sync_long's OUTPUT, and we want the position
-                // in ht_symbol_splitter's INPUT where L-LTF DATA starts.
-                //
-                // Since sync_long output = ht_symbol_splitter input (1:1), and
-                // sync_long output[tag.offset] = input[d_frame_start],
-                // the L-LTF DATA starts at ht_symbol_splitter input position d_frame_start.
-                // But tag.offset is where wifi_start was written, which is at sync_long output position 0.
-                // Since sync_long output position 0 = sync_long input position d_frame_start,
-                // and this maps 1:1 to ht_symbol_splitter input, wifi_start appears at
-                // ht_symbol_splitter input position d_frame_start.
-                //
-                // So d_frame_start_abs = d_frame_start (the tag.value)!
-                uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
-                uint64_t tag_abs_pos = (uint64_t)tag.offset;
+    // Unified wifi_start handler: every wifi_start starts a new frame.
+    for (const auto& tag : tags) {
+        if (pmt::symbol_to_string(tag.key) == "wifi_start") {
+            uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
+            uint64_t tag_abs_pos = (uint64_t)tag.offset;
 
-                // d_frame_start_abs should be the ABSOLUTE position where L-LTF DATA starts.
-                // wifi_start tag.offset = absolute position in input stream where tag was written
-                // d_frame_start (176) = offset within sync_long where L-LTF DATA starts
-                // sync_long output[0] = sync_long input[d_frame_start]
-                // Since sync_long output IS ht_symbol_splitter input (1:1 mapping):
-                //   ht_symbol_splitter input position 0 = sync_long input[d_frame_start]
-                // So L-LTF DATA starts at ht_symbol_splitter input position 0.
-                // But we use tag.offset to find where we are in the stream.
-                // The first sample we consume (i=0) has current_idx = tag.offset.
-                // This corresponds to ht_symbol_splitter input position 0.
-                // So d_frame_start_abs = 0 (meaning L-LTF DATA is at rel_idx 0).
-                //
-                // But wait - we want to buffer DATA, not CP. L-LTF DATA starts at
-                // sync_long input position d_frame_start = 176.
-                // In ht_symbol_splitter's coordinate: first sample (position 0) IS L-LTF DATA.
-                // So d_frame_start_abs should be 0, not d_frame_start.
-                //
-                // Actually, the issue is that d_frame_start_abs is used to compute rel_idx,
-                // and rel_idx=0 should correspond to L-LTF DATA. Since our input position 0
-                // IS L-LTF DATA, we need d_frame_start_abs = 0.
-                //
-                // But the original code uses d_frame_start = 176, which would make
-                // rel_idx = current_idx - 176. At current_idx = 1166976 (where tag was found),
-                // rel_idx = 1166800, which is way off.
-                // d_frame_start_abs should be 0 because:
-                // - sync_long output[0] = sync_long input[d_frame_start] = input[176]
-                // - ht_symbol_splitter input[0] = sync_long output[0] = input[176]
-                // - So L-LTF0 DATA starts at ht_symbol_splitter input position 0
-                // - We want rel_idx=0 to correspond to L-LTF0 DATA start
-                // - Therefore d_frame_start_abs = 0
-
-                // Check if this is a NEW frame
-                // If d_frame_start_known is already true and we see another wifi_start,
-                // it means a new frame has started (we don't re-use wifi_start within a frame)
-                //
-                // CRITICAL FIX: Ignore wifi_start tags while still processing preamble symbols.
-                // HT-Mixed preamble has ~7 symbols (2 L-LTF + 1 L-SIG + 2 HT-SIG + 1 HT-STF) = 448 samples before HT-DATA.
-                // If d_items_processed < 500, we're still in preamble - ignore this wifi_start.
-                //
-                // The previous condition "!is_new_frame && d_frame_start_known" was wrong:
-                // it only ignored if d_frame_start_known was already true. But on the FIRST
-                // wifi_start, d_frame_start_known is false, so the tag was always accepted,
-                // causing d_frame_start_abs to change from 0 to 176 MID-PREAMBLE, corrupting
-                // the rel_idx calculation for buffered symbols.
-                //
-                // FIX: Ignore wifi_start if d_items_processed < 500 (still in preamble).
-                // This applies regardless of whether d_frame_start_known is true.
-                // However, we still need to set d_frame_start_known=true so that buffering is enabled.
-                bool is_in_preamble = (d_items_processed < 500);
-
-                if (is_in_preamble) {
-                    // We're seeing wifi_start during preamble processing.
-                    // FIX: We MUST set d_frame_start_abs ONLY on the FIRST wifi_start.
-                    // Subsequent wifi_start tags during preamble are spurious and should be ignored.
-                    // Also, d_frame_start (160) is the CP start, but we want L-LTF0 DATA start (176).
-                    // CRITICAL: Only set d_frame_start_abs on FIRST wifi_start
-                    if (!d_frame_start_known) {
-                        d_frame_start_known = true;
-                        // CRITICAL FIX: Get the sync_offset for THIS wifi_start position
-                        // The problem was we used the last sync_offset (at offset=401, value=561)
-                        // instead of the one at wifi_start position (offset=0, value=0)
-                        int64_t sync_for_this_wifi_start = -1;
-                        auto it = sync_offset_by_pos.find(tag_abs_pos);
-                        if (it != sync_offset_by_pos.end()) {
-                            sync_for_this_wifi_start = it->second;
-                        } else {
-                            // Find the closest sync_offset at or before this wifi_start
-                            for (auto rit = sync_offset_by_pos.rbegin(); rit != sync_offset_by_pos.rend(); rit++) {
-                                if (rit->first <= tag_abs_pos) {
-                                    sync_for_this_wifi_start = rit->second;
-                                    break;
-                                }
-                            }
-                        }
-                        // PROBE: Print d_frame_start_abs calculation
-                        fprintf(stderr, "[SPLITTER_FRAME_START] d_frame_start=%llu sync=%lld wifi_pos=%llu\n",
-                                (unsigned long long)d_frame_start, (long long)sync_for_this_wifi_start, (unsigned long long)tag_abs_pos);
-                        // If we know the sync_offset, use it to correct the mapping
-                        if (sync_for_this_wifi_start >= 0) {
-                            d_frame_start_abs = (int64_t)d_frame_start + 16 - sync_for_this_wifi_start;
-                        } else {
-                            d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176 for frame 1
-                        }
-                        d_wifi_start_accepted = true;  // Propagate wifi_start!
-                        // Reset ignore_mode when new frame starts
-                        d_ignore_mode = false;
-                        d_rx_reset_offset = -1;
-
-                        // Store the correction learned from frame 1 for multi-frame use
-                        if (!d_frame1_correction_stored) {
-                            d_frame1_correction = d_frame_start_abs - (int64_t)tag_abs_pos;
-                            d_frame1_correction_stored = true;
-                            fprintf(stderr, "[SPLITTER_FRAME1_CORRECTION] correction=%lld = d_frame_start_abs(%lld) - tag_abs_pos(%llu)\n",
-                                    (long long)d_frame1_correction, (long long)d_frame_start_abs, (unsigned long long)tag_abs_pos);
-                        }
-                    } else {
-                        // Already have frame start - ignore this wifi_start
-                        d_wifi_start_accepted = false;
-                        // But still reset ignore_mode since this is a NEW frame
-                        d_ignore_mode = false;
-                        d_rx_reset_offset = -1;
+            int64_t sync_for_this_wifi_start = -1;
+            auto it = sync_offset_by_pos.find(tag_abs_pos);
+            if (it != sync_offset_by_pos.end()) {
+                sync_for_this_wifi_start = it->second;
+            } else {
+                for (auto rit = sync_offset_by_pos.rbegin();
+                     rit != sync_offset_by_pos.rend(); rit++) {
+                    if (rit->first <= tag_abs_pos) {
+                        sync_for_this_wifi_start = rit->second;
+                        break;
                     }
-                } else {
-                    // Multi-frame: compute d_frame_start_abs from tag position + frame offset.
-                    // The formula tag_abs_pos + d_frame1_correction is WRONG because it assumes
-                    // d_frame_start is always 160. For multi-frame, d_frame_start varies (e.g., 267).
-                    // Correct formula: tag_abs_pos + d_frame_start + 16 - sync_offset.
-                    //
-                    // frame 1: d_frame_start=160, sync=0 → 0 + 160 + 16 - 0 = 176 ✓
-                    // frame 2: d_frame_start=267, sync=0 → 1664 + 267 + 16 - 0 = 1947 (not 1840)
-                    fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] d_frame_start=%llu wifi_pos=%llu start_abs=%llu buf_cnt=%d items_proc=%lld\n",
-                            (unsigned long long)d_frame_start, (unsigned long long)tag_abs_pos,
-                            (unsigned long long)start_abs_idx, d_buffer_count, (long long)d_items_processed);
-
-                    int64_t sync_for_this_wifi_start = -1;
-                    auto it = sync_offset_by_pos.find(tag_abs_pos);
-                    if (it != sync_offset_by_pos.end()) {
-                        sync_for_this_wifi_start = it->second;
-                    } else {
-                        for (auto rit = sync_offset_by_pos.rbegin(); rit != sync_offset_by_pos.rend(); rit++) {
-                            if (rit->first <= tag_abs_pos) {
-                                sync_for_this_wifi_start = rit->second;
-                                break;
-                            }
-                        }
-                    }
-                    fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] sync_offset=%lld\n", (long long)sync_for_this_wifi_start);
-
-                    if (sync_for_this_wifi_start >= 0) {
-                        d_frame_start_abs = (int64_t)tag_abs_pos + d_frame_start + 16 - sync_for_this_wifi_start;
-                    } else {
-                        d_frame_start_abs = (int64_t)tag_abs_pos + d_frame_start + 16;
-                    }
-                    fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] computed d_frame_start_abs=%lld\n",
-                            (long long)d_frame_start_abs);
-                    d_frame_start_known = true;
-                    d_wifi_start_accepted = true;
-
-                    // Reset ignore_mode when new frame starts
-                    d_ignore_mode = false;
-                    d_rx_reset_offset = -1;
-
-                    // Critical state reset for multi-frame handling:
-                    // When a new wifi_start is detected, reset all CP-skip state variables
-                    // to ensure the second frame's L-LTF CP is correctly skipped, just like the first frame.
-                    d_buffer_count = 0;
-                    d_items_processed = 0;
                 }
-
-                // Defer wifi_start propagation until the first FFT of the new
-                // frame is actually output. The tag was previously placed at
-                // nitems_written(0) (CURRENT output position), but the first
-                // FFT (L-LTF0) outputs at nitems_written(0)+produced (FUTURE
-                // position), creating a tag-vs-preamble offset for multi-frame.
-                if (d_wifi_start_accepted) {
-                    if (d_wifi_start_tag_pending) {
-                        fprintf(stderr, "[SPLITTER_TAG_DEFERRED] WARNING: overwriting pending tag old_value=%lld new_value=%lld\n",
-                                (long long)d_pending_tag_value, (long long)d_frame_start_abs);
-                    }
-                    d_wifi_start_tag_pending = true;
-                    d_pending_tag_value = d_frame_start_abs;
-                    d_wifi_start_accepted = false;
-                }
-
-                break;
             }
+
+            int64_t new_frame_start_abs;
+            if (sync_for_this_wifi_start >= 0) {
+                new_frame_start_abs = (int64_t)tag_abs_pos
+                                      + (int64_t)d_frame_start + 16
+                                      - sync_for_this_wifi_start;
+            } else {
+                new_frame_start_abs = (int64_t)tag_abs_pos
+                                      + (int64_t)d_frame_start + 16;
+            }
+
+            fprintf(stderr,
+                    "[SPLITTER_FRAME_START] seq=%d d_frame_start=%llu "
+                    "sync=%lld wifi_pos=%llu start_abs=%lld\n",
+                    d_frame_seq_counter + 1,
+                    (unsigned long long)d_frame_start,
+                    (long long)sync_for_this_wifi_start,
+                    (unsigned long long)tag_abs_pos,
+                    (long long)new_frame_start_abs);
+
+            if (d_in_frame) {
+                fprintf(stderr,
+                        "[SPLITTER_FRAME_START] exiting old frame seq=%d\n",
+                        d_frame_seq_counter);
+                exit_frame_state();
+            }
+
+            d_frame_seq_counter++;
+            d_frame_start_abs = new_frame_start_abs;
+            d_frame_start_known = true;
+            d_in_frame = true;
+            d_wifi_start_accepted = true;
+            d_ignore_mode = false;
+            d_rx_reset_offset = -1;
+
+            d_pending_tag_queue.push(
+                std::make_pair((uint64_t)0, d_frame_start_abs));
+
+            if (!d_frame1_correction_stored) {
+                d_frame1_correction = d_frame_start_abs - (int64_t)tag_abs_pos;
+                d_frame1_correction_stored = true;
+                fprintf(stderr,
+                        "[SPLITTER_FRAME1_CORRECTION] correction=%lld\n",
+                        (long long)d_frame1_correction);
+            }
+
+            break;
         }
     }
 
@@ -665,7 +534,13 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     if (total_energy < 10.0f) {
                         d_buffer_count = 0;
                         d_buffer_filled = false;
-                        // DO NOT output — skip this zero-energy FFT block
+                        if (d_in_frame && rel_idx >= 464) {
+                            fprintf(stderr,
+                                    "[SPLITTER_FRAME_EXIT] energy_drop rel=%llu\n",
+                                    (unsigned long long)rel_idx);
+                            exit_frame_state();
+                        }
+                        // DO NOT output
                     } else {
                         // Debug: Print symbol type based on rel_idx
                         int symbol_type = -1;
@@ -700,15 +575,23 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         d_buffer_count = 0;
                         d_buffer_filled = false;
 
-                        // Emit deferred wifi_start tag at the first FFT's actual output position
-                        if (d_wifi_start_tag_pending) {
-                            add_item_tag(0, fft_pos,
+                        // Emit queued wifi_start tags at the first FFT's actual output position
+                        while (!d_pending_tag_queue.empty()) {
+                            auto& front = d_pending_tag_queue.front();
+                            uint64_t tag_out_pos = front.first;
+                            if (tag_out_pos == 0) {
+                                tag_out_pos = fft_pos;
+                            }
+                            add_item_tag(0, tag_out_pos,
                                          pmt::string_to_symbol("wifi_start"),
-                                         pmt::from_double(d_pending_tag_value),
+                                         pmt::from_double(front.second),
                                          pmt::string_to_symbol(name()));
-                            fprintf(stderr, "[SPLITTER_TAG_DEFERRED] wifi_start emitted at fft_out_pos=%llu value=%lld\n",
-                                    (unsigned long long)fft_pos, (long long)d_pending_tag_value);
-                            d_wifi_start_tag_pending = false;
+                            fprintf(stderr,
+                                    "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld\n",
+                                    d_frame_seq_counter,
+                                    (unsigned long long)tag_out_pos,
+                                    (long long)front.second);
+                            d_pending_tag_queue.pop();
                         }
 
                         fft_out_count++;
@@ -744,14 +627,19 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         d_buffer_count, remaining_items, (unsigned long long)rel_idx, produced, noutput_items);
 
                 uint64_t fft_pos = nitems_written(0) + produced;
-                if (d_wifi_start_tag_pending) {
-                    add_item_tag(0, fft_pos,
+                while (!d_pending_tag_queue.empty()) {
+                    auto& front = d_pending_tag_queue.front();
+                    uint64_t tag_out_pos = (front.first == 0) ? fft_pos : front.first;
+                    add_item_tag(0, tag_out_pos,
                                  pmt::string_to_symbol("wifi_start"),
-                                 pmt::from_double(d_pending_tag_value),
+                                 pmt::from_double(front.second),
                                  pmt::string_to_symbol(name()));
-                    fprintf(stderr, "[SPLITTER_TAG_DEFERRED] wifi_start emitted at fft_out_pos=%llu value=%lld (full_starve)\n",
-                            (unsigned long long)fft_pos, (long long)d_pending_tag_value);
-                    d_wifi_start_tag_pending = false;
+                    fprintf(stderr,
+                            "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (full_starve)\n",
+                            d_frame_seq_counter,
+                            (unsigned long long)tag_out_pos,
+                            (long long)front.second);
+                    d_pending_tag_queue.pop();
                 }
 
                 for (int j = 0; j < d_buffer_count; j++) {
@@ -823,14 +711,19 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             d_buffer_count = 0;
                             d_buffer_filled = false;
 
-                            if (d_wifi_start_tag_pending) {
-                                add_item_tag(0, fft_pos,
+                            while (!d_pending_tag_queue.empty()) {
+                                auto& front = d_pending_tag_queue.front();
+                                uint64_t tag_out_pos = (front.first == 0) ? fft_pos : front.first;
+                                add_item_tag(0, tag_out_pos,
                                              pmt::string_to_symbol("wifi_start"),
-                                             pmt::from_double(d_pending_tag_value),
+                                             pmt::from_double(front.second),
                                              pmt::string_to_symbol(name()));
-                                fprintf(stderr, "[SPLITTER_TAG_DEFERRED] wifi_start emitted at fft_out_pos=%llu value=%lld (starve)\n",
-                                        (unsigned long long)fft_pos, (long long)d_pending_tag_value);
-                                d_wifi_start_tag_pending = false;
+                                fprintf(stderr,
+                                        "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (starve)\n",
+                                        d_frame_seq_counter,
+                                        (unsigned long long)tag_out_pos,
+                                        (long long)front.second);
+                                d_pending_tag_queue.pop();
                             }
 
                             fft_out_count++;
@@ -839,8 +732,47 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                     d_buffer[0].real(), d_buffer[0].imag());
                         }
                     } else {
-                        d_buffer_count = 0;
-                        d_buffer_filled = false;
+                        fprintf(stderr,
+                                "[SPLITTER_STARVE_BOUNDARY] final_rel=%lld buf=64 "
+                                "forcing output (was at_boundary=false)\n",
+                                (long long)final_rel_idx);
+                        float total_energy = 0.0f;
+                        for (int zz = 0; zz < 64; zz++) {
+                            total_energy += std::norm(d_buffer[zz]);
+                        }
+                        if (total_energy >= 10.0f) {
+                            int symbol_type = -1;
+                            if (final_rel_idx >= 0 && final_rel_idx < 64) symbol_type = 0;
+                            else if (final_rel_idx >= 80 && final_rel_idx < 144) symbol_type = 0;
+                            else if (final_rel_idx >= 160 && final_rel_idx < 224) symbol_type = 2;
+                            else if (final_rel_idx >= 240 && final_rel_idx < 304) symbol_type = 3;
+                            else if (final_rel_idx >= 320 && final_rel_idx < 384) symbol_type = 4;
+                            else if (final_rel_idx >= 400 && final_rel_idx < 464) symbol_type = 5;
+
+                            fprintf(stderr,
+                                    "[SPLITTER_FFT] type=%d rel_idx=%lld first=%.4f%+.4fi\n",
+                                    symbol_type, (long long)final_rel_idx,
+                                    d_buffer[0].real(), d_buffer[0].imag());
+
+                            uint64_t fft_pos = nitems_written(0) + produced;
+                            memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+                            produced += d_fft_size;
+                            d_buffer_count = 0;
+                            d_buffer_filled = false;
+
+                            while (!d_pending_tag_queue.empty()) {
+                                auto& front = d_pending_tag_queue.front();
+                                uint64_t tag_out_pos = (front.first == 0) ? fft_pos : front.first;
+                                add_item_tag(0, tag_out_pos,
+                                             pmt::string_to_symbol("wifi_start"),
+                                             pmt::from_double(front.second),
+                                             pmt::string_to_symbol(name()));
+                                d_pending_tag_queue.pop();
+                            }
+                        } else {
+                            d_buffer_count = 0;
+                            d_buffer_filled = false;
+                        }
                     }
                 }
                 d_items_processed += consumed;

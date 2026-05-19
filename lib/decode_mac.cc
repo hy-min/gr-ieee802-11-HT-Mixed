@@ -346,6 +346,15 @@ public:
             std::vector<gr::tag_t> tags;
             get_tags_in_range(tags, 0, nread + i, nread + i + 1);
 
+            if (!tags.empty()) {
+                fprintf(stderr, "[DECODE_TAG] nread=%llu i=%d n_tags=%zu",
+                        (unsigned long long)nread, i, tags.size());
+                for (const auto& t : tags) {
+                    fprintf(stderr, " key=%s", pmt::symbol_to_string(t.key).c_str());
+                }
+                fprintf(stderr, "\n");
+            }
+
             const pmt::pmt_t k_frame_bytes_sp = pmt::mp("frame bytes");
             const pmt::pmt_t k_frame_bytes_us = pmt::mp("frame_bytes");
             const pmt::pmt_t k_mcs            = pmt::mp("mcs");
@@ -806,7 +815,7 @@ private:
         }
 
         if (calc_fcs != rx_fcs) {
-            fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x\n", calc_fcs, rx_fcs);
+            fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x len=%d\n", calc_fcs, rx_fcs, d_ht_len);
             return;
         }
 
