@@ -45,7 +45,9 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_rx_reset_offset(-1),
       d_prev_should_buffer(false),
       d_frame1_correction(0),
-      d_frame1_correction_stored(false)
+      d_frame1_correction_stored(false),
+      d_wifi_start_tag_pending(false),
+      d_pending_tag_value(0)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -257,23 +259,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                 (unsigned long long)d_frame_start, (long long)sync_for_this_wifi_start, (unsigned long long)tag_abs_pos);
                         // If we know the sync_offset, use it to correct the mapping
                         if (sync_for_this_wifi_start >= 0) {
-                            // Correct formula: d_frame_start_abs = d_frame_start [+16] - sync_offset
-                            // wifi_start tag.value = d_frame_start (CP start in sync_long input)
-                            // sync_offset = d_offset at time wifi_start was written
-                            // When sync_offset=0, we need +16 to get correct CP→DATA offset
-                            // When sync_offset>0, the offset is already incorporated
-                            if (d_frame_start >= 160 && d_frame_start <= 200) {
-                                d_frame_start_abs = (int64_t)d_frame_start + 16 - sync_for_this_wifi_start;
-                            } else {
-                                d_frame_start_abs = (int64_t)d_frame_start - sync_for_this_wifi_start;
-                            }
+                            d_frame_start_abs = (int64_t)d_frame_start + 16 - sync_for_this_wifi_start;
                         } else {
-                            // Fallback: use original logic
-                            if (d_frame_start >= 160 && d_frame_start <= 200) {
-                                d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176
-                            } else {
-                                d_frame_start_abs = (int64_t)d_frame_start;
-                            }
+                            d_frame_start_abs = (int64_t)d_frame_start + 16;  // 176 for frame 1
                         }
                         d_wifi_start_accepted = true;  // Propagate wifi_start!
                         // Reset ignore_mode when new frame starts
@@ -295,50 +283,38 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         d_rx_reset_offset = -1;
                     }
                 } else {
-                    // Multi-frame: use the correction learned from frame 1
-                    // The tag_abs_pos marks L-LTF0 DATA start in the SPLITTER input stream.
-                    // d_frame1_correction is the constant offset needed to align rel_idx.
-                    // PROBE: Print ALL relevant state for multi-frame debugging
+                    // Multi-frame: compute d_frame_start_abs from tag position + frame offset.
+                    // The formula tag_abs_pos + d_frame1_correction is WRONG because it assumes
+                    // d_frame_start is always 160. For multi-frame, d_frame_start varies (e.g., 267).
+                    // Correct formula: tag_abs_pos + d_frame_start + 16 - sync_offset.
+                    //
+                    // frame 1: d_frame_start=160, sync=0 → 0 + 160 + 16 - 0 = 176 ✓
+                    // frame 2: d_frame_start=267, sync=0 → 1664 + 267 + 16 - 0 = 1947 (not 1840)
                     fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] d_frame_start=%llu wifi_pos=%llu start_abs=%llu buf_cnt=%d items_proc=%lld\n",
                             (unsigned long long)d_frame_start, (unsigned long long)tag_abs_pos,
                             (unsigned long long)start_abs_idx, d_buffer_count, (long long)d_items_processed);
-                    if (d_frame1_correction_stored) {
-                        // Empirically, the SPLITTER needs the same 176-sample offset from the
-                        // tag position. The 176 samples contain L-LTF0 (64) + L-LTF1 CP (16) +
-                        // L-LTF1 DATA (64) + L-SIG CP (16) + L-SIG DATA first 16 samples.
-                        // The SPLITTER discards these and starts buffering at L-SIG DATA[16]
-                        // which gets rel_idx=0. Somehow this still produces correct FFT windows.
-                        d_frame_start_abs = (int64_t)tag_abs_pos + d_frame1_correction;
-                        fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] using stored correction: %llu + %lld = %lld\n",
-                                (unsigned long long)tag_abs_pos, (long long)d_frame1_correction, (long long)d_frame_start_abs);
+
+                    int64_t sync_for_this_wifi_start = -1;
+                    auto it = sync_offset_by_pos.find(tag_abs_pos);
+                    if (it != sync_offset_by_pos.end()) {
+                        sync_for_this_wifi_start = it->second;
                     } else {
-                        // Fallback (should not normally happen): use sync_offset-based formula
-                        int64_t sync_for_this_wifi_start = -1;
-                        auto it = sync_offset_by_pos.find(tag_abs_pos);
-                        if (it != sync_offset_by_pos.end()) {
-                            sync_for_this_wifi_start = it->second;
-                        } else {
-                            for (auto rit = sync_offset_by_pos.rbegin(); rit != sync_offset_by_pos.rend(); rit++) {
-                                if (rit->first <= tag_abs_pos) {
-                                    sync_for_this_wifi_start = rit->second;
-                                    break;
-                                }
-                            }
-                        }
-                        if (sync_for_this_wifi_start >= 0) {
-                            if (d_frame_start >= 160 && d_frame_start <= 200) {
-                                d_frame_start_abs = (int64_t)d_frame_start + 16 - sync_for_this_wifi_start;
-                            } else {
-                                d_frame_start_abs = (int64_t)d_frame_start - sync_for_this_wifi_start;
-                            }
-                        } else {
-                            if (d_frame_start >= 160 && d_frame_start <= 200) {
-                                d_frame_start_abs = (int64_t)d_frame_start + 16;
-                            } else {
-                                d_frame_start_abs = (int64_t)d_frame_start;
+                        for (auto rit = sync_offset_by_pos.rbegin(); rit != sync_offset_by_pos.rend(); rit++) {
+                            if (rit->first <= tag_abs_pos) {
+                                sync_for_this_wifi_start = rit->second;
+                                break;
                             }
                         }
                     }
+                    fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] sync_offset=%lld\n", (long long)sync_for_this_wifi_start);
+
+                    if (sync_for_this_wifi_start >= 0) {
+                        d_frame_start_abs = (int64_t)tag_abs_pos + d_frame_start + 16 - sync_for_this_wifi_start;
+                    } else {
+                        d_frame_start_abs = (int64_t)tag_abs_pos + d_frame_start + 16;
+                    }
+                    fprintf(stderr, "[SPLITTER_FRAME_START_MULTI] computed d_frame_start_abs=%lld\n",
+                            (long long)d_frame_start_abs);
                     d_frame_start_known = true;
                     d_wifi_start_accepted = true;
 
@@ -353,14 +329,19 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     d_items_processed = 0;
                 }
 
-                // Only propagate wifi_start if SPLITTER accepted it (not ignored)
+                // Defer wifi_start propagation until the first FFT of the new
+                // frame is actually output. The tag was previously placed at
+                // nitems_written(0) (CURRENT output position), but the first
+                // FFT (L-LTF0) outputs at nitems_written(0)+produced (FUTURE
+                // position), creating a tag-vs-preamble offset for multi-frame.
                 if (d_wifi_start_accepted) {
-                    add_item_tag(0,  // output port 0
-                                 nitems_written(0),  // current output position
-                                 pmt::string_to_symbol("wifi_start"),
-                                 pmt::from_double(d_frame_start_abs),
-                                 pmt::string_to_symbol(name()));
-                    d_wifi_start_accepted = false;  // Reset after propagation
+                    if (d_wifi_start_tag_pending) {
+                        fprintf(stderr, "[SPLITTER_TAG_DEFERRED] WARNING: overwriting pending tag old_value=%lld new_value=%lld\n",
+                                (long long)d_pending_tag_value, (long long)d_frame_start_abs);
+                    }
+                    d_wifi_start_tag_pending = true;
+                    d_pending_tag_value = d_frame_start_abs;
+                    d_wifi_start_accepted = false;
                 }
 
                 break;
@@ -713,10 +694,22 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                 d_buffer[0].real(), d_buffer[0].imag(),
                                 d_buffer[63].real(), d_buffer[63].imag(),
                                 total_energy);
+                        uint64_t fft_pos = nitems_written(0) + produced;
                         memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                         produced += d_fft_size;
                         d_buffer_count = 0;
                         d_buffer_filled = false;
+
+                        // Emit deferred wifi_start tag at the first FFT's actual output position
+                        if (d_wifi_start_tag_pending) {
+                            add_item_tag(0, fft_pos,
+                                         pmt::string_to_symbol("wifi_start"),
+                                         pmt::from_double(d_pending_tag_value),
+                                         pmt::string_to_symbol(name()));
+                            fprintf(stderr, "[SPLITTER_TAG_DEFERRED] wifi_start emitted at fft_out_pos=%llu value=%lld\n",
+                                    (unsigned long long)fft_pos, (long long)d_pending_tag_value);
+                            d_wifi_start_tag_pending = false;
+                        }
 
                         fft_out_count++;
                         fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
@@ -749,6 +742,18 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // Buffer is full - output it and return
                 fprintf(stderr, "[SPLITTER_STARVE] FULL buf=%d remaining=%d rel=%llu produced=%d nout=%d\n",
                         d_buffer_count, remaining_items, (unsigned long long)rel_idx, produced, noutput_items);
+
+                uint64_t fft_pos = nitems_written(0) + produced;
+                if (d_wifi_start_tag_pending) {
+                    add_item_tag(0, fft_pos,
+                                 pmt::string_to_symbol("wifi_start"),
+                                 pmt::from_double(d_pending_tag_value),
+                                 pmt::string_to_symbol(name()));
+                    fprintf(stderr, "[SPLITTER_TAG_DEFERRED] wifi_start emitted at fft_out_pos=%llu value=%lld (full_starve)\n",
+                            (unsigned long long)fft_pos, (long long)d_pending_tag_value);
+                    d_wifi_start_tag_pending = false;
+                }
+
                 for (int j = 0; j < d_buffer_count; j++) {
                     out[produced++] = d_buffer[j];
                 }
@@ -812,10 +817,22 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                     d_buffer[0].real(), d_buffer[0].imag(),
                                     d_buffer[63].real(), d_buffer[63].imag(),
                                     total_energy);
+                            uint64_t fft_pos = nitems_written(0) + produced;
                             memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                             produced += d_fft_size;
                             d_buffer_count = 0;
                             d_buffer_filled = false;
+
+                            if (d_wifi_start_tag_pending) {
+                                add_item_tag(0, fft_pos,
+                                             pmt::string_to_symbol("wifi_start"),
+                                             pmt::from_double(d_pending_tag_value),
+                                             pmt::string_to_symbol(name()));
+                                fprintf(stderr, "[SPLITTER_TAG_DEFERRED] wifi_start emitted at fft_out_pos=%llu value=%lld (starve)\n",
+                                        (unsigned long long)fft_pos, (long long)d_pending_tag_value);
+                                d_wifi_start_tag_pending = false;
+                            }
+
                             fft_out_count++;
                             fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%lld td_energy=%.1f first=%.4f%+.4fi\n",
                                     fft_out_count, (long long)final_rel_idx, (double)total_energy,
