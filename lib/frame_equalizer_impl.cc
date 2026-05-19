@@ -2182,19 +2182,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
             if (use_direct_tx_order_mcs0) {
                 if (!d_H52_tx_order_valid) {
-                    gr_complex H_lltf[52], H_htltf[52];
-                    compute_H52_tx_order(d_early_eqsym[kLltf0Rel], H_lltf);
-                    compute_H52_tx_order(d_early_eqsym[kHtTrain1Rel], H_htltf);
-                    int sign_diffs = 0;
-                    for (int i = 0; i < 52; i++) {
-                        float a = std::arg(H_lltf[i] / H_htltf[i]) * 180.0f / M_PI;
-                        if (std::abs(a) > 90.0f) sign_diffs++;
-                    }
-                    if (sign_diffs <= 4) {
-                        std::memcpy(d_H52_tx_order, H_htltf, 52 * sizeof(gr_complex));
-                    } else {
-                        std::memcpy(d_H52_tx_order, H_lltf, 52 * sizeof(gr_complex));
-                    }
+                    // Always use L-LTF0 for H estimation.
+                    // compute_H52_tx_order is designed for L-LTF0 data (uses kLltf48TX).
+                    // Using it with HT-LTF1 data is a category error - HT-LTF has
+                    // different TX reference sequence (PHT_LTF vs legacy LTF).
+                    // Edge subcarriers (-28,-27,+27,+28) already come from HT-LTF1
+                    // via saved_htltf_edge, so the edge improvement is preserved.
+                    compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
                     d_H52_tx_order_valid = true;
                 }
                 extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
@@ -2215,6 +2209,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
             if (tag_this_output_as_frame_start) {
                 const uint64_t out_off = this->nitems_written(0) + produced;
+                fprintf(stderr, "[EQ_TAG] frame_bytes out_off=%llu nwritten=%llu produced=%d\n",
+                        (unsigned long long)out_off, (unsigned long long)this->nitems_written(0), produced);
 
                 this->add_item_tag(
                     0,
