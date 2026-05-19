@@ -1318,6 +1318,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     uint8_t deintl48_b[48];
     uint8_t enc96[96];
 
+    // Estimate and compensate residual CPE using HT-SIG0 pilots.
+    // The caller already applies QBPSK rotation (0/90/180/270°); CPE is the
+    // small remaining phase offset that can sit between those quadrants.
+    const float cpe = estimate_header_cpe_rad(rx52_a, H52, true);
+    const gr_complex cpe_rot = std::exp(gr_complex(0.0f, -cpe));
+
     // Extract bits from HT-SIG0 (rx52_a)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
@@ -1325,21 +1331,21 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         if (h_mag < 0.1f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_a[i], H52[i]);
+            eq = safe_div(rx52_a[i], H52[i]) * cpe_rot;
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
         eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
     }
 
-    // Extract bits from HT-SIG1 (rx52_b)
+    // Extract bits from HT-SIG1 (rx52_b) — use same CPE estimate
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
         if (h_mag < 0.1f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_b[i], H52[i]);
+            eq = safe_div(rx52_b[i], H52[i]) * cpe_rot;
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
