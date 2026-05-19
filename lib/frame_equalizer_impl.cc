@@ -1626,6 +1626,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_have_ht_header = false;
     d_is_ht = false;
     d_sym_idx = 0;
+    d_takeover_reject_symbols = 0;
     d_internal_symbol_counter = 0;
     d_first_valid_symbol = -1;
 
@@ -1962,8 +1963,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 reset_frame_state();
                 d_in_frame = true;
             } else {
-                fprintf(stderr, "[EQ_FRAME_TAKEOVER_REJECT] abs_in_off=%llu d_sym_idx=%d end_rel=%d\n",
-                        (unsigned long long)abs_in_off, d_sym_idx, d_data_start_rel + d_frame_symbols - 1);
+                int remaining = (d_data_start_rel + d_frame_symbols) - d_sym_idx;
+                fprintf(stderr,
+                        "[EQ_FRAME_TAKEOVER_REJECT] abs_in_off=%llu d_sym_idx=%d end_rel=%d remaining=%d\n",
+                        (unsigned long long)abs_in_off, d_sym_idx,
+                        d_data_start_rel + d_frame_symbols - 1, remaining);
+                d_takeover_reject_symbols++;
             }
         }
 
@@ -2283,8 +2288,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
         if (d_have_ht_header && d_frame_symbols > 0) {
             const int end_rel = d_data_start_rel + d_frame_symbols;
             if (d_sym_idx >= end_rel) {
-                fprintf(stderr, "[EQ_FRAME_END] frame end reached sym_idx=%d end_rel=%d\n",
-                        d_sym_idx, end_rel);
+                fprintf(stderr, "[EQ_FRAME_END] frame end reached sym_idx=%d end_rel=%d misproc=%d\n",
+                        d_sym_idx, end_rel, d_takeover_reject_symbols);
                 reset_frame_state();
                 d_in_frame = false;
             }

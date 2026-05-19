@@ -54,6 +54,7 @@ private:
     bool d_is_ht_frame;  // Frame type detection result: true=HT-Mixed, false=Legacy
 
     int d_sym_idx;
+    int d_takeover_reject_symbols;
     int d_internal_symbol_counter;  // Tracks FFT output number, reset at wifi_start
     int d_first_valid_symbol;
     bool d_in_frame;
