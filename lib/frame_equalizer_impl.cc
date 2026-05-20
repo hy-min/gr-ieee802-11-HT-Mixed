@@ -1651,6 +1651,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     ltf0_saved = false;
     std::memset(saved_ltf0_fft, 0, sizeof(saved_ltf0_fft));
     std::memset(saved_htltf_edge, 0, sizeof(saved_htltf_edge));
+    d_equalizer->reset();
 }
 
 bool frame_equalizer_impl::parse_signal(const uint8_t* decoded_bits,
