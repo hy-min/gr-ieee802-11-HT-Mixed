@@ -486,6 +486,24 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         ltf0_saved = false;
     }
 
+    // L-LTF0/L-LTF1 correlation diagnostic
+    if (extract_call_count == 1 && ltf0_ever_saved) {
+        double corr_real = 0.0, corr_imag = 0.0;
+        double energy0 = 0.0, energy1 = 0.0;
+        for (int i = 0; i < 64; i++) {
+            corr_real += (saved_ltf0_fft[i].real() * sym64[i].real() +
+                          saved_ltf0_fft[i].imag() * sym64[i].imag());
+            corr_imag += (saved_ltf0_fft[i].real() * sym64[i].imag() -
+                          saved_ltf0_fft[i].imag() * sym64[i].real());
+            energy0 += std::norm(saved_ltf0_fft[i]);
+            energy1 += std::norm(sym64[i]);
+        }
+        double denom = std::sqrt(energy0 * energy1);
+        double similarity = (denom > 1e-6) ? (corr_real / denom) : 0.0;
+        fprintf(stderr, "[LTF_CORR] similarity=%.4f energy0=%.2f energy1=%.2f\n",
+                similarity, energy0, energy1);
+    }
+
     if (extract_call_count == 6 && ltf0_ever_saved) {
         // Save HT-LTF edge SC raw values for H computation
         // Edge bins in natural FFT order: SC-28→36, SC-27→37, SC+27→27, SC+28→28
