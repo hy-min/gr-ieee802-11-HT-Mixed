@@ -1629,6 +1629,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_takeover_reject_symbols = 0;
     d_internal_symbol_counter = 0;
     d_first_valid_symbol = -1;
+    d_discard_until_wifi_start = false;
 
     d_chan_est_mode = 0;
     d_have_lsig = false;
@@ -1928,6 +1929,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
         static bool eq_last_in_frame = false;
 
         if (!d_in_frame) {
+            if (d_discard_until_wifi_start) {
+                if (wifi_start) {
+                    d_discard_until_wifi_start = false;
+                } else {
+                    consumed++;
+                    d_current_symbol++;
+                    continue;
+                }
+            }
+
             if (!wifi_start) {
                 eq_skip_count++;
                 consumed++;
@@ -2305,14 +2316,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 d_in_frame = false;
             }
         } else if (d_in_frame && !d_have_ht_header && d_sym_idx >= d_data_start_rel + 5) {
-            fprintf(stderr, "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d\n", d_sym_idx);
+            fprintf(stderr, "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d, discarding remaining symbols until next wifi_start\n", d_sym_idx);
             reset_frame_state();
+            d_discard_until_wifi_start = true;
             d_in_frame = false;
         }
 
         if (d_in_frame && d_sym_idx > kMaxFrameRel) {
             fprintf(stderr, "[EQ_FRAME_END] max frame exceeded sym_idx=%d\n", d_sym_idx);
             reset_frame_state();
+            d_discard_until_wifi_start = true;
             d_in_frame = false;
         }
     }

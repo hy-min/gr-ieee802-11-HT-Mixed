@@ -142,6 +142,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         d_pending_frame_transition = false;
         d_pending_frame_start_abs = 0;
         d_pending_wifi_start_pos = 0;
+        d_last_rel_idx = 0;
         while (!d_pending_tag_queue.empty()) {
             d_pending_tag_queue.pop();
         }
@@ -193,9 +194,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
             }
 
-            // L-LTF0 DATA starts at a fixed 176-sample offset from the
-            // start of the preamble (160 L-STF + 16 CP).  The value from
-            // sync_long (d_frame_start) varies and is not reliable.
+            // ORIGINAL: always +176. This aligns with sync_long's output structure.
             int64_t new_frame_start_abs = (int64_t)tag_abs_pos + 176;
 
             fprintf(stderr,

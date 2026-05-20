@@ -58,6 +58,7 @@ private:
     int d_internal_symbol_counter;  // Tracks FFT output number, reset at wifi_start
     int d_first_valid_symbol;
     bool d_in_frame;
+    bool d_discard_until_wifi_start;
 
     // early cache
     uint8_t d_early_bits[8][52];
