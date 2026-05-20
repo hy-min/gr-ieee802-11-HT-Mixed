@@ -93,3 +93,9 @@ void sta::equalize(gr_complex* in,
 }
 
 double sta::get_snr() { return d_snr; }
+
+void sta::reset()
+{
+    std::memset(d_H, 0, sizeof(d_H));
+    d_snr = 0.0;
+}
