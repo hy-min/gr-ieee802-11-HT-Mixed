@@ -33,6 +33,7 @@ public:
                           uint8_t* bits,
                           std::shared_ptr<gr::digital::constellation> mod);
     double get_snr();
+    void reset() override;
 
 private:
     const double alpha = 0.2;

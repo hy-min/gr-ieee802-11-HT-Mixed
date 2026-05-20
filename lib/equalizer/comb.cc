@@ -68,3 +68,8 @@ void comb::equalize(gr_complex* in,
 }
 
 double comb::get_snr() { return 42; }
+
+void comb::reset()
+{
+    std::memset(d_H, 0, sizeof(d_H));
+}
