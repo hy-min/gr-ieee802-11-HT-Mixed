@@ -48,6 +48,18 @@ void ls::equalize(gr_complex* in,
         fprintf(stderr, "[FFT_SHIFT_CHECK] n=0: kLltf64Binned[6]=%.4f%+.4fi kLltf64Binned[58]=%.4f%+.4fi\n",
                 kLltf64Binned[6].real(), kLltf64Binned[6].imag(),
                 kLltf64Binned[58].real(), kLltf64Binned[58].imag());
+        float in_energy = 0;
+        for (int k = 0; k < 64; k++) {
+            in_energy += std::norm(in[k]);
+        }
+        float h_energy = 0;
+        for (int k = 6; k <= 58; k++) {
+            if (k != 32 && k != 11 && k != 25 && k != 39 && k != 53) {
+                h_energy += std::norm(d_H[k]);
+            }
+        }
+        fprintf(stderr, "[LS_EQ] n=0: in_energy=%.1f h_energy=%.1f h_mag_avg=%.3f\n",
+                in_energy, h_energy, h_energy / 48.0f);
 
     } else if (n == 1) {
         double signal = 0;
