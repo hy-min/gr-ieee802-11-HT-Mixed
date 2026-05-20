@@ -34,6 +34,7 @@ public:
                           uint8_t* bits,
                           std::shared_ptr<gr::digital::constellation> mod);
     virtual double get_snr();
+    void reset() override;
 
 private:
     double d_snr;

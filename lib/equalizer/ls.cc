@@ -145,3 +145,9 @@ void ls::equalize(gr_complex* in,
 }
 
 double ls::get_snr() { return d_snr; }
+
+void ls::reset()
+{
+    std::memset(d_H, 0, sizeof(d_H));
+    d_snr = 0.0;
+}
