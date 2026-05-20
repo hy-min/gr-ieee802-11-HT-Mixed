@@ -147,6 +147,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         }
         fprintf(stderr, "[SPLITTER_FRAME_EXIT] seq=%d buf_cleared items_reset\n",
                 d_frame_seq_counter);
+        fprintf(stderr,
+                "[SPLITTER_EXIT_STATE] buf_count=%d buf_filled=%d last_rel=%llu items_proc=%d\n",
+                d_buffer_count, d_buffer_filled ? 1 : 0,
+                (unsigned long long)d_last_rel_idx, d_items_processed);
     };
 
     for (const auto& tag : tags) {
@@ -232,6 +236,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 d_wifi_start_value = d_frame_start_abs;
                 d_wifi_start_produced = produced;
                 fprintf(stderr,
+                        "[SPLITTER_DEFERRED] pending_start=%lld pending_wifi=%lld buf_count=%d\n",
+                        (long long)d_pending_frame_start_abs,
+                        (long long)d_pending_wifi_start_pos,
+                        d_buffer_count);
+                fprintf(stderr,
                         "[SPLITTER_FRAME_START] immediate seq=%d start_abs=%lld\n",
                         d_frame_seq_counter, (long long)d_frame_start_abs);
             } else {
@@ -278,6 +287,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             uint64_t sym_offset = (last_rel_idx - 544) % 80;
             at_boundary = (sym_offset == 0);
         }
+        fprintf(stderr,
+                "[SPLITTER_CARRYOVER] buf_count=%d last_rel=%llu frame_known=%d next_fft=%d\n",
+                d_buffer_count, (unsigned long long)d_last_rel_idx,
+                d_frame_start_known ? 1 : 0, d_wifi_start_next_fft ? 1 : 0);
         if (at_boundary) {
             memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
             produced += d_fft_size;
