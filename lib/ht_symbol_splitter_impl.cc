@@ -53,7 +53,8 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_wifi_start_produced(0),
       d_pending_frame_transition(false),
       d_pending_frame_start_abs(0),
-      d_pending_wifi_start_pos(0)
+      d_pending_wifi_start_pos(0),
+      d_force_buffer_reset(false)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
@@ -144,6 +145,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         d_pending_frame_transition = false;
         d_pending_frame_start_abs = 0;
         d_pending_wifi_start_pos = 0;
+        d_force_buffer_reset = true;
         d_last_rel_idx = 0;
         d_wifi_start_accepted = false;  // Also reset acceptance flag
         while (!d_pending_tag_queue.empty()) {
@@ -239,6 +241,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 d_wifi_start_next_fft = true;
                 d_wifi_start_value = d_frame_start_abs;
                 d_wifi_start_produced = produced;
+                d_force_buffer_reset = true;
                 fprintf(stderr,
                         "[SPLITTER_FRAME_START] immediate seq=%d start_abs=%lld\n",
                         d_frame_seq_counter, (long long)d_frame_start_abs);
@@ -448,12 +451,18 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // FIX: When entering or leaving a buffering region, reset partial buffer
             // to prevent cross-symbol corruption. Entering: start fresh. Leaving:
             // discard partial samples so CP regions don't bridge into next symbol.
-            if (should_buffer && !d_prev_should_buffer) {
+            // CRITICAL FIX: Also reset when crossing a frame boundary, even if both
+            // old and new regions are buffering regions (e.g., HT-DATA -> L-LTF0).
+            if ((should_buffer && !d_prev_should_buffer) ||
+                (should_buffer && d_force_buffer_reset)) {
                 d_buffer_filled = false;
                 d_buffer_count = 0;
+                std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
+                d_force_buffer_reset = false;
             } else if (!should_buffer && d_prev_should_buffer) {
                 d_buffer_filled = false;
                 d_buffer_count = 0;
+                std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
             }
             d_prev_should_buffer = should_buffer;
 

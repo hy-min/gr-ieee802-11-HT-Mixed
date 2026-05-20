@@ -53,6 +53,7 @@ private:
     int64_t d_rx_reset_offset;  // Store rx_reset offset to know when to exit ignore mode
     int64_t d_frame1_correction;  // Offset learned from frame 1: d_frame_start_abs - tag_abs_pos
     bool d_frame1_correction_stored;  // Have we stored the frame 1 correction?
+    bool d_force_buffer_reset;  // Set on frame start to force buffer clear on first buffering sample
 
     // Frame lifecycle
     bool d_in_frame;                // true when we are inside a frame's symbols
