@@ -631,6 +631,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     if (total_energy < 10.0f) {
                         d_buffer_count = 0;
                         d_buffer_filled = false;
+                        fprintf(stderr, "[SPLITTER_ENERGY_DROP] rel=%llu energy=%.2f frame=%d in_frame=%d\n",
+                                (unsigned long long)rel_idx, total_energy,
+                                d_frame_seq_counter, d_in_frame ? 1 : 0);
                         if (d_in_frame && rel_idx >= 544) {
                             fprintf(stderr,
                                     "[SPLITTER_FRAME_EXIT] energy_drop rel=%llu\n",
