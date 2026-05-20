@@ -215,11 +215,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // overlaps (the new frame's L-STF arrives before the old frame ends).
             if (!d_in_frame) {
                 // No active frame: apply immediately (buffer should be empty)
+                // DEFENSIVE: always clear buffer and reset all state
+                std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
                 d_buffer_count = 0;
                 d_buffer_filled = false;
                 d_prev_should_buffer = false;
                 d_frame1_correction = 0;
                 d_frame1_correction_stored = false;
+                d_last_rel_idx = 0;
+                d_pending_frame_transition = false;
+                d_pending_frame_start_abs = 0;
+                d_pending_wifi_start_pos = 0;
                 while (!d_pending_tag_queue.empty()) {
                     d_pending_tag_queue.pop();
                 }
