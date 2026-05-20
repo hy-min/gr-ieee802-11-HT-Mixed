@@ -59,6 +59,16 @@ private:
     int  d_frame_seq_counter;       // monotonic counter for debug/logging
     std::queue<std::pair<uint64_t,int64_t>> d_pending_tag_queue;
                                     // (output_position, d_frame_start_abs) pairs
+    bool d_wifi_start_next_fft;     // Delay wifi_start tag to next FFT window
+    int64_t d_wifi_start_value;     // d_frame_start_abs for delayed wifi_start
+    int d_wifi_start_produced;      // produced value when wifi_start was detected
+
+    // Deferred frame transition: when a new wifi_start arrives mid-frame,
+    // save the transition and apply it only when the buffer is empty.
+    // This prevents losing the current frame's last symbol.
+    bool d_pending_frame_transition;
+    int64_t d_pending_frame_start_abs;
+    uint64_t d_pending_wifi_start_pos;
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);
