@@ -130,6 +130,8 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     auto exit_frame_state = [&]() {
         d_in_frame = false;
         d_frame_start_known = false;
+        // CRITICAL FIX: zero the buffer to prevent stale data contamination
+        std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
         d_buffer_count = 0;
         d_buffer_filled = false;
         d_items_processed = 0;
@@ -143,6 +145,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         d_pending_frame_start_abs = 0;
         d_pending_wifi_start_pos = 0;
         d_last_rel_idx = 0;
+        d_wifi_start_accepted = false;  // Also reset acceptance flag
         while (!d_pending_tag_queue.empty()) {
             d_pending_tag_queue.pop();
         }
