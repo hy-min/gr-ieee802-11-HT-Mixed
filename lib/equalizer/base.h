@@ -21,6 +21,7 @@ public:
                           uint8_t* bits,
                           std::shared_ptr<gr::digital::constellation> mod) = 0;
     virtual double get_snr() = 0;
+    virtual void reset() {}
 
     static const gr_complex POLARITY[127];
 
