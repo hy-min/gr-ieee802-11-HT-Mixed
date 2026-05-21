@@ -374,7 +374,7 @@ public:
                     const bool has_mcs = pmt::dict_has_key(d_meta, k_mcs);
                     if (!has_mcs) {
                         if (d_debug) {
-                            dout << "[decode_mac] skip non-HT frame (this build only restores strict HT MCS0)"
+                            dout << "[decode_mac] skip non-HT frame (MCS 0-7 HT mode required)"
                                  << std::endl;
                         }
                         d_in_frame = false;

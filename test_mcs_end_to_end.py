@@ -238,10 +238,8 @@ def main():
     for key, value in test_params.items():
         print(f"  {key}: {value}")
 
-    # 测试的MCS列表
-    # 注意：MCS7可能有问题（QAM64_5_6在Python绑定中不可用）
-    mcs_list = [0]  # 只测试MCS0用于验证
-    # mcs_list.append(7)  # 如果需要测试MCS7
+    # 测试的MCS列表 (0-7)
+    mcs_list = list(range(8))
 
     results = []
 

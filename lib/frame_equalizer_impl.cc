@@ -2252,11 +2252,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
         if (emit_this_symbol && (produced + 52) <= noutput_items) {
             gr_complex* out52 = out + produced;
 
-            const bool use_direct_tx_order_mcs0 =
-                (d_have_ht_header && d_is_ht && d_frame_n_bpsc == 1);
+            const bool use_direct_tx_order =
+                (d_have_ht_header && d_is_ht);
             const int data_sym_idx = d_sym_idx - d_data_start_rel;
 
-            if (use_direct_tx_order_mcs0) {
+            if (use_direct_tx_order) {
                 if (!d_H52_tx_order_valid) {
                     // Always use L-LTF0 for H estimation.
                     // compute_H52_tx_order is designed for L-LTF0 data (uses kLltf48TX).
