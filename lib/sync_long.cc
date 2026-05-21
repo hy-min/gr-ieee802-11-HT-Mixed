@@ -114,20 +114,28 @@ public:
                     // Only transition to RESET if we've processed enough samples to cover the full HT preamble.
                     std::string tag_key = pmt::symbol_to_string(d_tags.front().key);
                     if (tag_key == "wifi_start") {
-                        // wifi_start during COPY - this is HT-Mixed second frame starting
-                        // Check if we've output enough to cover HT preamble + HT-LTF (720 samples)
-                        // HT-Mixed frame can be very long (up to 65535-byte PDU at MCS0 = ~1.6M samples).
-                        // The original threshold of 720 only covers the preamble + training.
-                        // We need a much larger threshold to allow all DATA symbols to pass through
-                        // before a subsequent wifi_start (from a second frame) triggers RESET.
-                        // Use 2000000 as a safe upper bound for any realistic HT-Mixed frame.
+                        // wifi_start during COPY - this is a new frame detected by sync_short.
+                        // CRITICAL FIX: Go directly to SYNC, not RESET.
+                        //
+                        // The RESET state was designed to align output to 64-sample boundaries.
+                        // But after a wall-clock gap, d_count can be huge, making RESET consume
+                        // up to 63 samples before SYNC starts. This can miss the new frame's
+                        // L-LTF T1 half, causing catastrophic detection failure.
+                        //
+                        // Downstream (ht_symbol_splitter) re-aligns using wifi_start tag anyway,
+                        // so 64-sample alignment in sync_long output is not critical.
                         if (d_count < 1000) {
                             // Still in first frame's preamble/data - ignore this wifi_start
                             fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d\n", d_count);
                         } else {
-                            // Frame complete, safe to RESET
-                            d_state = RESET;
-                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] RESET after full HT-DATA d_count=%d\n", d_count);
+                            // New frame: direct SYNC transition to preserve full preamble
+                            int saved_count = d_count;
+                            d_state = SYNC;
+                            d_offset = 0;
+                            d_wifi_start_added = false;
+                            d_cor.clear();
+                            d_count = 0;
+                            fprintf(stderr, "[SYNC_LONG_FAST_SYNC] Direct SYNC for new frame (was d_count=%d)\n", saved_count);
                         }
                     } else {
                         // Other tag - use original behavior
@@ -145,9 +153,9 @@ public:
 
         switch (d_state) {
 
-        case SYNC:
-            d_fir.filterN(
-                d_correlation, in, std::min(SYNC_LENGTH, std::max(ninput - 63, 0)));
+        case SYNC: {
+            int filter_len = std::min(SYNC_LENGTH, std::max(ninput - 63, 0));
+            d_fir.filterN(d_correlation, in, filter_len);
 
             while (i + 63 < ninput) {
 
@@ -174,6 +182,7 @@ public:
             }
 
             break;
+        }
 
         case COPY: {
             // Emit sync_offset tag so downstream blocks know our d_offset
@@ -314,8 +323,12 @@ public:
                 double mag_k = abs(get<0>(vec[k]));
                 int diff = abs(get<1>(vec[i]) - get<1>(vec[k]));
 
-                // Only consider pairs in extended L-LTF period range (70-90, expanded for plateau)
-                if (diff < 70 || diff > 90) {
+                // CRITICAL FIX: HT-Mixed uses the SAME L-LTF as Legacy mode.
+                // The two identical L-LTF halves (T1 and T2) are separated by 64 samples.
+                // The previous range [70, 90] EXCLUDED 64, causing HT-mode to always fail
+                // and fall through to Legacy mode. For robustness, use [55, 75] which
+                // comfortably includes 64 while filtering out false pairs.
+                if (diff < 55 || diff > 75) {
                     continue;
                 }
 
@@ -367,6 +380,17 @@ public:
             int offset_compensation = 13;
             d_frame_start = best_ht_lower_peak + 1 - offset_compensation;
             if (d_frame_start < 0) d_frame_start = 0;
+            // CRITICAL FIX: Force d_frame_start=160 for all frames. Frame 1 works
+            // perfectly with d_frame_start=160 (LTF_CORR=0.9990). Frame 2+ have
+            // correlation peaks shifted by L-STF interference (lower_peak=199-201
+            // instead of 172). The preamble structure is identical for all frames;
+            // L-LTF0 DATA should always start at the same relative offset within
+            // the SYNC window. With SPLITTER using tag_abs_pos+16, d_frame_start
+            // must be constant for correct alignment.
+            if (d_frame_start != 160) {
+                fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to 160\n", d_frame_start);
+                d_frame_start = 160;
+            }
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
             fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",

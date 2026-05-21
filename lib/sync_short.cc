@@ -23,8 +23,20 @@
 using namespace gr::ieee802_11;
 
 // HT-Mixed mode: L-SIG(80) + HT-SIG(160) + HT-STF(80) + HT-LTF(160+) = ~480+ samples after L-STF
-// Increase MIN_GAP to 1200 so we don't re-trigger during HT preamble
-static const int MIN_GAP = 1200;
+// CRITICAL FIX: MIN_GAP was 1200, shorter than typical HT-Mixed frames (~1800+ samples).
+// This caused false re-detections within the same frame, resetting d_copied and
+// preventing proper detection of the next frame.
+//
+// Fix strategy:
+// 1. Remove the re-detection in COPY (don't emit tags within a frame).
+// 2. Add a gap detector: when correlation drops below threshold for GAP_THRESHOLD
+//    consecutive samples, transition to SEARCH. This handles inter-frame gaps.
+//    The threshold (500) is larger than L-LTF (160) but smaller than typical gaps.
+// 3. In SEARCH, detect the next frame normally.
+//
+// For OFDM data symbols, auto-correlation spikes from the CP occur every 80 samples,
+// preventing gap detector from firing during valid frame data.
+static const int GAP_THRESHOLD = 500;
 static const int MAX_SAMPLES = 5400 * 80;
 
 class sync_short_impl : public sync_short
@@ -42,6 +54,7 @@ public:
           d_plateau(0),
           d_freq_offset(0),
           d_copied(0),
+          d_below_threshold(0),
           MIN_PLATEAU(min_plateau),
           d_threshold(threshold)
     {
@@ -103,29 +116,55 @@ public:
         case COPY: {
 
             int o = 0;
+            float min_cor = 1e9, max_cor = -1e9;
+            int max_below = 0;
+            // Power threshold for gap detector: noise power ~0.001 (30dB SNR),
+            // signal power ~1.0. Use 0.01 as threshold (20dB below signal).
+            const float POWER_THRESHOLD = 0.01f;
             while (o < ninput && o < noutput && d_copied < MAX_SAMPLES) {
-                if (in_cor[o] > d_threshold) {
+                float power = std::norm(in[o]);
+                bool high_correlation = (in_cor[o] > d_threshold);
+                bool high_power = (power >= POWER_THRESHOLD);
+                // CRITICAL FIX: Only consider it a valid signal spike if BOTH
+                // correlation AND power are high. During noise-only gaps, the
+                // normalized correlation can spike artificially when instantaneous
+                // noise power is low (division by small number). Requiring high
+                // power prevents false gap-counter resets.
+                if (high_correlation && high_power) {
                     if (d_plateau < MIN_PLATEAU) {
                         d_plateau++;
-
-                        // there's another frame
-                    } else if (d_copied > MIN_GAP) {
-                        d_copied = 0;
-                        d_plateau = 0;
-                        d_freq_offset = arg(in_abs[o]) / 16;
-                        insert_tag(
-                            nitems_written(0) + o, d_freq_offset, nitems_read(0) + o);
-                        dout << "SHORT Frame!" << std::endl;
-                        break;
+                    } else {
+                        // Sustained correlation above threshold with real signal power.
+                        // Reset gap detector.
+                        d_below_threshold = 0;
                     }
-
                 } else {
                     d_plateau = 0;
+                    d_below_threshold++;
+                    if (d_below_threshold > max_below) max_below = d_below_threshold;
+                    // Gap detector: if signal stays weak for GAP_THRESHOLD consecutive
+                    // samples, the frame has ended. Transition to SEARCH.
+                    if (d_below_threshold >= GAP_THRESHOLD) {
+                        d_state = SEARCH;
+                        d_below_threshold = 0;
+                        d_copied = 0;
+                        d_plateau = 0;
+                        fprintf(stderr, "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
+                                o, power);
+                        break;
+                    }
                 }
+                if (in_cor[o] < min_cor) min_cor = in_cor[o];
+                if (in_cor[o] > max_cor) max_cor = in_cor[o];
 
                 out[o] = in[o];  // CFO compensation disabled - no real CFO in simulation
                 o++;
                 d_copied++;
+            }
+
+            if (o > 0) {
+                fprintf(stderr, "[SYNC-SHORT] COPY work: consumed=%d min_cor=%.4f max_cor=%.4f max_below=%d threshold=%.3f\n",
+                        o, min_cor, max_cor, max_below, d_threshold);
             }
 
             if (d_copied == MAX_SAMPLES) {
@@ -157,6 +196,7 @@ private:
     enum { SEARCH, COPY } d_state;
     int d_copied;
     int d_plateau;
+    int d_below_threshold;
     float d_freq_offset;
     const double d_threshold;
     const bool d_log;
