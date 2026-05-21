@@ -7,20 +7,26 @@
 # Title: WiFi PHY Hier
 # GNU Radio version: 3.10.11.0
 
+import os
+os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
+os.environ['GR_RPC_ENABLE'] = 'False'
+os.environ['GR_RPC_SERVER_ENABLE'] = 'False'
+os.environ['GR_RPC_PORT'] = '0'
+os.environ['GR_CONTROLPORT_ON'] = 'False'
+
 from gnuradio import blocks
+from gnuradio import gr
 from gnuradio import digital
 from gnuradio import fft
 from gnuradio.fft import window
-from gnuradio import gr
 from gnuradio.filter import firdes
 import sys
 import signal
 import ieee802_11
 import threading
+import mixed_mode_carrier_allocator
 import numpy as np
 import pmt
-
-
 
 
 
@@ -62,27 +68,46 @@ class wifi_phy_hier(gr.hier_block2):
         self.sync_long = ieee802_11.sync_long(sync_length, False, False)
         self.ieee802_11_mapper_0 = ieee802_11.mapper(encoding, False)
         self.ieee802_11_frame_equalizer_0 = ieee802_11.frame_equalizer(chan_est, frequency, bandwidth, False, False)
-        self.ieee802_11_decode_mac_0 = ieee802_11.decode_mac(False, False)
+        self.ieee802_11_frame_equalizer_0.set_min_output_buffer((max_symbols * 52 * 8))
+        self.ieee802_11_frame_equalizer_0.set_output_multiple(52)
+        self.ieee802_11_decode_mac_0 = ieee802_11.decode_mac(True, True)
+        self.ieee802_11_decode_mac_0.set_min_output_buffer((max_symbols * 52 * 8))
         self.ieee802_11_chunks_to_symbols_xx_0 = ieee802_11.chunks_to_symbols()
-        self.ieee802_11_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 48 * 8))
+        self.ieee802_11_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 52 * 8))
         self.ht_symbol_splitter_0 = ieee802_11.ht_symbol_splitter(64, 80, 16)
+        self.ht_symbol_splitter_0.set_min_output_buffer((max_symbols * 64 * 8))
+        # ht_header_tagged generates L-SIG + HT-SIG header from encoding
+        self.ht_header_tagged_0 = ieee802_11.ht_header_tagged(13, True, 'psdu_len', 'encoding', 'packet_len')
+        # RX FFT: shift=False for natural order (matches kHeader48Bin in frame_equalizer)
         self.fft_vxx_0_1 = fft.fft_vcc(64, True, window.rectangular(64), False, 1)
+        # TX IFFT: shift=False, window normalizes by 1/sqrt(52)
         self.fft_vxx_0_0 = fft.fft_vcc(64, False, tuple([1/52**.5] * 64), False, 1)
-        self.fft_vxx_0_0.set_min_output_buffer((max_symbols * 48 * 8 * 10))
-        self.digital_packet_headergenerator_bb_0 = digital.packet_headergenerator_bb(header_formatter.formatter(), "packet_len")
+        self.fft_vxx_0_0.set_min_output_buffer((max_symbols * 52 * 8 * 10))
         self.digital_ofdm_cyclic_prefixer_0_0 = digital.ofdm_cyclic_prefixer(
             64,
             64 + 16,
             2,
             "packet_len")
-        self.digital_ofdm_cyclic_prefixer_0_0.set_min_output_buffer((max_symbols * 48 * 8 * 10))
-        self.digital_ofdm_carrier_allocator_cvc_0_0_0 = digital.ofdm_carrier_allocator_cvc( 64, (list(range(-26, -21)) + list(range(-20, -7)) + list(range(-6, 0)) + list(range(1, 7)) + list(range(8, 21)) +list( range(22, 27)),), ((-21, -7, 7, 21), ), ((1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (1, 1, 1, -1), (1, 1, 1, -1), (1, 1, 1, -1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1), (-1, -1, -1, 1)), ((0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (-1.4719601443879746-1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, (1.4719601443879746+1.4719601443879746j), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), (0, 0j, 0, 0j, 0, 0j, -1, 1j, -1, 1j, -1, 1j, -1, -1j, 1, 1j, 1, -1j, -1, 1j, 1, 1j, 1, 1j, 1, 1j, -1, (-0-1j), 1, -1j, -1, 1j, 0, -1j, 1, (-0-1j), 1, -1j, 1, 1j, -1, -1j, 1, (-0-1j), -1, 1j, 1, 1j, 1, 1j, 1, 1j, -1, -1j, 1, 1j, 1, -1j, -1, 0j, 0, 0j, 0, 0j), (0, 0, 0, 0, 0, 0, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 0, 1, -1, -1, 1, 1, -1, 1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1, 0, 0, 0, 0, 0)), "packet_len", True)
-        self.digital_ofdm_carrier_allocator_cvc_0_0_0.set_min_output_buffer((max_symbols * 48 * 8))
+        self.digital_ofdm_cyclic_prefixer_0_0.set_min_output_buffer((max_symbols * 52 * 8 * 10))
+        # mixed_mode_carrier_allocator handles:
+        # - Dynamic subcarrier switching: 48 for header, 52 for HT-DATA
+        # - QBPSK rotation for HT-SIG internally
+        # - Sync words (L-STF, L-LTF)
+        self.mixed_mode_carrier_allocator_0 = mixed_mode_carrier_allocator.mixed_mode_carrier_allocator(
+            tag_key="packet_len",
+            sync_words=None
+        )
+        self.mixed_mode_carrier_allocator_0.set_min_output_buffer((max_symbols * 52 * 8))
+        # Insert HT-STF and HT-LTF training symbols after 7 preamble + header symbols.
+        # Must be placed between carrier allocator and OFDM CP so the CP sees
+        # the updated packet_len tag (insert_ht_training adds N_TRAIN=2).
+        self.insert_ht_training_0 = ieee802_11.insert_ht_training("packet_len")
+        # Header path: BPSK for L-SIG/HT-SIG
         self.digital_chunks_to_symbols_xx_0 = digital.chunks_to_symbols_bc([-1, 1], 1)
         self.digital_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 48 * 8 * 2))
-        self.blocks_tagged_stream_mux_0 = blocks.tagged_stream_mux(gr.sizeof_gr_complex*1, "packet_len", 1)
-        self.blocks_tagged_stream_mux_0.set_min_output_buffer((max_symbols * 48 * 8))
-        self.ht_sig_rotator_0 = ht_sig_rotator()
+        # 2 inputs: header (0) + data (1)
+        self.blocks_tagged_stream_mux_0 = blocks.tagged_stream_mux(gr.sizeof_gr_complex*1, "packet_len", 2)
+        self.blocks_tagged_stream_mux_0.set_min_output_buffer((max_symbols * 52 * 8))
         self.blocks_stream_to_vector_0 = blocks.stream_to_vector(gr.sizeof_gr_complex*1, 64)
         self.blocks_multiply_xx_0 = blocks.multiply_vcc(1)
         self.blocks_moving_average_xx_1 = blocks.moving_average_ff((window_size  + 16), 1, 4000, 1)
@@ -113,18 +138,24 @@ class wifi_phy_hier(gr.hier_block2):
         self.connect((self.blocks_moving_average_xx_1, 0), (self.blocks_divide_xx_0, 1))
         self.connect((self.blocks_multiply_xx_0, 0), (self.blocks_moving_average_xx_0, 0))
         self.connect((self.blocks_stream_to_vector_0, 0), (self.fft_vxx_0_1, 0))
-        self.connect((self.blocks_tagged_stream_mux_0, 0), (self.digital_ofdm_carrier_allocator_cvc_0_0_0, 0))
-        self.connect((self.digital_chunks_to_symbols_xx_0, 0), (self.ht_sig_rotator_0, 0))
-        self.connect((self.ht_sig_rotator_0, 0), (self.blocks_tagged_stream_mux_0, 0))
-        self.connect((self.digital_ofdm_carrier_allocator_cvc_0_0_0, 0), (self.fft_vxx_0_0, 0))
-        self.connect((self.digital_ofdm_cyclic_prefixer_0_0, 0), (self, 0))
-        self.connect((self.digital_packet_headergenerator_bb_0, 0), (self.digital_chunks_to_symbols_xx_0, 0))
+        # Header path: mapper → ht_header_tagged → chunks_to_symbols → mux input 0
+        self.connect((self.ieee802_11_mapper_0, 0), (self.ht_header_tagged_0, 0))
+        self.connect((self.ht_header_tagged_0, 0), (self.digital_chunks_to_symbols_xx_0, 0))
+        self.connect((self.digital_chunks_to_symbols_xx_0, 0), (self.blocks_tagged_stream_mux_0, 0))
+        # Data path: mapper → chunks_to_symbols → mux input 1
+        self.connect((self.ieee802_11_chunks_to_symbols_xx_0, 0), (self.blocks_tagged_stream_mux_0, 1))
+        # Combined: mux → mixed_mode_carrier_allocator → FFT → CP → output
+        self.connect((self.blocks_tagged_stream_mux_0, 0), (self.mixed_mode_carrier_allocator_0, 0))
+        # Insert HT-STF + HT-LTF between carrier allocator and OFDM CP (via IFFT)
+        self.connect((self.mixed_mode_carrier_allocator_0, 0),
+                     (self.insert_ht_training_0, 0))
+        self.connect((self.insert_ht_training_0, 0),
+                     (self.fft_vxx_0_0, 0))
         self.connect((self.fft_vxx_0_0, 0), (self.digital_ofdm_cyclic_prefixer_0_0, 0))
+        self.connect((self.digital_ofdm_cyclic_prefixer_0_0, 0), (self, 0))
         self.connect((self.fft_vxx_0_1, 0), (self.ieee802_11_frame_equalizer_0, 0))
         self.connect((self.ht_symbol_splitter_0, 0), (self.blocks_stream_to_vector_0, 0))
-        self.connect((self.ieee802_11_chunks_to_symbols_xx_0, 0), (self.blocks_tagged_stream_mux_0, 1))
         self.connect((self.ieee802_11_frame_equalizer_0, 0), (self.ieee802_11_decode_mac_0, 0))
-        self.connect((self.ieee802_11_mapper_0, 0), (self.digital_packet_headergenerator_bb_0, 0))
         self.connect((self.ieee802_11_mapper_0, 0), (self.ieee802_11_chunks_to_symbols_xx_0, 0))
         self.connect((self, 0), (self.blocks_complex_to_mag_squared_0, 0))
         self.connect((self, 0), (self.blocks_delay_0_0, 0))
@@ -194,64 +225,3 @@ class wifi_phy_hier(gr.hier_block2):
 
     def set_header_formatter(self, header_formatter):
         self.header_formatter = header_formatter
-
-
-# ============================================================================
-# HT-SIG Rotator Block
-# Rotates HT-SIG complex symbols by j (QBPSK rotation) while leaving L-SIG unchanged
-# Inserted between chunks_to_symbols_bc and tagged_stream_mux
-# ============================================================================
-import numpy as np
-from gnuradio import gr
-import pmt
-
-class ht_sig_rotator(gr.sync_block):
-    """
-    HT-SIG Rotator for 802.11n HT-Mixed mode TX
-
-    L-SIG: first 48 complex symbols (indices 0-47) → pass through unchanged (BPSK on real axis)
-    HT-SIG: next 96 complex symbols (indices 48-143) → multiply by 1j (QBPSK on imaginary axis)
-    """
-
-    def __init__(self):
-        gr.sync_block.__init__(
-            self,
-            name="HT-SIG Rotator",
-            in_sig=[np.complex64],
-            out_sig=[np.complex64]
-        )
-        self.header_pos = 0  # position within header stream (0-143)
-        print('[HT-SIG-ROTATOR] Created', flush=True)
-
-    def work(self, input_items, output_items):
-        inp = input_items[0]
-        out = output_items[0]
-        n_in = len(inp)
-        n_out = len(out)
-        n = min(n_in, n_out)
-
-        produced = 0
-        for i in range(n):
-            # Check for packet_len tag at this input position
-            tags = self.get_tags_in_window(0, i, i + 1)
-            for tag in tags:
-                if pmt.eq(tag.key, pmt.intern("packet_len")):
-                    self.header_pos = 0
-                    break
-
-            # Apply rotation based on header_pos BEFORE incrementing
-            if self.header_pos < 48:
-                # L-SIG: pass through unchanged (BPSK ±1 on real axis)
-                out[i] = inp[i]
-            elif self.header_pos < 144:
-                # HT-SIG: rotate by j (QBPSK ±j on imaginary axis)
-                out[i] = inp[i] * 1j
-            else:
-                # Beyond header: pass through unchanged
-                out[i] = inp[i]
-
-            self.header_pos += 1
-            produced += 1
-
-        return produced
-

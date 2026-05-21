@@ -10,3 +10,7 @@ examples/*.py
 *.pyo
 build*/
 examples/grc/*.py
+install/
+test_output*.txt
+docs/superpowers/plans/
+.claude/

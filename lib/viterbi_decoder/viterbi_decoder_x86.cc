@@ -327,8 +327,8 @@ uint8_t* viterbi_decoder::decode(ofdm_param* ofdm, frame_param* frame, uint8_t* 
                 const uint8_t reg = uint8_t(((prev_state << 1) | input_bit) & 0x7f);
                 const int next_state = reg & 0x3f;
 
-                const uint8_t ex0 = parity_u8(uint8_t(reg & 0x6d));
-                const uint8_t ex1 = parity_u8(uint8_t(reg & 0x4f));
+                const uint8_t ex0 = parity_u8(uint8_t(reg & 0x5b));  // 0133 octal = IEEE 802.11 g0
+                const uint8_t ex1 = parity_u8(uint8_t(reg & 0x79));  // 0171 octal = IEEE 802.11 g1
 
                 const int cand = prev_metric + branch_metric_hard(rx0, rx1, ex0, ex1);
 
@@ -413,7 +413,7 @@ void viterbi_decoder::viterbi_chunks_init_sse2()
         d_path0[i] = _mm_setzero_si128();
     }
 
-    int polys[2] = { 0x6d, 0x4f };
+    int polys[2] = { 0x5b, 0x79 };  // IEEE 802.11 standard: 0133, 0171
     for (i = 0; i < 32; i++) {
         d_branchtab27_sse2[0].c[i] =
             (polys[0] < 0) ^ PARTAB[(2 * i) & abs(polys[0])] ? 1 : 0;

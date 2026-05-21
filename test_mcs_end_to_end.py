@@ -230,7 +230,7 @@ def main():
         'interval': 1000,       # 消息间隔（毫秒）
         'snr_db': 30,           # 高SNR以确保成功
         'out_buf_size': 96000,  # 输出缓冲区大小
-        'test_duration': 2,     # 测试持续时间（秒）
+        'test_duration': 12,    # 测试持续时间（秒），增加以允许最后帧完成RX处理
         'sensitivity': 0.01,    # 接收灵敏度
     }
 

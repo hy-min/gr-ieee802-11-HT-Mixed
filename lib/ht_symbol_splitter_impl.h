@@ -20,6 +20,7 @@
 #include <ieee802_11/ht_symbol_splitter.h>
 #include <gnuradio/thread/thread.h>
 #include <vector>
+#include <queue>
 #include <cstdint>
 
 namespace gr {
@@ -39,11 +40,36 @@ private:
     // Circular buffer for FFT blocks
     std::vector<gr_complex> d_buffer;
     int d_buffer_count;
+    bool d_buffer_filled;  // True when buffer filled at non-boundary, waiting for boundary
 
     // Frame tracking
     int64_t d_frame_start_abs;      // Absolute item index of frame start (from wifi_start tag)
     bool d_frame_start_known;       // Have we seen wifi_start tag?
     int64_t d_items_processed;      // Total items we've processed
+    uint64_t d_last_rel_idx;       // rel_idx at end of last work call (for carryover buffer check)
+    bool d_wifi_start_accepted;    // true if last wifi_start was accepted, false if ignored
+    bool d_prev_should_buffer;  // Track previous should_buffer state to detect region transitions
+    bool d_ignore_mode;  // When rx_reset tag is received, enter ignore mode
+    int64_t d_rx_reset_offset;  // Store rx_reset offset to know when to exit ignore mode
+    int64_t d_frame1_correction;  // Offset learned from frame 1: d_frame_start_abs - tag_abs_pos
+    bool d_frame1_correction_stored;  // Have we stored the frame 1 correction?
+    bool d_force_buffer_reset;  // Set on frame start to force buffer clear on first buffering sample
+
+    // Frame lifecycle
+    bool d_in_frame;                // true when we are inside a frame's symbols
+    int  d_frame_seq_counter;       // monotonic counter for debug/logging
+    std::queue<std::pair<uint64_t,int64_t>> d_pending_tag_queue;
+                                    // (output_position, d_frame_start_abs) pairs
+    bool d_wifi_start_next_fft;     // Delay wifi_start tag to next FFT window
+    int64_t d_wifi_start_value;     // d_frame_start_abs for delayed wifi_start
+    int d_wifi_start_produced;      // produced value when wifi_start was detected
+
+    // Deferred frame transition: when a new wifi_start arrives mid-frame,
+    // save the transition and apply it only when the buffer is empty.
+    // This prevents losing the current frame's last symbol.
+    bool d_pending_frame_transition;
+    int64_t d_pending_frame_start_abs;
+    uint64_t d_pending_wifi_start_pos;
 
 public:
     ht_symbol_splitter_impl(int fft_size, int symbol_size, int cp_size);

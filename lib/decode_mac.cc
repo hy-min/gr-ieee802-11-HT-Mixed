@@ -299,7 +299,6 @@ public:
           d_log(log),
           d_debug(debug),
           d_in_frame(false),
-          d_did_stop_flush(false),
           d_items_copied(0),
           d_items_expected(0),
           d_frame_seq(0),
@@ -317,30 +316,15 @@ public:
 
     bool stop() override
     {
-        if (d_in_frame && d_items_copied > 0 && d_items_copied < d_items_expected) {
-            dout << "[decode_mac][STOP-FLUSH] partial frame detected"
-                 << " copied=" << d_items_copied
-                 << " expected=" << d_items_expected
-                 << " missing=" << (d_items_expected - d_items_copied)
-                 << std::endl;
-
-            // HT-DATA0 uses BPSK where all data bits are 0
-            // BPSK constellation: bit 0 = 1 maps to +1 (real=+1, imag=0)
-            const gr_complex ht_data0_sym = gr_complex(1.0f, 0.0f);
-
-            // Fill remaining with HT-DATA0 soft bits (52 per symbol)
-            while (d_items_copied < d_items_expected) {
-                d_rx_eq[(size_t)d_items_copied] = ht_data0_sym;
-                d_items_copied++;
-            }
-
-            d_did_stop_flush = true;
-            dout << "[decode_mac][STOP-FLUSH] padding complete, calling decode_and_publish()" << std::endl;
-            decode_and_publish();
-        } else {
-            log_incomplete("stop");
-        }
+        log_incomplete("stop");
         return block::stop();
+    }
+
+    void forecast(int noutput_items, gr_vector_int& ninput_items_required) override
+    {
+        // This is a sink block (0 output ports). Force the scheduler to
+        // call us whenever input is available by requesting at least 1 item.
+        ninput_items_required[0] = 1;
     }
 
     int general_work(int,
@@ -348,13 +332,28 @@ public:
                      gr_vector_const_void_star& input_items,
                      gr_vector_void_star&)
     {
+        static int gw_call_count = 0;
+        gw_call_count++;
         const gr_complex* in = (const gr_complex*)input_items[0];
         int i = 0;
         const uint64_t nread = nitems_read(0);
+        fprintf(stderr, "[DECODE_MAC_GW] call=%d ninput=%d nread=%llu in_frame=%d copied=%llu/%llu\n",
+                gw_call_count, ninput_items[0], (unsigned long long)nread,
+                d_in_frame ? 1 : 0,
+                (unsigned long long)d_items_copied, (unsigned long long)d_items_expected);
 
         while (i < ninput_items[0]) {
             std::vector<gr::tag_t> tags;
             get_tags_in_range(tags, 0, nread + i, nread + i + 1);
+
+            if (!tags.empty()) {
+                fprintf(stderr, "[DECODE_TAG] nread=%llu i=%d n_tags=%zu",
+                        (unsigned long long)nread, i, tags.size());
+                for (const auto& t : tags) {
+                    fprintf(stderr, " key=%s", pmt::symbol_to_string(t.key).c_str());
+                }
+                fprintf(stderr, "\n");
+            }
 
             const pmt::pmt_t k_frame_bytes_sp = pmt::mp("frame bytes");
             const pmt::pmt_t k_frame_bytes_us = pmt::mp("frame_bytes");
@@ -365,11 +364,6 @@ public:
 
                     if (d_in_frame && d_items_copied < d_items_expected) {
                         log_incomplete("new_frame_tag_before_complete");
-                        dout << "[decode_mac][DEBUG] new_frame_tag: abs_in_offset=" << (nread + i)
-                             << " copied=" << d_items_copied
-                             << " expected=" << d_items_expected
-                             << " missing=" << (d_items_expected - d_items_copied)
-                             << std::endl;
                     }
 
                     d_meta = pmt::make_dict();
@@ -423,7 +417,6 @@ public:
                     const int n_sc = 52;
                     d_items_expected = (uint64_t)d_ht_n_sym * (uint64_t)n_sc;
                     d_items_copied   = 0;
-                    d_did_stop_flush = false;
                     d_in_frame       = true;
                     d_frame_seq++;
 
@@ -469,7 +462,6 @@ public:
             ++i;
         }
 
-        dout << "[decode_mac][DEBUG] work ending: i=" << i << " ninput=" << ninput_items.size() << " in_frame=" << d_in_frame << std::endl;
         consume(0, i);
         return 0;
     }
@@ -504,8 +496,10 @@ private:
 
     void decode_and_publish()
     {
+        fprintf(stderr, "[DECODE_AND_PUBLISH] called n_sym=%d n_cbps=%d n_dbps=%d d_ht_len=%d rx_eq_size=%zu\n",
+                d_ht_n_sym, d_ht_n_cbps, ht_n_dbps_from_mcs(d_ht_mcs), d_ht_len, d_rx_eq.size());
         if (d_rx_eq.empty() || d_ht_n_sym <= 0) {
-            dout << "[decode_mac] no data captured" << std::endl;
+            fprintf(stderr, "[DECODE_AND_PUBLISH] no data captured\n");
             return;
         }
 
@@ -736,7 +730,7 @@ private:
         d_frame.n_pad          = d_frame.n_data_bits - (16 + 8 * d_ht_len + 6);
 
         if (d_frame.n_pad < 0) {
-            dout << "[decode_mac] invalid HT frame params: n_pad=" << d_frame.n_pad << std::endl;
+            fprintf(stderr, "[DECODE_FAIL] invalid n_pad=%d\n", d_frame.n_pad);
             return;
         }
 
@@ -753,7 +747,7 @@ private:
         // 4) Viterbi
         uint8_t* decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deintl_bits.data());
         if (!decoded) {
-            dout << "[decode_mac] decoder returned null" << std::endl;
+            fprintf(stderr, "[DECODE_FAIL] Viterbi decoder returned null\n");
             return;
         }
 
@@ -779,7 +773,7 @@ private:
             return;
         }
 
-        // 6) FCS check (skip if stop-flush padding was used)
+        // 6) strict FCS check
         const uint32_t rx_fcs = read_le_u32(psdu + d_ht_len - 4);
 
         boost::crc_32_type crc;
@@ -820,13 +814,8 @@ private:
                  << std::endl;
         }
 
-        if (d_did_stop_flush) {
-            dout << "[decode_mac] FCS bypass (stop-flush)" << std::endl;
-        } else if (calc_fcs != rx_fcs) {
-            dout << "[decode_mac] FCS error"
-                 << " calc=0x" << std::hex << calc_fcs
-                 << " rx=0x"   << rx_fcs
-                 << std::dec << std::endl;
+        if (calc_fcs != rx_fcs) {
+            fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x len=%d\n", calc_fcs, rx_fcs, d_ht_len);
             return;
         }
 
@@ -844,7 +833,9 @@ private:
                                pmt::mp("dlt"),
                                pmt::from_long(LINKTYPE_IEEE802_11));
 
+        fprintf(stderr, "[DECODE_SUCCESS] FCS OK, publishing message len=%d\n", d_ht_len);
         message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
+        fprintf(stderr, "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
     }
 
     void descramble(uint8_t* decoded)
@@ -875,7 +866,6 @@ private:
     bool d_debug;
 
     bool d_in_frame;
-    bool d_did_stop_flush;
     uint64_t d_items_copied;
     uint64_t d_items_expected;
     uint64_t d_frame_seq;

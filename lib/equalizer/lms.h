@@ -33,6 +33,7 @@ public:
                           gr_complex* symbols,
                           uint8_t* bits,
                           std::shared_ptr<gr::digital::constellation> mod);
+    void reset() override;
 
 private:
     double get_snr();

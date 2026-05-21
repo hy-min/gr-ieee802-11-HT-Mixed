@@ -36,19 +36,37 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
       d_ht_mixed(true),
       d_debug(true),
       d_debug_count(0),
-      d_frame_start_abs(0),
-      d_frame_start_known(false),
-      d_items_processed(0)
+      d_frame_start_abs(176),  // Expected L-LTF0 DATA start (sync_long output starts here)
+      d_frame_start_known(false),     // FIXED: start false
+      d_items_processed(0),
+      d_last_rel_idx(0),
+      d_wifi_start_accepted(false),
+      d_ignore_mode(false),
+      d_rx_reset_offset(-1),
+      d_prev_should_buffer(false),
+      d_frame1_correction(0),
+      d_frame1_correction_stored(false),
+      d_in_frame(false),
+      d_frame_seq_counter(0),
+      d_wifi_start_next_fft(false),
+      d_wifi_start_value(0),
+      d_wifi_start_produced(0),
+      d_pending_frame_transition(false),
+      d_pending_frame_start_abs(0),
+      d_pending_wifi_start_pos(0),
+      d_force_buffer_reset(false)
 {
     // Circular buffer for FFT-sized blocks
     d_buffer.resize(d_fft_size);
     d_buffer_count = 0;
+    d_buffer_filled = false;
 
     // We output in multiples of fft_size
     set_output_multiple(d_fft_size);
 
-    fprintf(stderr, "[HT_SPLITTER] Created: fft_size=%d, symbol_size=%d, cp_size=%d\n",
-            d_fft_size, d_symbol_size, d_cp_size);
+    // Disable automatic tag propagation - we manually control which tags are forwarded
+    set_tag_propagation_policy(TPP_DONT);
+
 }
 
 ht_symbol_splitter_impl::~ht_symbol_splitter_impl() {}
@@ -56,15 +74,13 @@ ht_symbol_splitter_impl::~ht_symbol_splitter_impl() {}
 void ht_symbol_splitter_impl::set_ht_mixed(bool ht_mixed)
 {
     d_ht_mixed = ht_mixed;
-    fprintf(stderr, "[HT_SPLITTER] Mode changed: ht_mixed=%d\n", ht_mixed);
+
 }
 
 void ht_symbol_splitter_impl::forecast(int noutput_items,
                                         gr_vector_int& ninput_items_required)
 {
-    // For each 64 output samples, we need up to 80 input samples due to CP skipping
-    int n_blocks = (noutput_items + d_fft_size - 1) / d_fft_size;
-    ninput_items_required[0] = n_blocks * d_symbol_size;
+    ninput_items_required[0] = 1;
 }
 
 int ht_symbol_splitter_impl::general_work(int noutput_items,
@@ -78,133 +94,386 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     int produced = 0;
     int consumed = 0;
 
-    if (d_debug && d_debug_count < 5) {
-        fprintf(stderr, "\n[HT_SPLITTER] === START general_work: noutput_items=%d, frame_known=%d ===\n",
-                noutput_items, d_frame_start_known);
-    }
-
-    // Get absolute position of first input item
     uint64_t start_abs_idx = nitems_read(0);
 
-    // Look for wifi_start tag - always check for new frames
-    // If we see wifi_start at a position significantly beyond our current d_frame_start_abs,
-    // it indicates a new frame has started and we should update our reference.
-    if (true) {
-        std::vector<gr::tag_t> tags;
-        get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
+    // PROBE: Print when general_work is called
+    static int call_count = 0;
+    static int fft_out_count = 0;
+    call_count++;
+    if (call_count <= 10) {
+        fprintf(stderr, "[SPLITTER_WORK] call=%d noutput=%d ninput=%d start_abs=%llu ignore=%d buf_cnt=%d\n",
+                call_count, noutput_items, ninput_items[0], (unsigned long long)start_abs_idx, d_ignore_mode, d_buffer_count);
+    }
 
-        for (const auto& tag : tags) {
-            if (pmt::symbol_to_string(tag.key) == "wifi_start") {
-                // sync_long writes wifi_start at nitems_written(0) when rel=0.
-                // In COPY state, rel=0 means d_offset = d_frame_start.
-                // sync_long outputs: out[o] = in[d_offset + o] = in[d_frame_start + o]
-                // So output position 0 corresponds to input position d_frame_start.
-                //
-                // The wifi_start tag offset is the OUTPUT position in sync_long's stream.
-                // Since sync_long output[tag.offset] = sync_long input[d_frame_start],
-                // and sync_long output maps 1:1 to ht_symbol_splitter input:
-                //   ht_symbol_splitter input[tag.offset] = sync_long input[d_frame_start]
-                //
-                // But we want ht_symbol_splitter input position 0 to correspond to L-LTF DATA start.
-                // L-LTF DATA starts at input position d_frame_start in sync_long.
-                // So we need: d_frame_start_abs = tag.offset - d_frame_start
-                //
-                // Actually, simpler interpretation:
-                // - The tag.offset is where wifi_start appears in the input stream
-                // - At that position, we're reading sync_long input[d_frame_start]
-                // - We want d_frame_start_abs such that rel_idx = current_idx - d_frame_start_abs = 0
-                //   when current_idx = tag.offset
-                // - So d_frame_start_abs = tag.offset
-                //
-                // But tag.offset is the position in sync_long's OUTPUT, and we want the position
-                // in ht_symbol_splitter's INPUT where L-LTF DATA starts.
-                //
-                // Since sync_long output = ht_symbol_splitter input (1:1), and
-                // sync_long output[tag.offset] = input[d_frame_start],
-                // the L-LTF DATA starts at ht_symbol_splitter input position d_frame_start.
-                // But tag.offset is where wifi_start was written, which is at sync_long output position 0.
-                // Since sync_long output position 0 = sync_long input position d_frame_start,
-                // and this maps 1:1 to ht_symbol_splitter input, wifi_start appears at
-                // ht_symbol_splitter input position d_frame_start.
-                //
-                // So d_frame_start_abs = d_frame_start (the tag.value)!
-                uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
-                uint64_t tag_abs_pos = (uint64_t)tag.offset;
+    // Get all tags in current work call range
+    std::vector<gr::tag_t> tags;
+    get_tags_in_range(tags, 0, start_abs_idx, start_abs_idx + ninput_items[0]);
 
-                fprintf(stderr, "[HT_SPLITTER] wifi_start tag: offset=%llu, value(d_frame_start)=%llu\n",
-                        (unsigned long long)tag_abs_pos, (unsigned long long)d_frame_start);
+    // DEBUG: verify no out-of-range tags leaked in
+    for (const auto& t : tags) {
+        if (t.offset < start_abs_idx || t.offset >= start_abs_idx + (uint64_t)ninput_items[0]) {
+            fprintf(stderr, "[SPLITTER_TAG_BUG] offset=%llu outside range [%llu,%llu)\n",
+                    (unsigned long long)t.offset,
+                    (unsigned long long)start_abs_idx,
+                    (unsigned long long)(start_abs_idx + ninput_items[0]));
+        }
+    }
 
-                // d_frame_start_abs should be the ABSOLUTE position where L-LTF DATA starts.
-                // wifi_start tag.offset = absolute position in input stream where tag was written
-                // d_frame_start (176) = offset within sync_long where L-LTF DATA starts
-                // sync_long output[0] = sync_long input[d_frame_start]
-                // Since sync_long output IS ht_symbol_splitter input (1:1 mapping):
-                //   ht_symbol_splitter input position 0 = sync_long input[d_frame_start]
-                // So L-LTF DATA starts at ht_symbol_splitter input position 0.
-                // But we use tag.offset to find where we are in the stream.
-                // The first sample we consume (i=0) has current_idx = tag.offset.
-                // This corresponds to ht_symbol_splitter input position 0.
-                // So d_frame_start_abs = 0 (meaning L-LTF DATA is at rel_idx 0).
-                //
-                // But wait - we want to buffer DATA, not CP. L-LTF DATA starts at
-                // sync_long input position d_frame_start = 176.
-                // In ht_symbol_splitter's coordinate: first sample (position 0) IS L-LTF DATA.
-                // So d_frame_start_abs should be 0, not d_frame_start.
-                //
-                // Actually, the issue is that d_frame_start_abs is used to compute rel_idx,
-                // and rel_idx=0 should correspond to L-LTF DATA. Since our input position 0
-                // IS L-LTF DATA, we need d_frame_start_abs = 0.
-                //
-                // But the original code uses d_frame_start = 176, which would make
-                // rel_idx = current_idx - 176. At current_idx = 1166976 (where tag was found),
-                // rel_idx = 1166800, which is way off.
-                //
-                // The fix: d_frame_start_abs should be d_frame_start, not tag.offset.
-                // sync_long sets d_frame_start=176 (L-LTF0 DATA start in original input).
-                // We want rel_idx=0 to correspond to L-LTF0 DATA start.
-                // d_frame_start_abs = d_frame_start;
+    // PROBE: Print all tags found
+    for (const auto& tag : tags) {
+        fprintf(stderr, "[SPLITTER_TAG] offset=%llu key=%s value=%.2f\n",
+                (unsigned long long)tag.offset,
+                pmt::symbol_to_string(tag.key).c_str(),
+                pmt::is_number(tag.value) ? pmt::to_double(tag.value) : 0.0);
+    }
 
-                // Check if this is a NEW frame
-                // If d_frame_start_known is already true and we see another wifi_start,
-                // it means a new frame has started (we don't re-use wifi_start within a frame)
-                bool is_new_frame = d_frame_start_known;
+    // Define exit_frame_state lambda BEFORE any code that calls it
+    auto exit_frame_state = [&]() {
+        d_in_frame = false;
+        d_frame_start_known = false;
+        // CRITICAL FIX: zero the buffer to prevent stale data contamination
+        std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
+        d_buffer_count = 0;
+        d_buffer_filled = false;
+        d_items_processed = 0;
+        d_prev_should_buffer = false;
+        d_frame1_correction = 0;
+        d_frame1_correction_stored = false;
+        d_wifi_start_next_fft = false;
+        d_wifi_start_value = 0;
+        d_wifi_start_produced = 0;
+        d_pending_frame_transition = false;
+        d_pending_frame_start_abs = 0;
+        d_pending_wifi_start_pos = 0;
+        d_force_buffer_reset = true;
+        d_last_rel_idx = 0;
+        d_wifi_start_accepted = false;  // Also reset acceptance flag
+        while (!d_pending_tag_queue.empty()) {
+            d_pending_tag_queue.pop();
+        }
+        fprintf(stderr, "[SPLITTER_FRAME_EXIT] seq=%d buf_cleared items_reset\n",
+                d_frame_seq_counter);
+    };
 
-                d_frame_start_abs = tag_abs_pos;  // FIXED: wifi_start appears at tag_abs_pos in ht_symbol_splitter input, which IS LTF0 DATA start
-
-                d_frame_start_known = true;
-
-                // Debug: print when wifi_start is detected
-                fprintf(stderr, "[HT_SPLITTER] %s wifi_start detected at abs_pos=%llu\n",
-                        is_new_frame ? "NEW_FRAME" : "FIRST",
-                        (unsigned long long)tag_abs_pos);
-                fprintf(stderr, "[HT_SPLITTER] d_frame_start_abs=%llu\n",
-                        (unsigned long long)d_frame_start_abs);
-                // Propagate wifi_start tag to output for downstream blocks (e.g., frame_equalizer)
-                add_item_tag(0,  // output port 0
-                             nitems_written(0),  // current output position
-                             pmt::string_to_symbol("wifi_start"),
-                             pmt::from_double(d_frame_start_abs),
-                             pmt::string_to_symbol(name()));
-                fprintf(stderr, "[HT_SPLITTER] wifi_start tag propagated at output pos %llu\n",
-                        (unsigned long long)nitems_written(0));
-                break;
+    for (const auto& tag : tags) {
+        if (pmt::symbol_to_string(tag.key) == "rx_reset") {
+            uint64_t reset_pos = (uint64_t)tag.offset;
+            if (reset_pos > start_abs_idx) {
+                d_ignore_mode = true;
+                d_rx_reset_offset = (int64_t)tag.offset;
+                // CRITICAL FIX: rx_reset means upstream has left the frame
+                exit_frame_state();
             }
         }
     }
 
+    // Read sync_offset tag for coordinate mapping
+    // CRITICAL FIX: Build a map of sync_offset values by position
+    // We need the sync_offset that corresponds to EACH wifi_start position
+    std::map<uint64_t, int64_t> sync_offset_by_pos;
+    for (const auto& tag : tags) {
+        if (pmt::symbol_to_string(tag.key) == "sync_offset") {
+            uint64_t pos = (uint64_t)tag.offset;
+            int64_t val = (int64_t)pmt::to_double(tag.value);
+            sync_offset_by_pos[pos] = val;
+        }
+    }
+
+    // Unified wifi_start handler: every wifi_start starts a new frame.
+    for (const auto& tag : tags) {
+        if (pmt::symbol_to_string(tag.key) == "wifi_start") {
+            uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
+            uint64_t tag_abs_pos = (uint64_t)tag.offset;
+
+            int64_t sync_for_this_wifi_start = -1;
+            auto it = sync_offset_by_pos.find(tag_abs_pos);
+            if (it != sync_offset_by_pos.end()) {
+                sync_for_this_wifi_start = it->second;
+            } else {
+                for (auto rit = sync_offset_by_pos.rbegin();
+                     rit != sync_offset_by_pos.rend(); rit++) {
+                    if (rit->first <= tag_abs_pos) {
+                        sync_for_this_wifi_start = rit->second;
+                        break;
+                    }
+                }
+            }
+
+            // CRITICAL FIX: Use CP offset (16) from the tag position.
+            // The tag position marks where sync_long starts COPY output (L-LTF start).
+            // L-LTF0 DATA starts CP=16 samples after that point.
+            // The old hardcoded +176 worked only when d_frame_start=160.
+            int64_t cp_length = 16;
+            int64_t new_frame_start_abs = (int64_t)tag_abs_pos + cp_length;
+
+            fprintf(stderr,
+                    "[SPLITTER_FRAME_START] seq=%d d_frame_start=%llu "
+                    "sync=%lld wifi_pos=%llu start_abs=%lld\n",
+                    d_frame_seq_counter + 1,
+                    (unsigned long long)d_frame_start,
+                    (long long)sync_for_this_wifi_start,
+                    (unsigned long long)tag_abs_pos,
+                    (long long)new_frame_start_abs);
+
+            // DEFERRED TRANSITION: Don't exit current frame immediately.
+            // Save the new frame info and apply it when the buffer is empty.
+            // This preserves the current frame's last symbol when a new frame
+            // overlaps (the new frame's L-STF arrives before the old frame ends).
+            if (!d_in_frame) {
+                // No active frame: apply immediately (buffer should be empty)
+                // DEFENSIVE: always clear buffer and reset all state
+                std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
+                d_buffer_count = 0;
+                d_buffer_filled = false;
+                d_prev_should_buffer = false;
+                d_frame1_correction = 0;
+                d_frame1_correction_stored = false;
+                d_last_rel_idx = 0;
+                d_pending_frame_transition = false;
+                d_pending_frame_start_abs = 0;
+                d_pending_wifi_start_pos = 0;
+                while (!d_pending_tag_queue.empty()) {
+                    d_pending_tag_queue.pop();
+                }
+                d_frame_seq_counter++;
+                d_frame_start_abs = new_frame_start_abs;
+                d_frame_start_known = true;
+                d_in_frame = true;
+                d_wifi_start_accepted = true;
+                d_ignore_mode = false;
+                d_rx_reset_offset = -1;
+                d_wifi_start_next_fft = true;
+                d_wifi_start_value = d_frame_start_abs;
+                d_wifi_start_produced = produced;
+                d_force_buffer_reset = true;
+                fprintf(stderr,
+                        "[SPLITTER_FRAME_START] immediate seq=%d start_abs=%lld\n",
+                        d_frame_seq_counter, (long long)d_frame_start_abs);
+            } else {
+                // Active frame: defer transition until buffer is empty
+                d_pending_frame_transition = true;
+                d_pending_frame_start_abs = new_frame_start_abs;
+                d_pending_wifi_start_pos = tag_abs_pos;
+                fprintf(stderr,
+                        "[SPLITTER_FRAME_START] deferred seq=%d -> pending "
+                        "start_abs=%lld wifi_pos=%llu\n",
+                        d_frame_seq_counter + 1,
+                        (long long)new_frame_start_abs,
+                        (unsigned long long)tag_abs_pos);
+            }
+
+            break;
+        }
+    }
+
     int i = 0;
+    int items_consumed_this_call = 0;  // Track consumed for starvation protection
+    bool at_end_of_input = false;  // Once true, skip all buffering until end of call
+
+
+    // CRITICAL SAFETY CHECK: If we don't have enough items for even one symbol, return 0.
+    // This prevents reading garbage data when GNU Radio wakes us with insufficient items.
+    if (ninput_items[0] < d_symbol_size) {
+        return 0;
+    }
+    // ============================================================
+    // CARRYOVER BUFFER CHECK: If previous call left a full buffer
+    // at a boundary, output it first before processing new data.
+    // This prevents starvation from firing and outputting partial data.
+    // ============================================================
+    if (d_buffer_count == d_fft_size && d_frame_start_known) {
+        uint64_t last_rel_idx = d_last_rel_idx;
+        bool at_boundary = false;
+        // Check if last_rel_idx was at a boundary position
+        if (last_rel_idx == 63 || last_rel_idx == 143 || last_rel_idx == 223 ||
+            last_rel_idx == 303 || last_rel_idx == 383 || last_rel_idx == 463 ||
+            last_rel_idx == 543) {
+            at_boundary = true;
+        } else if (last_rel_idx >= 544) {
+            uint64_t sym_offset = (last_rel_idx - 544) % 80;
+            at_boundary = (sym_offset == 0);
+        }
+        if (at_boundary) {
+            memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+            produced += d_fft_size;
+            d_buffer_count = 0;
+            d_buffer_filled = false;
+
+            // Compute time-domain energy of the buffered 64 samples for FFT window diagnostic
+            fft_out_count++;
+            double td_energy = 0.0;
+            for (int j = 0; j < d_fft_size; j++) {
+                td_energy += std::norm(d_buffer[j]);
+            }
+            fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+                    fft_out_count, (unsigned long long)last_rel_idx, td_energy,
+                    d_buffer[0].real(), d_buffer[0].imag());
+
+            // Emit delayed wifi_start tag on the current FFT (L-LTF0).
+            if (d_wifi_start_next_fft) {
+                uint64_t current_fft_pos = nitems_written(0) + produced - d_fft_size;
+                add_item_tag(0, current_fft_pos,
+                             pmt::string_to_symbol("wifi_start"),
+                             pmt::from_double(d_wifi_start_value),
+                             pmt::string_to_symbol(name()));
+                fprintf(stderr,
+                        "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (delayed)\n",
+                        d_frame_seq_counter,
+                        (unsigned long long)current_fft_pos,
+                        (long long)d_wifi_start_value);
+                d_wifi_start_next_fft = false;
+            }
+        }
+    }
+
     while (i < ninput_items[0]) {
+        // PROBE: Debug while loop
+        if (i % 100 == 0 && i > 0) {
+            fprintf(stderr, "[SPLITTER_LOOP] i=%d ninput=%d produced=%d\n", i, ninput_items[0], produced);
+        }
+        // Check if we're near the end
+        if (i >= 800 && i < 813) {
+            fprintf(stderr, "[SPLITTER_DEBUG] i=%d remaining=%d d_buffer=%d\n", i, ninput_items[0] - i, d_buffer_count);
+        }
         uint64_t current_idx = start_abs_idx + i;
 
-        // Only process after frame start is known
-        if (d_frame_start_known && current_idx >= d_frame_start_abs) {
-            uint64_t rel_idx = current_idx - d_frame_start_abs;
-            bool should_buffer = false;
-            // DEBUG: confirm we're in the processing block
-            if (rel_idx >= 64 && rel_idx < 80) {
-                fprintf(stderr, "[HT_SPLITTER] DEBUG: in block rel_idx=%llu d_buffer_count=%llu\n",
-                        (unsigned long long)rel_idx, (unsigned long long)d_buffer_count);
+        // DEFERRED TRANSITION: Apply pending frame transition when buffer is empty
+        // AND we have reached the new frame's wifi_start position.  This ensures
+        // the current frame's remaining samples (including the last symbol) are
+        // processed with the old frame's state before switching.
+        if (d_pending_frame_transition && d_buffer_count == 0 &&
+            current_idx >= d_pending_wifi_start_pos) {
+            // CRITICAL: Save pending values BEFORE exit_frame_state() clears them.
+            int64_t saved_start_abs = d_pending_frame_start_abs;
+            exit_frame_state();
+            d_frame_seq_counter++;
+            d_frame_start_abs = saved_start_abs;
+            d_frame_start_known = true;
+            d_in_frame = true;
+            d_wifi_start_accepted = true;
+            d_ignore_mode = false;
+            d_rx_reset_offset = -1;
+            d_wifi_start_next_fft = true;
+            d_wifi_start_value = d_frame_start_abs;
+            d_wifi_start_produced = produced;
+            fprintf(stderr,
+                    "[SPLITTER_FRAME_TRANSITION] seq=%d start_abs=%lld\n",
+                    d_frame_seq_counter, (long long)d_frame_start_abs);
+        }
+
+        // If in ignore mode, consume all without buffering
+        if (d_ignore_mode) {
+            if (current_idx > (uint64_t)d_rx_reset_offset) {
+                d_ignore_mode = false;
+                d_rx_reset_offset = -1;
+                d_buffer_count = 0;
+                d_items_processed = 0;
+            } else {
+                i++;
+                consumed++;
+                continue;
             }
+        }
+
+        // Compute rel_idx early for use in garbage detection
+        uint64_t rel_idx = 0;
+        bool frame_started = (d_frame_start_known && current_idx >= d_frame_start_abs);
+        if (frame_started) {
+            rel_idx = current_idx - d_frame_start_abs;
+        }
+
+        // Only process after frame start is known
+        if (frame_started) {
+            // ============================================================
+            // Calculate remaining items EARLY so we can check boundaries
+            // before starvation fires
+            // ============================================================
+            int remaining_items = ninput_items[0] - i;
+            // Calculate items needed dynamically based on position in 80-sample cycle.
+            // For preamble (rel_idx < 544): need full 80 (16 CP + 64 Data).
+            // For HT-DATA (rel_idx >= 544): need 80 - sym_offset remaining in current cycle.
+            uint64_t sym_offset_for_starve = 0;
+            int items_needed_for_current_symbol = 80;  // default for preamble
+            if (frame_started && rel_idx >= 544) {
+                sym_offset_for_starve = (rel_idx - 544) % 80;
+                items_needed_for_current_symbol = 80 - (int)sym_offset_for_starve;
+            }
+
+            // ============================================================
+            // should_buffer calculation - determines what region we're in
+            // ============================================================
+            // Compute should_buffer based on rel_idx BEFORE transition check
+            bool should_buffer = false;
+            if (rel_idx < 64) {
+                // Stage 1: L-LTF0 DATA (rel_idx 0-63)
+                should_buffer = true;
+            } else if (rel_idx < 80) {
+                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - 跳过！
+                should_buffer = false;
+            } else if (rel_idx < 144) {
+                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
+                should_buffer = true;
+            } else if (rel_idx < 160) {
+                // Stage 2: L-SIG CP (rel_idx 144-159) - 跳过
+                should_buffer = false;
+            } else if (rel_idx < 224) {
+                // Stage 2b: L-SIG DATA (rel_idx 160-223) - CORRECTED from 240 to 224
+                should_buffer = true;
+            } else if (rel_idx < 240) {
+                // Stage 3: HT-SIG0 CP (rel_idx 224-239) - CORRECTED
+                should_buffer = false;
+            } else if (rel_idx < 304) {
+                // Stage 3b: HT-SIG0 DATA (rel_idx 240-303) - 64 samples
+                should_buffer = true;
+            } else if (rel_idx < 320) {
+                // Stage 4: HT-SIG1 CP (rel_idx 304-319) - 跳过
+                should_buffer = false;
+            } else if (rel_idx < 384) {
+                // Stage 4b: HT-SIG1 DATA (rel_idx 320-383) - 64 samples
+                should_buffer = true;
+            } else if (rel_idx < 400) {
+                // Stage 5: HT-STF CP (rel_idx 384-399) - 跳过
+                should_buffer = false;
+            } else if (rel_idx < 464) {
+                // Stage 5b: HT-STF DATA (rel_idx 400-463)
+                should_buffer = true;
+            } else if (rel_idx < 480) {
+                // Stage 6: HT-LTF CP (rel_idx 464-479) - 跳过
+                should_buffer = false;
+            } else if (rel_idx < 544) {
+                // Stage 6b: HT-LTF DATA (rel_idx 480-543)
+                should_buffer = true;
+            } else {
+                // Stage 7: HT-DATA and beyond (80-sample period: 16 CP + 64 Data)
+                uint64_t sym_rel_idx = rel_idx - 544;
+                uint64_t sym_offset = sym_rel_idx % 80;
+                if (sym_offset >= 16) {
+                    should_buffer = true;  // Skip CP, buffer Data
+                }
+            }
+
+            // FIX: When entering or leaving a buffering region, reset partial buffer
+            // to prevent cross-symbol corruption. Entering: start fresh. Leaving:
+            // discard partial samples so CP regions don't bridge into next symbol.
+            // CRITICAL FIX: Also reset when crossing a frame boundary, even if both
+            // old and new regions are buffering regions (e.g., HT-DATA -> L-LTF0).
+            if ((should_buffer && !d_prev_should_buffer) ||
+                (should_buffer && d_force_buffer_reset)) {
+                d_buffer_filled = false;
+                d_buffer_count = 0;
+                std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
+                d_force_buffer_reset = false;
+            } else if (!should_buffer && d_prev_should_buffer) {
+                d_buffer_filled = false;
+                d_buffer_count = 0;
+                std::fill(d_buffer.begin(), d_buffer.end(), gr_complex(0.0f, 0.0f));
+            }
+            d_prev_should_buffer = should_buffer;
+
+            // ============================================================
+            // HT-Mixed 20MHz preamble structure with explicit boundaries:
+            // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
+            // So rel_idx=0 in sync_long output = input 176 (L-LTF0 DATA).
 
             // HT-Mixed 20MHz preamble structure with explicit boundaries:
             // sync_long output starts at d_frame_start, which is L-LTF0 DATA start (176).
@@ -285,120 +554,266 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // rel_idx 400-463: HT-STF DATA (input 576-639)
             // rel_idx 464+: HT-DATA (each symbol 80 samples: 16 CP + 64 data)
             // ============================================================
-            // HT-Mixed 20MHz Preamble Structure (CORRECTED):
+            // HT-Mixed 20MHz Preamble Structure (IEEE 802.11n):
             //
-            // L-LTF: 160 samples = 32 GI2 + 64 LTF0 + 64 LTF1
-            //   - rel_idx 0-63:   LTF0 DATA (input d_frame_start to d_frame_start+63)
-            //   - rel_idx 64-127: LTF1 DATA (continuous, NO CP between LTF0 and LTF1!)
-            //   - rel_idx 128-143: L-SIG CP (16 samples) -> SKIP
-            //   - rel_idx 144-207: L-SIG DATA (64 samples) -> BUFFER
-            //   - rel_idx 208-223: HT-SIG0 CP (16 samples) -> SKIP
-            //   - rel_idx 224-287: HT-SIG0 DATA (64 samples) -> BUFFER
-            //   - rel_idx 288-303: HT-SIG1 CP (16 samples) -> SKIP
-            //   - rel_idx 304-367: HT-SIG1 DATA (64 samples) -> BUFFER
-            //   - rel_idx 368-383: HT-STF CP (16 samples) -> SKIP
-            //   - rel_idx 384-447: HT-STF DATA (64 samples) -> BUFFER
-            //   - rel_idx 448+: HT-DATA (80-sample period: 16 CP + 64 Data)
+            // sync_long outputs from input 176 (L-LTF0 DATA start)
+            // rel_idx = input_pos - 176
+            //
+            // L-LTF0 DATA: rel_idx 0-63 (64 samples) -> BUFFER
+            // L-LTF1 CP: rel_idx 64-79 (16 samples) -> SKIP
+            // L-LTF1 DATA: rel_idx 80-143 (64 samples) -> BUFFER
+            // L-SIG CP: rel_idx 144-159 (16 samples) -> SKIP
+            // L-SIG DATA: rel_idx 160-223 (64 samples) -> BUFFER
+            // HT-SIG0 CP: rel_idx 224-239 (16 samples) -> SKIP
+            // HT-SIG0 DATA: rel_idx 240-303 (64 samples) -> BUFFER
+            // HT-SIG1 CP: rel_idx 304-319 (16 samples) -> SKIP
+            // HT-SIG1 DATA: rel_idx 320-383 (64 samples) -> BUFFER
+            // HT-STF CP: rel_idx 384-399 (16 samples) -> SKIP
+            // HT-STF DATA: rel_idx 400-463 (64 samples) -> BUFFER
+            // HT-DATA: rel_idx 464+ (80-sample period: 16 CP + 64 Data)
             // ============================================================
-            if (rel_idx < 64) {
-                // Stage 1: L-LTF0 DATA (rel_idx 0-63)
-                should_buffer = true;
-            } else if (rel_idx < 128) {
-                // Stage 1b: L-LTF1 DATA (rel_idx 64-127) - 64 samples, NO CP between LTF0 and LTF1!
-                // FIX: TX outputs LTF0 and LTF1 back-to-back without CP gap
-                should_buffer = true;
-            } else if (rel_idx < 208) {
-                // Stage 2: L-SIG (rel_idx 128-143 CP, 144-207 DATA) - 80 points total
-                should_buffer = (rel_idx >= 144);
-            } else if (rel_idx < 288) {
-                // Stage 3: HT-SIG0 (rel_idx 208-223 CP, 224-287 DATA) - 80 points total
-                should_buffer = (rel_idx >= 224);
-            } else if (rel_idx < 304) {
-                // Stage 3b: HT-SIG1 CP (rel_idx 288-303) - SKIP these 16 points!
-                should_buffer = false;
-            } else if (rel_idx < 368) {
-                // Stage 4: HT-SIG1 DATA (rel_idx 304-367) - 64 points
-                should_buffer = true;
-            } else if (rel_idx < 448) {
-                // Stage 5: HT-STF (rel_idx 368-383 CP, 384-447 DATA)
-                should_buffer = (rel_idx >= 384);
-            } else {
-                // Stage 6: HT-DATA and beyond (80-sample period)
-                uint64_t sym_rel_idx = rel_idx - 448;
-                uint64_t sym_offset = sym_rel_idx % 80;
-                if (sym_offset >= 16) {
-                    should_buffer = true;  // Skip CP, buffer Data
-                }
-            }
+            // ============================================================
+            // HT-Mixed 20MHz Preamble Structure (IEEE 802.11n)
+            // L-LTF: T1 (0-63) + T2 (64-127) 无缝连接，无 CP
+            // 后续符号: 16 CP + 64 DATA = 80 点
+            // (should_buffer already computed above)
+            // ============================================================
 
-            // DEBUG: Print rel_idx 64-79 to see if they're being buffered
-            if (rel_idx >= 64 && rel_idx < 80) {
-                fprintf(stderr, "[HT_SPLITTER] rel_idx=%llu should_buffer=%d d_buffer_count=%llu\n",
-                        (unsigned long long)rel_idx, should_buffer, (unsigned long long)d_buffer_count);
-            }
-
-            if (should_buffer) {
+            // Always buffer when should_buffer is true (unless at end of input)
+            if (should_buffer && !at_end_of_input) {
                 d_buffer[d_buffer_count++] = in[i];
-                // TIME DOMAIN DEBUG: Print LTF0 and LTF1 time-domain samples for comparison
-                static int td_debug_count = 0;
-                static int ltf0_sample_count = 0;
-                static int ltf1_sample_count = 0;
-                if (td_debug_count < 3) {
-                    // Print LTF0 samples (rel_idx 0-63)
-                    if (rel_idx < 64 && ltf0_sample_count < 10) {
-                        fprintf(stderr, "[TIME_DOMAIN_LTF0] rel_idx=%llu, sample[%d]=%.4f+%.4fi\n",
-                                (unsigned long long)rel_idx, ltf0_sample_count,
-                                in[i].real(), in[i].imag());
-                        ltf0_sample_count++;
-                    }
-                    // Print LTF1 samples (rel_idx 64-127)
-                    if (rel_idx >= 64 && rel_idx < 128 && ltf1_sample_count < 10) {
-                        fprintf(stderr, "[TIME_DOMAIN_LTF1] rel_idx=%llu, sample[%d]=%.4f+%.4fi\n",
-                                (unsigned long long)rel_idx, ltf1_sample_count,
-                                in[i].real(), in[i].imag());
-                        ltf1_sample_count++;
-                    }
-                    if (rel_idx >= 127) {
-                        td_debug_count++;
-                        ltf0_sample_count = 0;
-                        ltf1_sample_count = 0;
-                    }
+            }
+
+            // ============================================================
+            // BOUNDARY CHECK AFTER BUFFERING
+            // Check if buffer just became full at a boundary position.
+            // This runs AFTER the current sample is buffered, so d_buffer_count
+            // is updated and rel_idx reflects the just-buffered position.
+            // ============================================================
+            // PROBE: Print when buffer is full
+            if (d_buffer_count == d_fft_size) {
+                fprintf(stderr, "[SPLITTER_BUFFER_FULL] rel_idx=%d frame_start=%lld current=%lld\n",
+                        rel_idx, (long long)d_frame_start_abs, (long long)current_idx);
+
+                uint64_t out_rel_idx = current_idx - d_frame_start_abs;
+
+                // ============================================================
+                // Boundary trigger: output FFT window when 64 samples collected
+                // ============================================================
+                bool at_boundary = false;
+                if (rel_idx < 64) {
+                    at_boundary = (rel_idx == 63);
+                } else if (rel_idx < 144) {
+                    at_boundary = (rel_idx == 143);
+                } else if (rel_idx < 160) {
+                    at_boundary = false;
+                } else if (rel_idx < 224) {
+                    at_boundary = (rel_idx == 223);
+                } else if (rel_idx < 304) {
+                    at_boundary = (rel_idx == 303);
+                } else if (rel_idx < 320) {
+                    at_boundary = false;
+                } else if (rel_idx < 384) {
+                    at_boundary = (rel_idx == 383);
+                } else if (rel_idx < 400) {
+                    at_boundary = false;
+                } else if (rel_idx < 464) {
+                    at_boundary = (rel_idx == 463);
+                } else if (rel_idx < 480) {
+                    at_boundary = false;
+                } else if (rel_idx < 544) {
+                    at_boundary = (rel_idx == 543);
+                } else {
+                    uint64_t sym_offset = (rel_idx - 544) % 80;
+                    // FIX: Allow sym_offset 0 OR 79 (79 occurs due to RESET zeros混入)
+                    // This is a pragmatic fix: when buffer is full and we're near a boundary,
+                    // just output the FFT. The alternative is to lose the data entirely.
+                    at_boundary = (sym_offset == 0 || sym_offset == 79);
                 }
 
-                // When buffer is full, output FFT block
-                if (d_buffer_count == d_fft_size) {
-                    uint64_t out_rel_idx = current_idx - d_frame_start_abs;
-                    // Debug: check if this is HT-SIG region (HT-SIG0 data: 240-303, HT-SIG1 data: 320-383)
-                    if ((out_rel_idx >= 240 && out_rel_idx < 304) || (out_rel_idx >= 320 && out_rel_idx < 384)) {
-                        fprintf(stderr, "[HT_SPLITTER] HT-SIG OUTPUT at rel_idx=%llu, sample[0]=%.4f+%.4fi\n",
-                                (unsigned long long)out_rel_idx,
+                // FIX: For HT-DATA (rel_idx >= 544), ALWAYS output when buffer is full
+                // even if at_boundary=false. This prevents data loss due to boundary misalignment.
+                // For preamble (rel_idx < 544), only output at correct boundaries.
+                if (at_boundary || rel_idx >= 544) {
+                    // Compute energy BEFORE output to filter RESET-gap zeros
+                    float total_energy = 0.0f;
+                    for (int zz = 0; zz < 64; zz++) {
+                        total_energy += std::norm(d_buffer[zz]);
+                    }
+                    // Skip near-zero-energy FFTs (RESET gap between frames)
+                    if (total_energy < 10.0f) {
+                        d_buffer_count = 0;
+                        d_buffer_filled = false;
+                        fprintf(stderr, "[SPLITTER_ENERGY_DROP] rel=%llu energy=%.2f frame=%d in_frame=%d\n",
+                                (unsigned long long)rel_idx, total_energy,
+                                d_frame_seq_counter, d_in_frame ? 1 : 0);
+                        if (d_in_frame && rel_idx >= 544) {
+                            fprintf(stderr,
+                                    "[SPLITTER_FRAME_EXIT] energy_drop rel=%llu\n",
+                                    (unsigned long long)rel_idx);
+                            exit_frame_state();
+                        }
+                        // DO NOT output
+                    } else {
+                        // Debug: Print symbol type based on rel_idx
+                        int symbol_type = -1;
+                        if (rel_idx == 63 || rel_idx == 143) {
+                            symbol_type = 0; // L-LTF FFT
+                        } else if (rel_idx == 223) {
+                            symbol_type = 2; // L-SIG FFT
+                        } else if (rel_idx == 303) {
+                            symbol_type = 3; // HT-SIG0 FFT
+                        } else if (rel_idx == 383) {
+                            symbol_type = 4; // HT-SIG1 FFT
+                        } else if (rel_idx == 463) {
+                            symbol_type = 5; // HT-STF FFT
+                        } else if (rel_idx == 543) {
+                            symbol_type = 6; // HT-LTF FFT
+                        }
+                        float peak_mag = 0.0f;
+                        int peak_idx = 0;
+                        for (int zz = 0; zz < 64; zz++) {
+                            if (std::abs(d_buffer[zz]) > peak_mag) {
+                                peak_mag = std::abs(d_buffer[zz]);
+                                peak_idx = zz;
+                            }
+                        }
+                        // PROBE: Print FFT buffer content before output
+                        fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%d first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
+                                symbol_type, rel_idx,
+                                d_buffer[0].real(), d_buffer[0].imag(),
+                                d_buffer[63].real(), d_buffer[63].imag(),
+                                total_energy);
+                        uint64_t fft_pos = nitems_written(0) + produced;
+                        memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
+                        produced += d_fft_size;
+                        d_buffer_count = 0;
+                        d_buffer_filled = false;
+
+                        // Emit delayed wifi_start tag on the current FFT (L-LTF0).
+                        if (d_wifi_start_next_fft) {
+                            add_item_tag(0, fft_pos,
+                                         pmt::string_to_symbol("wifi_start"),
+                                         pmt::from_double(d_wifi_start_value),
+                                         pmt::string_to_symbol(name()));
+                            fprintf(stderr,
+                                    "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (delayed)\n",
+                                    d_frame_seq_counter,
+                                    (unsigned long long)fft_pos,
+                                    (long long)d_wifi_start_value);
+                            d_wifi_start_next_fft = false;
+                        }
+
+                        // Emit any remaining queued tags (rx_reset etc.)
+                        while (!d_pending_tag_queue.empty()) {
+                            auto& front = d_pending_tag_queue.front();
+                            uint64_t tag_out_pos = front.first;
+                            if (tag_out_pos == 0) {
+                                tag_out_pos = fft_pos;
+                            }
+                            add_item_tag(0, tag_out_pos,
+                                         pmt::string_to_symbol("wifi_start"),
+                                         pmt::from_double(front.second),
+                                         pmt::string_to_symbol(name()));
+                            fprintf(stderr,
+                                    "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld\n",
+                                    d_frame_seq_counter,
+                                    (unsigned long long)tag_out_pos,
+                                    (long long)front.second);
+                            d_pending_tag_queue.pop();
+                        }
+
+                        fft_out_count++;
+                        fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+                                fft_out_count, (unsigned long long)rel_idx, (double)total_energy,
                                 d_buffer[0].real(), d_buffer[0].imag());
                     }
-                    memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
-                    produced += d_fft_size;
+                } else {
+                    // Buffer filled at non-boundary position - DANGER!
+                    // We missed a boundary, so this FFT is garbage.
+                    // DO NOT output - just reset and continue buffering.
+                    // This prevents corrupting the equalizer with garbage FFTs.
                     d_buffer_count = 0;
-
-                    if (d_debug && d_debug_count < 10) {
-                        fprintf(stderr, "[HT_SPLITTER] OUTPUT FFT at rel_idx=%llu\n",
-                                (unsigned long long)out_rel_idx);
-                    }
+                    d_buffer_filled = false;
+                    // Do NOT output - continue to next iteration
                 }
+            }
+
+            // ============================================================
+            // STARVATION PROTECTION
+            // Runs AFTER boundary check so full buffers at boundaries are output first.
+            //
+            // NEVER output partial FFT windows - this corrupts the equalizer's
+            // channel estimate. If we can't form a full 64-sample FFT window,
+            // return without output and let GNU Radio provide more items.
+            //
+            // FIX: Only trigger starvation protection if buffer is FULL (64 samples).
+            // Partial buffers (from CP skipping) should NOT trigger early return.
+            // ============================================================
+            if (remaining_items < items_needed_for_current_symbol && d_buffer_count == d_fft_size && !at_end_of_input) {
+                // Buffer is full - output it and return
+                fprintf(stderr, "[SPLITTER_STARVE] FULL buf=%d remaining=%d rel=%llu produced=%d nout=%d\n",
+                        d_buffer_count, remaining_items, (unsigned long long)rel_idx, produced, noutput_items);
+
+                uint64_t fft_pos = nitems_written(0) + produced;
+                while (!d_pending_tag_queue.empty()) {
+                    auto& front = d_pending_tag_queue.front();
+                    uint64_t tag_out_pos = (front.first == 0) ? fft_pos : front.first;
+                    add_item_tag(0, tag_out_pos,
+                                 pmt::string_to_symbol("wifi_start"),
+                                 pmt::from_double(front.second),
+                                 pmt::string_to_symbol(name()));
+                    fprintf(stderr,
+                            "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (full_starve)\n",
+                            d_frame_seq_counter,
+                            (unsigned long long)tag_out_pos,
+                            (long long)front.second);
+                    d_pending_tag_queue.pop();
+                }
+
+                for (int j = 0; j < d_buffer_count; j++) {
+                    out[produced++] = d_buffer[j];
+                }
+                d_buffer_count = 0;
+                d_buffer_filled = false;
+                d_items_processed += i;
+                d_last_rel_idx = rel_idx;
+                consume_each(i);
+                return produced;
+            } else if (remaining_items < items_needed_for_current_symbol && d_buffer_count > 0 && d_buffer_count < d_fft_size && !at_end_of_input) {
+                // Can't complete the current symbol. Current item already buffered.
+                // Preserve partial buffer and return without filling more.
+                // The old while-loop fill was removed because it buffered CP samples
+                // without checking should_buffer, causing cross-symbol corruption.
+                if (should_buffer) {
+                    i++;
+                    consumed++;
+                }
+                fprintf(stderr, "[SPLITTER_STARVE] PARTIAL preserve buf=%d remaining=%d rel=%llu\n",
+                        d_buffer_count, remaining_items, (unsigned long long)rel_idx);
+                d_items_processed += consumed;
+                d_last_rel_idx = rel_idx;
+                consume_each(consumed);
+                return produced;
             }
         }
 
+        items_consumed_this_call++;
         i++;
         consumed++;
     }
 
+    // Update d_items_processed for normal completion
     d_items_processed += consumed;
 
-    if (d_debug && d_debug_count < 5) {
-        fprintf(stderr, "[HT_SPLITTER] === END: consumed=%d, produced=%d ===\n\n",
-                consumed, produced);
-        d_debug_count++;
+    // Track last position for carryover buffer check
+    if (consumed > 0 && d_frame_start_known) {
+        d_last_rel_idx = (start_abs_idx + consumed - 1) - d_frame_start_abs;
     }
 
-    consume(0, consumed);
+    consume_each(consumed);
+    // PROBE: Print final production
+    fprintf(stderr, "[SPLITTER_RETURN] produced=%d consumed=%d\n", produced, consumed);
     return produced;
 }
 

@@ -74,6 +74,7 @@ target_link_libraries(gnuradio-ieee802_11
         )
 target_include_directories(gnuradio-ieee802_11
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     PUBLIC $<INSTALL_INTERFACE:include>
   )
 set_target_properties(gnuradio-ieee802_11 PROPERTIES DEFINE_SYMBOL "gnuradio_ieee802_11_EXPORTS")

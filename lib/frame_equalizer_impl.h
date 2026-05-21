@@ -16,17 +16,6 @@
 #include <memory>
 #include <vector>
 
-// ============================================================
-// Debug configuration - set to 0 for production
-// ============================================================
-#define DEBUG_FRAME_FLOW 0      // Frame state transitions
-#define DEBUG_HT_SIG_PARSE 0   // HT-SIG decode details
-#define DEBUG_L_SIG_PARSE 0     // L-SIG decode details
-#define DEBUG_HEADER_CHANNEL 0  // Channel estimation
-#define DEBUG_VITERBI_IO 0     // Viterbi input/output
-// Performance counters - always enabled for diagnostics
-#define ENABLE_FRAME_COUNTERS 1
-
 namespace gr {
 namespace ieee802_11 {
 
@@ -65,25 +54,21 @@ private:
     bool d_is_ht_frame;  // Frame type detection result: true=HT-Mixed, false=Legacy
 
     int d_sym_idx;
+    int d_takeover_reject_symbols;
     int d_internal_symbol_counter;  // Tracks FFT output number, reset at wifi_start
     int d_first_valid_symbol;
     bool d_in_frame;
-    bool d_wifi_start_processed;  // True after first wifi_start in a frame is processed
-
-#if ENABLE_FRAME_COUNTERS
-    // Performance counters
-    uint64_t d_frames_total;
-    uint64_t d_frames_ht_parse_ok;
-    uint64_t d_frames_ht_parse_failed;
-    uint64_t d_frames_lsig_parse_ok;
-    uint64_t d_frames_lsig_parse_failed;
-#endif
+    bool d_discard_until_wifi_start;
 
     // early cache
     uint8_t d_early_bits[8][52];
     bool d_early_bits_valid[8];
     gr_complex d_early_eqsym[8][52];
     bool d_early_eqsym_valid[8];
+
+    // Channel estimate for 52 HT-DATA subcarriers (tx_order)
+    gr_complex d_H52_tx_order[52] = {gr_complex(0.0f, 0.0f)};
+    bool d_H52_tx_order_valid = false;
 
     // dynamic header detection state
     bool d_have_lsig;
