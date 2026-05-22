@@ -1,6 +1,8 @@
 #include <ieee802_11/decode_mac.h>
 #include "utils.h"
 #include "viterbi_decoder/viterbi_decoder.h"
+#include "llr_demod.h"
+#include "ldpc/ldpc_wifi_codec.h"
 
 #include <gnuradio/io_signature.h>
 #include <gnuradio/gr_complex.h>
@@ -306,6 +308,8 @@ public:
           d_ht_len(0),
           d_ht_n_sym(0),
           d_ht_n_cbps(52),
+          d_use_ldpc(false),
+          d_scrambler_seed(1),
           d_ofdm(BPSK_1_2),
           d_frame(d_ofdm, 0)
     {
@@ -393,6 +397,19 @@ public:
                             pmt::dict_ref(d_meta, k_frame_bytes_sp, pmt::from_uint64(0)));
                     }
                     d_ht_len = (int)len;
+
+                    d_use_ldpc = false;
+                    for (auto& tt : tags) {
+                        if (pmt::eq(tt.key, pmt::mp("use_ldpc"))) {
+                            d_use_ldpc = pmt::to_bool(tt.value);
+                        }
+                    }
+                    d_scrambler_seed = 1;
+                    for (auto& tt : tags) {
+                        if (pmt::eq(tt.key, pmt::mp("scrambler_seed"))) {
+                            d_scrambler_seed = (int)pmt::to_long(tt.value);
+                        }
+                    }
 
                     // 检查MCS范围是否有效
                     if (d_ht_mcs < 0 || d_ht_mcs > 7) {
@@ -556,6 +573,81 @@ private:
             dout << "[decode_mac] demodulation bit count mismatch: expected "
                  << (n_sym * n_cbps) << " got " << bit_idx << std::endl;
         }
+
+        // ============================================================
+        // LDPC decode path
+        // ============================================================
+        if (d_use_ldpc) {
+            const float noise_var = 1.0f; // TODO: estimate from channel
+            d_rx_llr.assign((size_t)(n_sym * n_cbps), 0.0f);
+            compute_llr_block(d_rx_eq.data(), d_rx_llr.data(),
+                              n_sym, 52, n_bpsc, noise_var);
+
+            // Descramble LLR
+            descramble_llr(d_rx_llr.data(), (int)d_rx_llr.size(), d_scrambler_seed);
+
+            // Select block length and rate
+            unsigned block_length = (d_ht_len <= 40) ? 648 :
+                                    (d_ht_len <= 80) ? 1296 : 1944;
+            unsigned rate_index;
+            switch (d_ht_mcs) {
+            case 0: case 1: case 3: rate_index = 0; break; // 1/2
+            case 5: rate_index = 1; break; // 2/3
+            case 2: case 4: case 6: rate_index = 2; break; // 3/4
+            case 7: rate_index = 3; break; // 5/6
+            default: rate_index = 0; break;
+            }
+
+            if (!d_ldpc_codec.init(block_length, rate_index)) {
+                fprintf(stderr, "[DECODE_FAIL] LDPC init failed\n");
+                return;
+            }
+
+            int n = d_ldpc_codec.get_n();
+            int k = d_ldpc_codec.get_k();
+
+            std::vector<uint8_t> decoded_cw(n);
+            d_ldpc_codec.decode(d_rx_llr.data(), (int)d_rx_llr.size(),
+                                decoded_cw.data(), n, 50, true);
+
+            // Extract info bits (first K bits) into bytes
+            // SERVICE field: first 16 bits
+            // PSDU: remaining bits
+            d_out_bytes.assign((size_t)d_ht_len + 2, 0);
+            for (int i = 0; i < 16 && i < k; i++) {
+                d_out_bytes[i / 8] |= (decoded_cw[i] << (i % 8));
+            }
+            for (int i = 0; i < d_ht_len * 8 && (i + 16) < k; i++) {
+                int bit_idx = i + 16;
+                d_out_bytes[2 + i / 8] |= (decoded_cw[bit_idx] << (i % 8));
+            }
+
+            const uint8_t* psdu = d_out_bytes.data() + 2;
+            if (d_ht_len < 4) {
+                fprintf(stderr, "[DECODE_FAIL] invalid psdu len for FCS: %d\n", d_ht_len);
+                return;
+            }
+
+            const uint32_t rx_fcs = read_le_u32(psdu + d_ht_len - 4);
+            boost::crc_32_type crc;
+            crc.process_bytes(psdu, d_ht_len - 4);
+            const uint32_t calc_fcs = crc.checksum();
+
+            if (calc_fcs != rx_fcs) {
+                fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x len=%d\n", calc_fcs, rx_fcs, d_ht_len);
+                return;
+            }
+
+            fprintf(stderr, "[DECODE_SUCCESS] LDPC FCS OK, publishing message len=%d\n", d_ht_len);
+            pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
+            d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(105));
+            message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
+            return;
+        }
+
+        // ============================================================
+        // Convolutional decode path (original code continues below)
+        // ============================================================
 
         if (d_debug) {
             const int first_n = std::min<int>(64, (int)d_rx_bits.size());
@@ -861,6 +953,18 @@ private:
         }
     }
 
+    void descramble_llr(float* llr, int n_bits, int scrambler_seed)
+    {
+        int state = scrambler_seed;
+        for (int i = 0; i < n_bits; i++) {
+            int feedback = ((state & 64) != 0) ^ ((state & 8) != 0);
+            if (feedback) {
+                llr[i] = -llr[i];
+            }
+            state = ((state << 1) & 0x7e) | feedback;
+        }
+    }
+
 private:
     bool d_log;
     bool d_debug;
@@ -885,6 +989,11 @@ private:
     std::vector<uint8_t> d_rx_bits;
     std::vector<uint8_t> d_deintl_bits;
     std::vector<uint8_t> d_out_bytes;
+
+    bool d_use_ldpc;
+    ldpc_wifi_codec d_ldpc_codec;
+    std::vector<float> d_rx_llr;
+    int d_scrambler_seed;
 };
 
 
