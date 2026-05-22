@@ -35,7 +35,8 @@ public:
           d_symbols_len(0),
           d_debug(debug),
           d_scrambler(1),
-          d_ofdm(e)
+          d_ofdm(e),
+          d_use_ldpc(false)
     {
         message_port_register_in(pmt::mp("in"));
         set_msg_handler(pmt::mp("in"),
@@ -59,6 +60,8 @@ public:
         gr::thread::scoped_lock lock(d_mutex);
         d_ofdm = ofdm_param(encoding);
     }
+
+    void set_use_ldpc(bool use_ldpc) override { d_use_ldpc = use_ldpc; }
 
     int general_work(int noutput,
                      gr_vector_int&,
@@ -457,10 +460,24 @@ private:
         }
 
         reset_tail_bits(scrambled_data, frame);
-        convolutional_encoding(scrambled_data, encoded_data, frame);
-        puncturing(encoded_data, punctured_data, frame, d_ofdm);
-        interleave(punctured_data, interleaved_data, frame, d_ofdm);
-        split_symbols(interleaved_data, symbols, frame, d_ofdm);
+
+        if (d_use_ldpc && ht_mode) {
+            bool ok = ldpc_encode(scrambled_data, interleaved_data, frame, d_ofdm);
+            if (!ok) {
+                std::cerr << "[MAPPER] LDPC encode failed, falling back to convolutional" << std::endl;
+                d_use_ldpc = false;
+            }
+            // Copy for debug output compatibility
+            std::memcpy(punctured_data, interleaved_data, frame.n_encoded_bits);
+            split_symbols(interleaved_data, symbols, frame, d_ofdm);
+        }
+
+        if (!d_use_ldpc || !ht_mode) {
+            convolutional_encoding(scrambled_data, encoded_data, frame);
+            puncturing(encoded_data, punctured_data, frame, d_ofdm);
+            interleave(punctured_data, interleaved_data, frame, d_ofdm);
+            split_symbols(interleaved_data, symbols, frame, d_ofdm);
+        }
 
         maybe_dump_ht_mcs0_debug(mcs,
                                  ht_mode,
@@ -529,6 +546,7 @@ private:
     bool d_debug;
     uint8_t d_scrambler;
     ofdm_param d_ofdm;
+    bool d_use_ldpc;
     gr::thread::mutex d_mutex;
 };
 

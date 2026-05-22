@@ -1,10 +1,12 @@
 #include "utils.h"
+#include "ldpc/ldpc_wifi_codec.h"
 
 #include <math.h>
 #include <cassert>
 #include <cstring>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 using gr::ieee802_11::BPSK_1_2;
 using gr::ieee802_11::BPSK_3_4;
@@ -15,6 +17,7 @@ using gr::ieee802_11::QAM16_3_4;
 using gr::ieee802_11::QAM64_2_3;
 using gr::ieee802_11::QAM64_3_4;
 using gr::ieee802_11::QAM64_5_6;
+using gr::ieee802_11::ldpc_wifi_codec;
 
 ofdm_param::ofdm_param(Encoding e)
 {
@@ -208,6 +211,76 @@ void puncturing(const char* in, char* out, frame_param& frame, ofdm_param& ofdm)
             break;
         }
     }
+}
+
+bool ldpc_encode(const char* scrambled_data, char* out, frame_param& frame, ofdm_param& ofdm)
+{
+    // Map encoding to LDPC rate index
+    unsigned rate_index;
+    switch (ofdm.encoding) {
+    case BPSK_1_2:
+    case QPSK_1_2:
+    case QAM16_1_2:
+        rate_index = 0; // 1/2
+        break;
+    case QAM64_2_3:
+        rate_index = 1; // 2/3
+        break;
+    case BPSK_3_4:
+    case QPSK_3_4:
+    case QAM16_3_4:
+    case QAM64_3_4:
+        rate_index = 2; // 3/4
+        break;
+    case QAM64_5_6:
+        rate_index = 3; // 5/6
+        break;
+    default:
+        return false;
+    }
+
+    // Select block length based on frame size
+    int data_bits = frame.n_data_bits;
+    unsigned block_length = (data_bits <= 324) ? 648 :
+                            (data_bits <= 648) ? 1296 : 1944;
+
+    ldpc_wifi_codec codec;
+    if (!codec.init(block_length, rate_index)) {
+        return false;
+    }
+
+    int k = codec.get_k();
+    int n = codec.get_n();
+
+    // Encode in code blocks
+    int total_encoded = 0;
+    int bit_offset = 0;
+
+    while (bit_offset < data_bits && total_encoded < frame.n_encoded_bits) {
+        int block_info_bits = std::min(k, data_bits - bit_offset);
+
+        std::vector<uint8_t> info(k, 0);
+        for (int i = 0; i < block_info_bits; i++) {
+            info[i] = scrambled_data[bit_offset + i] & 1;
+        }
+
+        std::vector<uint8_t> coded(n);
+        codec.encode(info.data(), k, coded.data(), n);
+
+        int copy_n = std::min(n, frame.n_encoded_bits - total_encoded);
+        for (int i = 0; i < copy_n; i++) {
+            out[total_encoded++] = coded[i] & 1;
+        }
+
+        bit_offset += block_info_bits;
+    }
+
+    // Pad remaining with zeros
+    while (total_encoded < frame.n_encoded_bits) {
+        out[total_encoded++] = 0;
+    }
+
+    return true;
 }
 
 void interleave(const char* in, char* out, frame_param& frame, ofdm_param& ofdm, bool reverse)

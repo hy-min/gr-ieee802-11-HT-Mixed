@@ -80,6 +80,12 @@ void interleave(const char* input,
                 ofdm_param& ofdm,
                 bool reverse = false);
 
+// LDPC encoding for 802.11n
+// Input: scrambled bits (length = frame.n_data_bits)
+// Output: LDPC coded bits (length = frame.n_encoded_bits)
+// Returns false if encoding fails.
+bool ldpc_encode(const char* scrambled_data, char* out, frame_param& frame, ofdm_param& ofdm);
+
 void split_symbols(const char* input, char* out, frame_param& frame, ofdm_param& ofdm);
 void generate_bits(const char* psdu, char* data_bits, frame_param& frame);
 

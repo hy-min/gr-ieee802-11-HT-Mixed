@@ -30,4 +30,7 @@
 
  static const char *__doc_gr_ieee802_11_mapper_set_encoding = R"doc()doc";
 
-  
+
+ static const char *__doc_gr_ieee802_11_mapper_set_use_ldpc = R"doc()doc";
+
+

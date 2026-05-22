@@ -14,7 +14,7 @@
 /* BINDTOOL_GEN_AUTOMATIC(0)                                                       */
 /* BINDTOOL_USE_PYGCCXML(0)                                                        */
 /* BINDTOOL_HEADER_FILE(mapper.h)                                        */
-/* BINDTOOL_HEADER_FILE_HASH(afffe452933624d56e08c8a7bf9b0151)                     */
+/* BINDTOOL_HEADER_FILE_HASH(4b5f117f61080877c30855cfb6e33689)                     */
 /***********************************************************************************/
 
 #include <pybind11/complex.h>
@@ -47,9 +47,14 @@ void bind_mapper(py::module& m)
 
 
         
-        .def("set_encoding",&mapper::set_encoding,       
+        .def("set_encoding",&mapper::set_encoding,
             py::arg("mcs"),
             D(mapper,set_encoding)
+        )
+
+        .def("set_use_ldpc",&mapper::set_use_ldpc,
+            py::arg("use_ldpc"),
+            D(mapper,set_use_ldpc)
         )
 
         ;
@@ -63,6 +68,7 @@ void bind_mapper(py::module& m)
         .value("QAM16_3_4", ::gr::ieee802_11::QAM16_3_4) // 5
         .value("QAM64_2_3", ::gr::ieee802_11::QAM64_2_3) // 6
         .value("QAM64_3_4", ::gr::ieee802_11::QAM64_3_4) // 7
+        .value("QAM64_5_6", ::gr::ieee802_11::QAM64_5_6) // 8
         .export_values()
     ;
 

@@ -47,6 +47,7 @@ public:
     typedef std::shared_ptr<mapper> sptr;
     static sptr make(Encoding mcs, bool debug = false);
     virtual void set_encoding(Encoding mcs) = 0;
+    virtual void set_use_ldpc(bool use_ldpc) = 0;
 };
 
 } // namespace ieee802_11
