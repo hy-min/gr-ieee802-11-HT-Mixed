@@ -448,6 +448,7 @@ private:
         char* symbols          = (char*)calloc(frame.n_sym * data_carriers, sizeof(char));
 
         generate_bits(psdu, data_bits, frame);
+        int scrambler_seed = d_scrambler;
         fprintf(stderr, "[TX_SCRAMBLER] seed=%d, first16bits before scramble: ", d_scrambler);
         for (int i = 0; i < 16; i++) fprintf(stderr, "%d", data_bits[i]);
         fprintf(stderr, "\n");
@@ -517,6 +518,18 @@ private:
                      nitems_written(0),
                      pmt::mp("mcs"),
                      pmt::from_long((mcs >= 0) ? mcs : (int)d_ofdm.encoding),
+                     srcid);
+
+        add_item_tag(0,
+                     nitems_written(0),
+                     pmt::mp("use_ldpc"),
+                     pmt::from_bool(d_use_ldpc),
+                     srcid);
+
+        add_item_tag(0,
+                     nitems_written(0),
+                     pmt::mp("scrambler_seed"),
+                     pmt::from_long(scrambler_seed),
                      srcid);
 
         free(data_bits);
