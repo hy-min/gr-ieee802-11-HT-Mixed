@@ -45,6 +45,7 @@ list(APPEND ieee802_11_sources
     ldpc/ldpc_wifi_codec.cc
     viterbi_decoder/base.cc
     insert_ht_training_impl.cc
+    llr_demod.cc
 )
 
 # use SSE2 optimized viterbi implementation if SSE2 is enabled
