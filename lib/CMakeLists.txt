@@ -109,3 +109,19 @@ include(GrTest)
 # List all files that contain Boost.UTF unit tests here
 list(APPEND test_ieee802_11_sources
 )
+
+########################################################################
+# Build standalone LDPC unit test
+########################################################################
+add_executable(test_ldpc_codec
+    ldpc/LdpcCode.cpp
+    ldpc/ldpc_wifi_codec.cc
+    ldpc/test_ldpc_codec.cc
+)
+target_include_directories(test_ldpc_codec
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ldpc
+)
+set_target_properties(test_ldpc_codec PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
