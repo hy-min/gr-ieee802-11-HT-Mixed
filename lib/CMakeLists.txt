@@ -41,6 +41,8 @@ list(APPEND ieee802_11_sources
     sync_long.cc
     sync_short.cc
     utils.cc
+    ldpc/LdpcCode.cpp
+    ldpc/ldpc_wifi_codec.cc
     viterbi_decoder/base.cc
     insert_ht_training_impl.cc
 )
