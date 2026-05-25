@@ -2332,6 +2332,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             {
                 pmt::pmt_t meta = pmt::make_dict();
                 meta = pmt::dict_add(meta, pmt::mp("packet_len"), pmt::from_long(52));
+                meta = pmt::dict_add(meta, pmt::mp("mcs"), pmt::from_long(d_frame_encoding));
                 pmt::pmt_t vec = pmt::init_c32vector(52, out52);
                 message_port_pub(pmt::mp("symbols"), pmt::cons(meta, vec));
             }
