@@ -204,7 +204,7 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         encoding = self.mcs_values[index]
         self.wifi_phy.set_encoding(encoding)
         # Also update mac layer encoding so PDU meta carries correct encoding
-        self.mac.to_basic_block()._post(pmt.intern("mcs in"), pmt.from_long(encoding))
+        self.mac.post(pmt.intern("mcs in"), pmt.from_long(encoding))
         print(f"[MCS] TX set to {self.mcs_names[index]} (encoding={encoding})")
 
     def set_snr(self, value):
