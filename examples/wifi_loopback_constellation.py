@@ -25,6 +25,7 @@ from gnuradio import gr
 from gnuradio import analog
 from gnuradio import qtgui
 from gnuradio import channels
+from gnuradio.filter import pfb
 import ieee802_11
 import wifi_phy_hier
 import pmt
@@ -100,12 +101,12 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         self.control_layout.addWidget(self.snr_label)
 
         self.snr_slider = Qt.QSlider(Qt.Qt.Horizontal)
-        self.snr_slider.setRange(0, 30)
-        self.snr_slider.setValue(20)
+        self.snr_slider.setRange(0, 40)
+        self.snr_slider.setValue(30)
         self.snr_slider.valueChanged.connect(self.set_snr)
         self.control_layout.addWidget(self.snr_slider)
 
-        self.snr_value_label = Qt.QLabel("20 dB")
+        self.snr_value_label = Qt.QLabel("30 dB")
         self.control_layout.addWidget(self.snr_value_label)
 
         # Detected MCS label
@@ -122,16 +123,12 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
             chan_est=ieee802_11.LS,
             encoding=ieee802_11.BPSK_1_2,
             frequency=5.89e9,
-            sensitivity=0.56
+            sensitivity=0.01
         )
 
         # Message strobe: send dummy packets periodically
-        dummy_data = bytes([0xAA] * 100)
-        dummy_pdu = pmt.cons(
-            pmt.PMT_NIL,
-            pmt.init_u8vector(len(dummy_data), list(dummy_data))
-        )
-        self.msg_strobe = blocks.message_strobe(dummy_pdu, 500)
+        # mac app_in expects a string message (PMT symbol), not a PDU
+        self.msg_strobe = blocks.message_strobe(pmt.intern("x" * 10), 1000)
 
         # MAC layer
         self.mac = ieee802_11.mac(
@@ -140,22 +137,30 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
             [0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
         )
 
-        # Packet pad
-        self.packet_pad = foo.packet_pad2(False, False, 0.001, 0, 0)
+        # Packet pad (pad_front=500 matches project convention)
+        self.packet_pad = foo.packet_pad2(False, False, 0.001, 500, 0)
+        self.packet_pad.set_min_output_buffer(960000)
 
         # Multiply const (SNR scaling)
-        self.snr = 20.0
-        self.multiply_const = blocks.multiply_const_cc((10**(self.snr/10.0))**0.5)
+        self.snr = 30.0
+        self.multiply_const = blocks.multiply_const_cc(1.0)
 
         # Channel model
+        noise_voltage = 10**(-self.snr / 20.0)
         self.channel = channels.channel_model(
-            noise_voltage=1.0,
+            noise_voltage=noise_voltage,
             frequency_offset=0.0,
             epsilon=1.0,
             taps=[1.0],
             noise_seed=0,
             block_tags=False
         )
+
+        # Resampler (compensate epsilon)
+        self.resampler = pfb.arb_resampler_ccf(
+            1.0, taps=None, flt_size=32, atten=100
+        )
+        self.resampler.declare_sample_delay(0)
 
         # PDU to tagged stream for constellation
         self.pdu_to_stream = blocks.pdu_to_tagged_stream(
@@ -189,7 +194,8 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         self.connect((self.wifi_phy, 0), (self.packet_pad, 0))
         self.connect((self.packet_pad, 0), (self.multiply_const, 0))
         self.connect((self.multiply_const, 0), (self.channel, 0))
-        self.connect((self.channel, 0), (self.wifi_phy, 0))
+        self.connect((self.channel, 0), (self.resampler, 0))
+        self.connect((self.resampler, 0), (self.wifi_phy, 0))
 
         # Constellation stream
         self.connect((self.pdu_to_stream, 0), (self.constellation_sink, 0))
@@ -202,8 +208,8 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
     def set_snr(self, value):
         self.snr = float(value)
         self.snr_value_label.setText(f"{value} dB")
-        scale = (10**(self.snr/10.0))**0.5
-        self.multiply_const.set_k(scale)
+        noise_voltage = 10**(-self.snr / 20.0)
+        self.channel.set_noise_voltage(noise_voltage)
 
     def update_constellation_range(self, mcs):
         """Adjust constellation display range based on detected MCS."""
