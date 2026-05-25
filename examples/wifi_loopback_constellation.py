@@ -19,7 +19,7 @@ os.environ['GR_RPC_SERVER_ENABLE'] = 'False'
 os.environ['GR_RPC_PORT'] = '0'
 os.environ['GR_CONTROLPORT_ON'] = 'False'
 
-from PyQt5 import Qt
+from PyQt5 import Qt, sip, QtWidgets
 from gnuradio import blocks
 from gnuradio import gr
 from gnuradio import analog
@@ -169,7 +169,9 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         self.constellation_sink.set_y_axis(-2, 2)
 
         # Add constellation widget to layout
-        constellation_widget = self.constellation_sink.qwidget()
+        constellation_widget = sip.wrapinstance(
+            self.constellation_sink.qwidget(), QtWidgets.QWidget
+        )
         self.top_layout.addWidget(constellation_widget)
 
         # MCS detector
