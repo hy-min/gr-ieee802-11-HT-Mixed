@@ -154,6 +154,24 @@ static std::shared_ptr<gr::digital::constellation> make_16qam_constellation()
     return gr::digital::constellation_16qam::make();
 }
 
+// Map standard 802.11n HT-MCS (0-7, as carried in HT-SIG) back to our
+// Encoding enum values.  These differ because the enum inserts BPSK_3_4
+// at value 1 and shifts everything above QPSK_1_2 by one.
+static inline int ht_mcs_to_encoding(int ht_mcs)
+{
+    switch (ht_mcs) {
+    case 0: return 0;  // BPSK 1/2
+    case 1: return 2;  // QPSK 1/2
+    case 2: return 3;  // QPSK 3/4
+    case 3: return 4;  // 16QAM 1/2
+    case 4: return 5;  // 16QAM 3/4
+    case 5: return 6;  // 64QAM 2/3
+    case 6: return 7;  // 64QAM 3/4
+    case 7: return 8;  // 64QAM 5/6
+    default: return 0;
+    }
+}
+
 // ============================================================
 // Fixed 52-data order helpers (ID / TX mapper order)
 // ============================================================
@@ -1813,7 +1831,7 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
     d_have_ht_header = true;
     d_have_header = true;
 
-    d_frame_encoding = mcs;
+    d_frame_encoding = ht_mcs_to_encoding(mcs);
     d_frame_bytes = len_bytes;
     d_use_ldpc = use_ldpc;
 
