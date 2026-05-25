@@ -56,6 +56,29 @@ class mcs_detector(gr.basic_block):
             self.callback(mcs)
 
 
+class encoding_stripper(gr.basic_block):
+    """Remove encoding/mcs tags from PDU meta so mapper uses set_encoding()."""
+
+    def __init__(self):
+        gr.basic_block.__init__(
+            self,
+            name="encoding_stripper",
+            in_sig=None,
+            out_sig=None
+        )
+        self.message_port_register_in(pmt.intern("pdu"))
+        self.message_port_register_out(pmt.intern("pdu"))
+        self.set_msg_handler(pmt.intern("pdu"), self.handle_pdu)
+
+    def handle_pdu(self, msg):
+        meta = pmt.car(msg)
+        data = pmt.cdr(msg)
+        # Remove encoding and mcs so mapper uses set_encoding() value
+        meta = pmt.dict_delete(meta, pmt.mp("encoding"))
+        meta = pmt.dict_delete(meta, pmt.mp("mcs"))
+        self.message_port_pub(pmt.intern("pdu"), pmt.cons(meta, data))
+
+
 class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
     def __init__(self):
         gr.top_block.__init__(self, "WiFi Loopback + Constellation")
@@ -179,6 +202,9 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         )
         self.top_layout.addWidget(constellation_widget)
 
+        # Encoding stripper: remove encoding/mcs from PDU meta
+        self.encoding_stripper = encoding_stripper()
+
         # MCS detector
         self.mcs_detect = mcs_detector(self.update_constellation_range)
 
@@ -186,7 +212,8 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
 
         # Message connections
         self.msg_connect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
-        self.msg_connect((self.mac, 'phy out'), (self.wifi_phy, 'mac_in'))
+        self.msg_connect((self.mac, 'phy out'), (self.encoding_stripper, 'pdu'))
+        self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy, 'mac_in'))
         self.msg_connect((self.wifi_phy, 'constellation'), (self.pdu_to_stream, 'pdus'))
         self.msg_connect((self.wifi_phy, 'constellation'), (self.mcs_detect, 'pdu'))
 
@@ -203,8 +230,6 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
     def set_mcs(self, index):
         encoding = self.mcs_values[index]
         self.wifi_phy.set_encoding(encoding)
-        # Also update mac layer encoding so PDU meta carries correct encoding
-        self.mac.post(pmt.intern("mcs in"), pmt.from_long(encoding))
         print(f"[MCS] TX set to {self.mcs_names[index]} (encoding={encoding})")
 
     def set_snr(self, value):

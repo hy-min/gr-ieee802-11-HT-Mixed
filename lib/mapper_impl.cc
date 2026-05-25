@@ -72,6 +72,8 @@ public:
                      gr_vector_const_void_star&,
                      gr_vector_void_star& output_items) override
     {
+        gr::thread::scoped_lock lock(d_mutex);
+
         unsigned char* out = (unsigned char*)output_items[0];
 
         if (!d_symbols || d_symbols_offset >= d_symbols_len) {
@@ -486,11 +488,11 @@ private:
         char* data_bits        = (char*)calloc(frame.n_data_bits, sizeof(char));
         char* scrambled_data   = (char*)calloc(frame.n_data_bits, sizeof(char));
         char* encoded_data     = (char*)calloc(frame.n_data_bits * 2, sizeof(char));
-        char* punctured_data   = (char*)calloc(frame.n_encoded_bits, sizeof(char));
+        char* punctured_data   = (char*)calloc(frame.n_encoded_bits * 2, sizeof(char));
         // split_symbols reads frame.n_sym * data_carriers bits, so allocate enough
-        int interleave_buf_size = std::max(frame.n_encoded_bits, frame.n_sym * data_carriers);
+        int interleave_buf_size = std::max(frame.n_encoded_bits * 2, frame.n_sym * data_carriers * 2);
         char* interleaved_data = (char*)calloc(interleave_buf_size, sizeof(char));
-        char* symbols          = (char*)calloc(frame.n_sym * data_carriers, sizeof(char));
+        char* symbols          = (char*)calloc(frame.n_sym * data_carriers * 2, sizeof(char));
 
         generate_bits(psdu, data_bits, frame);
         int scrambler_seed = d_scrambler;
