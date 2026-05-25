@@ -29,6 +29,7 @@ import ieee802_11
 import wifi_phy_hier
 import pmt
 import numpy as np
+import foo
 
 
 class mcs_detector(gr.basic_block):
@@ -140,10 +141,7 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         )
 
         # Packet pad
-        self.packet_pad = foo.packet_pad2(
-            debug=False, delay=0, delay_sec=0.001,
-            pad_front=0, pad_tail=0
-        )
+        self.packet_pad = foo.packet_pad2(False, False, 0.001, 0, 0)
 
         # Multiply const (SNR scaling)
         self.snr = 20.0
