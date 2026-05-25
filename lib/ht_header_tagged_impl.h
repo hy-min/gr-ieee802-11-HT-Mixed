@@ -27,6 +27,10 @@ private:
     size_t d_header_index;
     int d_pending_encoding;
     int d_pending_mcs;
+    bool d_pending_use_ldpc;
+    int d_pending_scrambler_seed;
+    int d_pending_ldpc_block_length;
+    int d_pending_ldpc_n_sym;
 
     bool make_one_header_from_tags(const std::vector<tag_t>& tags_at_offset,
                                    std::vector<unsigned char>& out_hdr);

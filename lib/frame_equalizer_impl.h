@@ -89,9 +89,13 @@ private:
                          int& mcs,
                          int& psdu_length,
                          bool& aggregation,
-                         bool& short_gi);
+                         bool& short_gi,
+                         bool& use_ldpc);
 
-    void set_ht_frame_params_from_mcs_len(int mcs, int len_bytes);
+    void set_ht_frame_params_from_mcs_len(int mcs, int len_bytes, bool use_ldpc = false);
+
+    bool d_use_ldpc;
+    int d_ldpc_n_sym;
 
     bool decode_lsig_from_bits52(const uint8_t* bits52,
                                  int reorder_mode,
@@ -107,7 +111,8 @@ private:
                                   int& out_len_bytes,
                                   int& out_mcs,
                                   bool& out_sgi,
-                                  bool& out_agg);
+                                  bool& out_agg,
+                                  bool& out_use_ldpc);
 
     bool decode_htsig_from_eqsym52(const gr_complex* sym_a,
                                    const gr_complex* sym_b,
@@ -117,7 +122,8 @@ private:
                                    int& out_len_bytes,
                                    int& out_mcs,
                                    bool& out_sgi,
-                                   bool& out_agg);
+                                   bool& out_agg,
+                                   bool& out_use_ldpc);
 
     // QBPSK energy voting for frame type detection
     static void compute_subcarrier_energy(const gr_complex* eq52, double& Esum_I, double& Esum_Q);

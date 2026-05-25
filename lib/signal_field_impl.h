@@ -37,7 +37,7 @@ public:
 
 private:
     int get_bit(int b, int i);
-    void generate_signal_field(char* out, frame_param& frame, ofdm_param& ofdm);
+    void generate_signal_field(char* out, frame_param& frame, ofdm_param& ofdm, bool use_ldpc = false);
 };
 
 } // namespace ieee802_11

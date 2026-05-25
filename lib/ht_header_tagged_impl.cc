@@ -36,7 +36,11 @@ ht_header_tagged_impl::ht_header_tagged_impl(int rate_field,
       d_formatter(signal_field::make()),
       d_header_index(0),
       d_pending_encoding(-1),
-      d_pending_mcs(-1)
+      d_pending_mcs(-1),
+      d_pending_use_ldpc(false),
+      d_pending_scrambler_seed(1),
+      d_pending_ldpc_block_length(648),
+      d_pending_ldpc_n_sym(-1)
 {
     set_tag_propagation_policy(TPP_DONT);
     set_output_multiple(144);
@@ -60,6 +64,10 @@ bool ht_header_tagged_impl::make_one_header_from_tags(
     long psdu_len = -1;
     d_pending_encoding = -1;
     d_pending_mcs = -1;
+    d_pending_use_ldpc = false;
+    d_pending_scrambler_seed = 1;
+    d_pending_ldpc_block_length = 648;
+    d_pending_ldpc_n_sym = -1;
 
     for (const auto& t : tags_at_offset) {
         std::fprintf(stderr, "[HT_HEADER_TAGGED] tag: key=%s\n", pmt::symbol_to_string(t.key).c_str());
@@ -73,6 +81,18 @@ bool ht_header_tagged_impl::make_one_header_from_tags(
         } else if (pmt::eq(t.key, pmt::mp("mcs")) && pmt::is_integer(t.value)) {
             d_pending_mcs = pmt::to_long(t.value);
             std::fprintf(stderr, "[HT_HEADER_TAGGED] found mcs=%d\n", d_pending_mcs);
+        } else if (pmt::eq(t.key, pmt::mp("use_ldpc"))) {
+            d_pending_use_ldpc = pmt::to_bool(t.value);
+            std::fprintf(stderr, "[HT_HEADER_TAGGED] found use_ldpc=%d\n", d_pending_use_ldpc);
+        } else if (pmt::eq(t.key, pmt::mp("scrambler_seed")) && pmt::is_integer(t.value)) {
+            d_pending_scrambler_seed = (int)pmt::to_long(t.value);
+            std::fprintf(stderr, "[HT_HEADER_TAGGED] found scrambler_seed=%d\n", d_pending_scrambler_seed);
+        } else if (pmt::eq(t.key, pmt::mp("ldpc_block_length")) && pmt::is_integer(t.value)) {
+            d_pending_ldpc_block_length = (int)pmt::to_long(t.value);
+            std::fprintf(stderr, "[HT_HEADER_TAGGED] found ldpc_block_length=%d\n", d_pending_ldpc_block_length);
+        } else if (pmt::eq(t.key, pmt::mp("ldpc_n_sym")) && pmt::is_integer(t.value)) {
+            d_pending_ldpc_n_sym = (int)pmt::to_long(t.value);
+            std::fprintf(stderr, "[HT_HEADER_TAGGED] found ldpc_n_sym=%d\n", d_pending_ldpc_n_sym);
         }
     }
 
@@ -165,6 +185,25 @@ int ht_header_tagged_impl::general_work(int noutput_items,
                              nitems_written(0) + produced,
                              pmt::mp("encoding"),
                              pmt::from_long(d_pending_encoding));
+            }
+            // Propagate LDPC-related tags
+            add_item_tag(0,
+                         nitems_written(0) + produced,
+                         pmt::mp("use_ldpc"),
+                         pmt::from_bool(d_pending_use_ldpc));
+            add_item_tag(0,
+                         nitems_written(0) + produced,
+                         pmt::mp("scrambler_seed"),
+                         pmt::from_long(d_pending_scrambler_seed));
+            add_item_tag(0,
+                         nitems_written(0) + produced,
+                         pmt::mp("ldpc_block_length"),
+                         pmt::from_long(d_pending_ldpc_block_length));
+            if (d_pending_ldpc_n_sym > 0) {
+                add_item_tag(0,
+                             nitems_written(0) + produced,
+                             pmt::mp("ldpc_n_sym"),
+                             pmt::from_long(d_pending_ldpc_n_sym));
             }
         }
 

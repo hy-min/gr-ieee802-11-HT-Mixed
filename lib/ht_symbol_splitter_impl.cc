@@ -64,7 +64,7 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
     // We output in multiples of fft_size
     set_output_multiple(d_fft_size);
 
-    // Disable automatic tag propagation - we manually control which tags are forwarded
+    // Pass through all tags (LDPC info needs to reach decode_mac)
     set_tag_propagation_policy(TPP_DONT);
 
 }

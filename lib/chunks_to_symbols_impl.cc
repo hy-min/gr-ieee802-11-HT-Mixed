@@ -90,6 +90,19 @@ int chunks_to_symbols_impl::work(int noutput_items,
         }
     }
 
+    // Forward LDPC-related tags from input to output
+    {
+        std::vector<tag_t> all_tags;
+        get_tags_in_range(all_tags, 0, nitems_read(0), nitems_read(0) + ninput_items[0]);
+        for (const auto& t : all_tags) {
+            std::string key = pmt::symbol_to_string(t.key);
+            if (key == "use_ldpc" || key == "scrambler_seed" ||
+                key == "ldpc_block_length" || key == "ldpc_n_sym") {
+                add_item_tag(0, nitems_written(0), t.key, t.value, t.srcid);
+            }
+        }
+    }
+
     for (int i = 0; i < pkt_len; i++) {
         d_mapping->map_to_points(in[i], out + i);
 

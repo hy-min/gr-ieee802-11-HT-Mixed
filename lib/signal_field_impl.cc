@@ -177,17 +177,22 @@ static void generate_l_sig_header(char* out,
 }
 
 // Generate 96 coded+interleaved bits for HT-SIG (2 OFDM symbols, each 48 coded bits).
-// This is a simplified HT-SIG suitable for single-stream 20 MHz, long GI, no STBC/LDPC/aggregation.
-// Bits layout we use (LSB-first for multi-bit fields), matching the standard packing conceptually:
-//  bits  0.. 6 : MCS (0..6)
+// Bits layout (LSB-first for multi-bit fields):
+//  bits  0.. 6 : MCS (0..7)
 //  bit      7 : CBW (0=20 MHz)
 //  bits  8..23: HT-LENGTH (16 bits) = PSDU length in bytes
-//  bits 24..33: other controls (10 bits) = 0
+//  bits 24..26: Reserved (0)
+//  bit     27 : Aggregation (0)
+//  bits 28..29: STBC (0)
+//  bit     30 : FEC Coding (0=BCC, 1=LDPC)
+//  bit     31 : Short GI (0)
+//  bits 32..33: Num Extension Spatial Streams (0)
 //  bits 34..41: CRC8 over bits[0..33]
 //  bits 42..47: tail = 0
 static void generate_ht_sig_header(char* out,
                                    const frame_param& data_frame,
-                                   const ofdm_param& data_ofdm)
+                                   const ofdm_param& data_ofdm,
+                                   bool use_ldpc = false)
 {
     char ht_bits[48];
     std::memset(ht_bits, 0, sizeof(ht_bits));
@@ -208,10 +213,27 @@ static void generate_ht_sig_header(char* out,
         ht_bits[8 + i] = (ht_len >> i) & 0x1;
     }
 
-    // bits 24..33 reserved/controls -> 0
-    for (int i = 0; i < 10; i++) {
-        ht_bits[24 + i] = 0;
-    }
+    // bits 24..26: Reserved = 0
+    ht_bits[24] = 0;
+    ht_bits[25] = 0;
+    ht_bits[26] = 0;
+
+    // bit 27: Aggregation = 0
+    ht_bits[27] = 0;
+
+    // bits 28..29: STBC = 0
+    ht_bits[28] = 0;
+    ht_bits[29] = 0;
+
+    // bit 30: FEC Coding (0=BCC, 1=LDPC)
+    ht_bits[30] = use_ldpc ? 1 : 0;
+
+    // bit 31: Short GI = 0
+    ht_bits[31] = 0;
+
+    // bits 32..33: Num Extension Spatial Streams = 0
+    ht_bits[32] = 0;
+    ht_bits[33] = 0;
 
     // CRC8 over bits[0..33]
     const uint8_t crc = ht_sig_crc8(ht_bits);
@@ -283,9 +305,10 @@ int signal_field_impl::get_bit(int b, int i)
 // Generate full header: [0..47]=L-SIG, [48..143]=HT-SIG
 void signal_field_impl::generate_signal_field(char* out,
                                               frame_param& frame,
-                                              ofdm_param& ofdm)
+                                              ofdm_param& ofdm,
+                                              bool use_ldpc)
 {
-    fprintf(stderr, "[SIGNAL_GEN] generate_signal_field called\n");
+    fprintf(stderr, "[SIGNAL_GEN] generate_signal_field called use_ldpc=%d\n", use_ldpc ? 1 : 0);
     fflush(stderr);
     // L-SIG for HT-mixed
     fprintf(stderr, "[SIGNAL_GEN] about to call generate_l_sig_header\n");
@@ -295,7 +318,7 @@ void signal_field_impl::generate_signal_field(char* out,
     fflush(stderr);
 
     // HT-SIG (2 symbols)
-    generate_ht_sig_header(out + 48, frame, ofdm);
+    generate_ht_sig_header(out + 48, frame, ofdm, use_ldpc);
 }
 
 bool signal_field_impl::header_formatter(long packet_len,
@@ -308,6 +331,7 @@ bool signal_field_impl::header_formatter(long packet_len,
     bool len_found = false;
     int encoding = 0;
     int len = 0;
+    bool use_ldpc = false;
 
     std::fprintf(stderr, "[SIGNAL_FORMATTER] called with %zu tags\n", tags.size());
     for (size_t i = 0; i < tags.size(); i++) {
@@ -320,6 +344,9 @@ bool signal_field_impl::header_formatter(long packet_len,
             len_found = true;
             len = pmt::to_long(tags[i].value);
             std::fprintf(stderr, "[SIGNAL_FORMATTER] found len=%d\n", len);
+        } else if (pmt::eq(tags[i].key, pmt::mp("use_ldpc"))) {
+            use_ldpc = pmt::to_bool(tags[i].value);
+            std::fprintf(stderr, "[SIGNAL_FORMATTER] found use_ldpc=%d\n", use_ldpc ? 1 : 0);
         }
     }
 
@@ -328,13 +355,13 @@ bool signal_field_impl::header_formatter(long packet_len,
         return false;
     }
 
-    std::fprintf(stderr, "[SIGNAL_FORMATTER] encoding=%d len=%d\n", encoding, len);
+    std::fprintf(stderr, "[SIGNAL_FORMATTER] encoding=%d len=%d use_ldpc=%d\n", encoding, len, use_ldpc ? 1 : 0);
     fflush(stderr);
 
     ofdm_param ofdm((Encoding)encoding);
     frame_param frame(ofdm, len);
 
-    generate_signal_field((char*)out, frame, ofdm);
+    generate_signal_field((char*)out, frame, ofdm, use_ldpc);
     fprintf(stderr, "[SIGNAL_FORMATTER] generate_signal_field returned\n");
     fflush(stderr);
     return true;

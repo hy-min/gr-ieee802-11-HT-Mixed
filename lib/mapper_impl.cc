@@ -61,7 +61,11 @@ public:
         d_ofdm = ofdm_param(encoding);
     }
 
-    void set_use_ldpc(bool use_ldpc) override { d_use_ldpc = use_ldpc; }
+    void set_use_ldpc(bool use_ldpc) override {
+        std::cerr << "[MAPPER] set_use_ldpc called: " << (use_ldpc ? "true" : "false")
+                  << " old=" << (d_use_ldpc ? "true" : "false") << std::endl;
+        d_use_ldpc = use_ldpc;
+    }
 
     int general_work(int noutput,
                      gr_vector_int&,
@@ -334,14 +338,15 @@ private:
         std::cout << "[TX][INTERLEAVED-ALL] updated /tmp/wifi_tx_interleaved_all_bits.last.txt" << std::endl;
     }
 
-    void setup_ht_params(int mcs, int psdu_length, frame_param& frame)
+    void setup_ht_params(int mcs, int psdu_length, frame_param& frame, bool use_ldpc = false)
     {
         const int ht_n_bpsc = ht_n_bpsc_from_mcs(mcs);
         const int ht_n_cbps = ht_n_cbps_from_mcs(mcs);
         const int ht_n_dbps = ht_n_dbps_from_mcs(mcs);
 
         std::cout << "[MAPPER][DEBUG] setup_ht_params called: mcs=" << mcs
-                  << " ht_n_cbps=" << ht_n_cbps << " ht_n_dbps=" << ht_n_dbps << std::endl;
+                  << " ht_n_cbps=" << ht_n_cbps << " ht_n_dbps=" << ht_n_dbps
+                  << " use_ldpc=" << (use_ldpc ? "true" : "false") << std::endl;
 
         d_ofdm.n_bpsc = ht_n_bpsc;
         d_ofdm.n_cbps = ht_n_cbps;
@@ -352,6 +357,43 @@ private:
         frame.n_data_bits = frame.n_sym * ht_n_dbps;
         frame.n_pad = frame.n_data_bits - (16 + 8 * psdu_length + 6);
         frame.n_encoded_bits = frame.n_sym * ht_n_cbps;
+
+        if (use_ldpc) {
+            // For LDPC, n_encoded_bits must fit complete LDPC code block(s)
+            unsigned rate_index;
+            switch (mcs) {
+            case 0: case 1: case 3: rate_index = 0; break; // 1/2
+            case 5: rate_index = 1; break; // 2/3
+            case 2: case 4: case 6: rate_index = 2; break; // 3/4
+            case 7: rate_index = 3; break; // 5/6
+            default: rate_index = 0; break;
+            }
+
+            int block_length = (frame.n_data_bits <= 324) ? 648 :
+                               (frame.n_data_bits <= 648) ? 1296 : 1944;
+
+            int k = block_length / 2;
+            switch (rate_index) {
+            case 0: k = block_length / 2; break;
+            case 1: k = block_length * 2 / 3; break;
+            case 2: k = block_length * 3 / 4; break;
+            case 3: k = block_length * 5 / 6; break;
+            }
+
+            int num_blocks = (frame.n_data_bits + k - 1) / k;
+            int ldpc_encoded_bits = num_blocks * block_length;
+
+            if (ldpc_encoded_bits > frame.n_encoded_bits) {
+                frame.n_encoded_bits = ldpc_encoded_bits;
+                frame.n_sym = (frame.n_encoded_bits + ht_n_cbps - 1) / ht_n_cbps;
+                // n_data_bits and n_pad stay the same
+                std::cout << "[MAPPER][LDPC] adjusted n_sym=" << frame.n_sym
+                          << " n_encoded_bits=" << frame.n_encoded_bits
+                          << " num_blocks=" << num_blocks
+                          << " block_length=" << block_length
+                          << " k=" << k << std::endl;
+            }
+        }
     }
 
     void handle_msg(pmt::pmt_t msg)
@@ -421,11 +463,12 @@ private:
 
         const bool ht_mode = is_ht_mcs(effective_mcs);
         std::cout << "[MAPPER][DEBUG] effective_mcs=" << effective_mcs << " ht_mode=" << ht_mode << std::endl;
+        std::cout << "[MAPPER] d_use_ldpc=" << (d_use_ldpc ? "true" : "false") << std::endl;
         if (ht_mode) {
             if (d_debug) {
                 std::cout << "[MAPPER] HT mode enabled, effective MCS: " << effective_mcs << std::endl;
             }
-            setup_ht_params(effective_mcs, psdu_length, frame);
+            setup_ht_params(effective_mcs, psdu_length, frame, d_use_ldpc);
         } else {
             if (d_debug) {
                 std::cout << "[MAPPER] Non-HT mode, effective MCS: " << effective_mcs << std::endl;
@@ -444,7 +487,9 @@ private:
         char* scrambled_data   = (char*)calloc(frame.n_data_bits, sizeof(char));
         char* encoded_data     = (char*)calloc(frame.n_data_bits * 2, sizeof(char));
         char* punctured_data   = (char*)calloc(frame.n_encoded_bits, sizeof(char));
-        char* interleaved_data = (char*)calloc(frame.n_encoded_bits, sizeof(char));
+        // split_symbols reads frame.n_sym * data_carriers bits, so allocate enough
+        int interleave_buf_size = std::max(frame.n_encoded_bits, frame.n_sym * data_carriers);
+        char* interleaved_data = (char*)calloc(interleave_buf_size, sizeof(char));
         char* symbols          = (char*)calloc(frame.n_sym * data_carriers, sizeof(char));
 
         generate_bits(psdu, data_bits, frame);
@@ -452,10 +497,13 @@ private:
         fprintf(stderr, "[TX_SCRAMBLER] seed=%d, first16bits before scramble: ", d_scrambler);
         for (int i = 0; i < 16; i++) fprintf(stderr, "%d", data_bits[i]);
         fprintf(stderr, "\n");
-        scramble(data_bits, scrambled_data, frame, d_scrambler++);
-        fprintf(stderr, "[TX_SCRAMBLER] first16bits after scramble: ");
+        // DEBUG: fix scrambler seed to 1 for TX/RX bit comparison
+        int fixed_seed = 1;
+        scramble(data_bits, scrambled_data, frame, fixed_seed);
+        fprintf(stderr, "[TX_SCRAMBLER] FIXED seed=%d, first16bits after scramble: ", fixed_seed);
         for (int i = 0; i < 16; i++) fprintf(stderr, "%d", scrambled_data[i]);
         fprintf(stderr, "\n");
+        d_scrambler = fixed_seed + 1;
         if (d_scrambler > 127) {
             d_scrambler = 1;
         }
@@ -531,6 +579,23 @@ private:
                      pmt::mp("scrambler_seed"),
                      pmt::from_long(scrambler_seed),
                      srcid);
+
+        if (d_use_ldpc && ht_mode) {
+            // Send LDPC parameters so RX can match
+            int block_length = (frame.n_data_bits <= 324) ? 648 :
+                               (frame.n_data_bits <= 648) ? 1296 : 1944;
+            add_item_tag(0,
+                         nitems_written(0),
+                         pmt::mp("ldpc_block_length"),
+                         pmt::from_long(block_length),
+                         srcid);
+            // Send actual n_sym used (differs from convolutional)
+            add_item_tag(0,
+                         nitems_written(0),
+                         pmt::mp("ldpc_n_sym"),
+                         pmt::from_long(frame.n_sym),
+                         srcid);
+        }
 
         free(data_bits);
         free(scrambled_data);

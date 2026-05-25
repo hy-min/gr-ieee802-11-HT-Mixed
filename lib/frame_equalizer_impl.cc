@@ -908,7 +908,8 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
                                    int& out_len_bytes,
                                    int& out_mcs,
                                    bool& out_sgi,
-                                   bool& out_agg)
+                                   bool& out_agg,
+                                   bool& out_use_ldpc)
 {
     uint8_t bits52_a[52];
     uint8_t bits52_b[52];
@@ -1012,7 +1013,8 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
     if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
         return false;
     }
-    if (adv_coding != 0) {
+    // adv_coding: 0=BCC, 1=LDPC - both are valid now
+    if (adv_coding != 0 && adv_coding != 1) {
         return false;
     }
 
@@ -1027,6 +1029,7 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
     out_mcs = mcs;
     out_sgi = short_gi;
     out_agg = aggregation;
+    out_use_ldpc = (adv_coding == 1);
     return true;
 }
 
@@ -1328,6 +1331,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        int& out_mcs,
                                        bool& out_sgi,
                                        bool& out_agg,
+                                       bool& out_use_ldpc,
                                        int rot = -1)
 {
     uint8_t eqbits48_a[48];
@@ -1452,10 +1456,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         static int decode_call_count = 0;
         if (decode_call_count == 0) {
             bool crc_pass = (crc_rx == crc_calc);
-            fprintf(stderr, "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x)\n",
+            fprintf(stderr, "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d\n",
                     rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
                     crc_pass ? "PASS" : "FAIL",
-                    crc_rx, crc_calc);
+                    crc_rx, crc_calc, adv_coding);
             // Print equalized bits for HT-SIG0
             fprintf(stderr, "[HTSIG_BITS] eq48=");
             for (int i = 0; i < 48; i++) fprintf(stderr, "%d", eqbits48_a[i]);
@@ -1488,7 +1492,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
         return false;
     }
-    if (adv_coding != 0) {
+    // adv_coding: 0=BCC, 1=LDPC - both are valid now
+    if (adv_coding != 0 && adv_coding != 1) {
         return false;
     }
 
@@ -1503,6 +1508,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     out_mcs = mcs;
     out_sgi = short_gi;
     out_agg = aggregation;
+    out_use_ldpc = (adv_coding == 1);
     return true;
 }
 
@@ -1566,6 +1572,8 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_frame_n_bpsc(1),
       d_frame_n_cbps(52),
       d_frame_n_dbps(26),
+      d_use_ldpc(false),
+      d_ldpc_n_sym(-1),
       d_have_header(false),
       d_have_ht_header(false),
       d_is_ht(false),
@@ -1639,6 +1647,8 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_frame_n_bpsc = 1;
     d_frame_n_cbps = 52;
     d_frame_n_dbps = 26;
+    d_use_ldpc = false;
+    d_ldpc_n_sym = -1;
 
     d_have_header = false;
     d_have_ht_header = false;
@@ -1722,12 +1732,14 @@ bool frame_equalizer_impl::parse_signal_ht(const uint8_t* decoded_bits,
                                            int& mcs,
                                            int& psdu_length,
                                            bool& aggregation,
-                                           bool& short_gi)
+                                           bool& short_gi,
+                                           bool& use_ldpc)
 {
     mcs = 0;
     psdu_length = 0;
     aggregation = false;
     short_gi = false;
+    use_ldpc = false;
 
     for (int i = 0; i < 7; i++) {
         mcs |= ((decoded_bits[i] & 1) << i);
@@ -1779,7 +1791,8 @@ bool frame_equalizer_impl::parse_signal_ht(const uint8_t* decoded_bits,
     if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
         return false;
     }
-    if (adv_coding != 0) {
+    // adv_coding: 0=BCC, 1=LDPC - both are valid now
+    if (adv_coding != 0 && adv_coding != 1) {
         return false;
     }
 
@@ -1790,10 +1803,11 @@ bool frame_equalizer_impl::parse_signal_ht(const uint8_t* decoded_bits,
         return false;
     }
 
+    use_ldpc = (adv_coding == 1);
     return true;
 }
 
-void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_bytes)
+void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_bytes, bool use_ldpc)
 {
     d_is_ht = true;
     d_have_ht_header = true;
@@ -1801,13 +1815,48 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
 
     d_frame_encoding = mcs;
     d_frame_bytes = len_bytes;
+    d_use_ldpc = use_ldpc;
 
     d_frame_n_bpsc = ht_n_bpsc_from_mcs(mcs);
     d_frame_n_cbps = ht_n_cbps_from_mcs(mcs);
     d_frame_n_dbps = ht_n_dbps_from_mcs(mcs);
 
-    d_frame_symbols =
-        (16 + 8 * len_bytes + 6 + d_frame_n_dbps - 1) / d_frame_n_dbps;
+    // For LDPC, n_sym is determined by the LDPC block size
+    if (use_ldpc) {
+        // Same logic as TX mapper_impl.cc setup_ht_params
+        int data_bits = 16 + 8 * len_bytes + 6; // SERVICE + DATA + TAIL
+        // LDPC code rates for each MCS (rate_index)
+        int rate_index;
+        switch (mcs) {
+        case 0: case 1: case 3: rate_index = 0; break; // 1/2
+        case 5: rate_index = 1; break; // 2/3
+        case 2: case 4: case 6: rate_index = 2; break; // 3/4
+        case 7: rate_index = 3; break; // 5/6
+        default: rate_index = 0; break;
+        }
+        // Block length selection based on data_bits (same as TX)
+        int block_length = (data_bits <= 324) ? 648 :
+                           (data_bits <= 648) ? 1296 : 1944;
+        int k = block_length / 2;
+        switch (rate_index) {
+        case 0: k = block_length / 2; break;
+        case 1: k = block_length * 2 / 3; break;
+        case 2: k = block_length * 3 / 4; break;
+        case 3: k = block_length * 5 / 6; break;
+        }
+        int num_blocks = (data_bits + k - 1) / k;
+        if (num_blocks < 1) num_blocks = 1;
+        int ldpc_encoded_bits = num_blocks * block_length;
+        int n_cbps = d_frame_n_cbps;
+        d_frame_symbols = (ldpc_encoded_bits + n_cbps - 1) / n_cbps;
+        d_ldpc_n_sym = d_frame_symbols;
+        fprintf(stderr, "[EQ_LDPC_PARAMS] mcs=%d len=%d data_bits=%d block=%d k=%d blocks=%d encoded=%d n_sym=%d\n",
+                mcs, len_bytes, data_bits, block_length, k, num_blocks, ldpc_encoded_bits, d_frame_symbols);
+    } else {
+        d_frame_symbols =
+            (16 + 8 * len_bytes + 6 + d_frame_n_dbps - 1) / d_frame_n_dbps;
+        d_ldpc_n_sym = -1;
+    }
 }
 
 // ============================================================
@@ -1835,7 +1884,8 @@ bool frame_equalizer_impl::decode_htsig_from_bits52(const uint8_t* bits_a,
                                                     int& out_len_bytes,
                                                     int& out_mcs,
                                                     bool& out_sgi,
-                                                    bool& out_agg)
+                                                    bool& out_agg,
+                                                    bool& out_use_ldpc)
 {
     const uint8_t* a = swap_symbols ? bits_b : bits_a;
     const uint8_t* b = swap_symbols ? bits_a : bits_b;
@@ -1847,7 +1897,8 @@ bool frame_equalizer_impl::decode_htsig_from_bits52(const uint8_t* bits_a,
                                   out_len_bytes,
                                   out_mcs,
                                   out_sgi,
-                                  out_agg);
+                                  out_agg,
+                                  out_use_ldpc);
 }
 
 bool frame_equalizer_impl::decode_htsig_from_eqsym52(const gr_complex* sym_a,
@@ -1858,7 +1909,8 @@ bool frame_equalizer_impl::decode_htsig_from_eqsym52(const gr_complex* sym_a,
                                                      int& out_len_bytes,
                                                      int& out_mcs,
                                                      bool& out_sgi,
-                                                     bool& out_agg)
+                                                     bool& out_agg,
+                                                     bool& out_use_ldpc)
 {
     uint8_t bits_a[52];
     uint8_t bits_b[52];
@@ -1875,7 +1927,8 @@ bool frame_equalizer_impl::decode_htsig_from_eqsym52(const gr_complex* sym_a,
                                     out_len_bytes,
                                     out_mcs,
                                     out_sgi,
-                                    out_agg);
+                                    out_agg,
+                                    out_use_ldpc);
 }
 
 // ============================================================
@@ -2200,6 +2253,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             int parsed_mcs = -1;
                             bool parsed_sgi = false;
                             bool parsed_agg = false;
+                            bool parsed_use_ldpc = false;
 
                             bool decode_ok = decode_htsig_from_rotated(rot_htsig0,
                                                            rot_htsig1,
@@ -2210,6 +2264,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            parsed_mcs,
                                                            parsed_sgi,
                                                            parsed_agg,
+                                                           parsed_use_ldpc,
                                                            rot);
                             if (!decode_ok) {
                                 continue;
@@ -2224,7 +2279,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             d_data_start_rel = kDataStartRel;
                             d_chan_est_mode = 0;
 
-                            set_ht_frame_params_from_mcs_len(parsed_mcs, parsed_len);
+                            set_ht_frame_params_from_mcs_len(parsed_mcs, parsed_len, parsed_use_ldpc);
 
                         found = true;
                     }
@@ -2315,6 +2370,24 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     pmt::intern("mcs"),
                     pmt::from_uint64((uint64_t)d_frame_encoding),
                     pmt::intern(this->name()));
+
+                // Forward LDPC info so decode_mac can collect the right number of symbols
+                this->add_item_tag(
+                    0,
+                    out_off,
+                    pmt::intern("use_ldpc"),
+                    pmt::from_bool(d_use_ldpc),
+                    pmt::intern(this->name()));
+
+                if (d_use_ldpc && d_ldpc_n_sym > 0) {
+                    this->add_item_tag(
+                        0,
+                        out_off,
+                        pmt::intern("ldpc_n_sym"),
+                        pmt::from_long(d_ldpc_n_sym),
+                        pmt::intern(this->name()));
+                    fprintf(stderr, "[EQ_TAG] use_ldpc=1 ldpc_n_sym=%d\n", d_ldpc_n_sym);
+                }
             }
 
             produced += 52;

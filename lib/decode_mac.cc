@@ -310,6 +310,7 @@ public:
           d_ht_n_cbps(52),
           d_use_ldpc(false),
           d_scrambler_seed(1),
+          d_ldpc_block_length(648),
           d_ofdm(BPSK_1_2),
           d_frame(d_ofdm, 0)
     {
@@ -359,6 +360,10 @@ public:
                 fprintf(stderr, "\n");
             }
 
+            // Also search for LDPC tags in a wider window (they may be offset)
+            std::vector<gr::tag_t> all_tags;
+            get_tags_in_range(all_tags, 0, nread, nread + ninput_items[0]);
+
             const pmt::pmt_t k_frame_bytes_sp = pmt::mp("frame bytes");
             const pmt::pmt_t k_frame_bytes_us = pmt::mp("frame_bytes");
             const pmt::pmt_t k_mcs            = pmt::mp("mcs");
@@ -399,15 +404,21 @@ public:
                     d_ht_len = (int)len;
 
                     d_use_ldpc = false;
-                    for (auto& tt : tags) {
+                    for (auto& tt : all_tags) {
                         if (pmt::eq(tt.key, pmt::mp("use_ldpc"))) {
                             d_use_ldpc = pmt::to_bool(tt.value);
                         }
                     }
                     d_scrambler_seed = 1;
-                    for (auto& tt : tags) {
+                    for (auto& tt : all_tags) {
                         if (pmt::eq(tt.key, pmt::mp("scrambler_seed"))) {
                             d_scrambler_seed = (int)pmt::to_long(tt.value);
+                        }
+                    }
+                    d_ldpc_block_length = 648; // default
+                    for (auto& tt : all_tags) {
+                        if (pmt::eq(tt.key, pmt::mp("ldpc_block_length"))) {
+                            d_ldpc_block_length = (int)pmt::to_long(tt.value);
                         }
                     }
 
@@ -421,6 +432,18 @@ public:
                     }
 
                     d_ht_n_sym = ht_n_sym_from_mcs_len(d_ht_mcs, d_ht_len);
+                    // For LDPC, TX may use more symbols than convolutional
+                    // Search in all_tags (wider window) since ldpc_n_sym may be at same offset
+                    for (auto& tt : all_tags) {
+                        if (pmt::eq(tt.key, pmt::mp("ldpc_n_sym"))) {
+                            int tx_n_sym = (int)pmt::to_long(tt.value);
+                            fprintf(stderr, "[DECODE_TAG] ldpc_n_sym=%d current=%d use_ldpc=%d\n",
+                                    tx_n_sym, d_ht_n_sym, d_use_ldpc ? 1 : 0);
+                            if (tx_n_sym > d_ht_n_sym) {
+                                d_ht_n_sym = tx_n_sym;
+                            }
+                        }
+                    }
                     if (d_ht_n_sym <= 0) {
                         if (d_debug) {
                             dout << "[decode_mac] invalid HT n_sym, mcs=" << d_ht_mcs << " len=" << d_ht_len << std::endl;
@@ -513,14 +536,32 @@ private:
 
     void decode_and_publish()
     {
-        fprintf(stderr, "[DECODE_AND_PUBLISH] called n_sym=%d n_cbps=%d n_dbps=%d d_ht_len=%d rx_eq_size=%zu\n",
-                d_ht_n_sym, d_ht_n_cbps, ht_n_dbps_from_mcs(d_ht_mcs), d_ht_len, d_rx_eq.size());
+        // Fallback: check d_meta for use_ldpc if not set from tags
+        if (!d_use_ldpc && d_meta) {
+            if (pmt::dict_has_key(d_meta, pmt::mp("use_ldpc"))) {
+                d_use_ldpc = pmt::to_bool(pmt::dict_ref(d_meta, pmt::mp("use_ldpc"), pmt::PMT_F));
+            }
+        }
+
+        fprintf(stderr, "[DECODE_AND_PUBLISH] called n_sym=%d n_cbps=%d n_dbps=%d d_ht_len=%d rx_eq_size=%zu use_ldpc=%d\n",
+                d_ht_n_sym, d_ht_n_cbps, ht_n_dbps_from_mcs(d_ht_mcs), d_ht_len, d_rx_eq.size(), d_use_ldpc ? 1 : 0);
         if (d_rx_eq.empty() || d_ht_n_sym <= 0) {
             fprintf(stderr, "[DECODE_AND_PUBLISH] no data captured\n");
             return;
         }
 
-        const int n_sym  = d_ht_n_sym;
+        // Use actual received data size to determine n_sym for LDPC
+        int n_sym = d_ht_n_sym;
+        if (d_use_ldpc) {
+            int n_sc = 52; // HT 20MHz data carriers
+            n_sym = (int)(d_rx_eq.size() / n_sc);
+            if ((int)d_rx_eq.size() % n_sc != 0) {
+                fprintf(stderr, "[DECODE_LDPC] rx_eq_size=%zu not multiple of %d, using n_sym=%d\n",
+                        d_rx_eq.size(), n_sc, n_sym);
+            }
+            fprintf(stderr, "[DECODE_LDPC] using n_sym=%d (from rx_eq_size=%zu)\n",
+                    n_sym, d_rx_eq.size());
+        }
         const int n_cbps = d_ht_n_cbps;
         const int n_dbps = ht_n_dbps_from_mcs(d_ht_mcs);
 
@@ -578,23 +619,98 @@ private:
         // LDPC decode path
         // ============================================================
         if (d_use_ldpc) {
-            const float noise_var = 1.0f; // TODO: estimate from channel
+            // Diagnostic: analyze received symbol quality
+            {
+                double re_sum = 0, re_sq = 0;
+                int pos_re = 0, neg_re = 0;
+                for (size_t i = 0; i < d_rx_eq.size(); i++) {
+                    float re = d_rx_eq[i].real();
+                    re_sum += re;
+                    re_sq += re * re;
+                    if (re >= 0) pos_re++; else neg_re++;
+                }
+                double mean_re = re_sum / d_rx_eq.size();
+                double var_re = re_sq / d_rx_eq.size() - mean_re * mean_re;
+                fprintf(stderr, "[LDPC_DIAG] RX symbols: n=%zu mean_re=%.3f var_re=%.3f pos=%d neg=%d\n",
+                        d_rx_eq.size(), mean_re, var_re, pos_re, neg_re);
+                // Print first 64 hard bits
+                fprintf(stderr, "[LDPC_DIAG] first64=");
+                for (int i = 0; i < 64 && i < (int)d_rx_eq.size(); i++) {
+                    fprintf(stderr, "%d", hard_bpsk_bit(d_rx_eq[i]));
+                }
+                fprintf(stderr, "\n");
+            }
+
+            // DEBUG: Compare RX hard bits with TX reference file
+            {
+                std::vector<uint8_t> tx_bits;
+                std::ifstream tx_ifs("/tmp/wifi_tx_punctured_all_bits.last.txt", std::ios::in | std::ios::binary);
+                if (tx_ifs) {
+                    char ch;
+                    while (tx_ifs.get(ch)) {
+                        if (ch == '0' || ch == '1') {
+                            tx_bits.push_back(ch - '0');
+                        }
+                    }
+                }
+                int cmp_len = std::min((int)tx_bits.size(), (int)d_rx_bits.size());
+                int mism = 0;
+                int first_mism = -1;
+                for (int i = 0; i < cmp_len; i++) {
+                    if (tx_bits[i] != d_rx_bits[i]) {
+                        mism++;
+                        if (first_mism < 0) first_mism = i;
+                    }
+                }
+                fprintf(stderr, "[LDPC_DIAG] TX-vs-RX hard bits: cmp=%d tx=%zu rx=%zu mism=%d first_mism=%d\n",
+                        cmp_len, tx_bits.size(), d_rx_bits.size(), mism, first_mism);
+                if (first_mism >= 0 && first_mism < cmp_len) {
+                    fprintf(stderr, "[LDPC_DIAG] TX around first_mism: ");
+                    for (int i = first_mism; i < std::min(first_mism + 16, cmp_len); i++)
+                        fprintf(stderr, "%d", tx_bits[i]);
+                    fprintf(stderr, "\n");
+                    fprintf(stderr, "[LDPC_DIAG] RX around first_mism: ");
+                    for (int i = first_mism; i < std::min(first_mism + 16, cmp_len); i++)
+                        fprintf(stderr, "%d", d_rx_bits[i]);
+                    fprintf(stderr, "\n");
+                }
+                // Per-symbol BER analysis
+                fprintf(stderr, "[LDPC_DIAG] Per-symbol mismatches (n_cbps=%d):\n", n_cbps);
+                int sym_with_errors = 0;
+                for (int sym = 0; sym < n_sym && sym * n_cbps < cmp_len; sym++) {
+                    int sym_mism = 0;
+                    for (int j = 0; j < n_cbps && sym * n_cbps + j < cmp_len; j++) {
+                        if (tx_bits[sym * n_cbps + j] != d_rx_bits[sym * n_cbps + j]) {
+                            sym_mism++;
+                        }
+                    }
+                    if (sym_mism > 0) {
+                        sym_with_errors++;
+                        fprintf(stderr, "[LDPC_DIAG]   sym=%d mism=%d/%d\n", sym, sym_mism, n_cbps);
+                    }
+                }
+                fprintf(stderr, "[LDPC_DIAG] Symbols with errors: %d/%d\n", sym_with_errors, n_sym);
+            }
+
+            const float noise_var = 1.0f;
             d_rx_llr.assign((size_t)(n_sym * n_cbps), 0.0f);
             compute_llr_block(d_rx_eq.data(), d_rx_llr.data(),
                               n_sym, 52, n_bpsc, noise_var);
 
-            // Descramble LLR
-            descramble_llr(d_rx_llr.data(), (int)d_rx_llr.size(), d_scrambler_seed);
-
-            // Select block length and rate
-            unsigned block_length = (d_ht_len <= 40) ? 648 :
-                                    (d_ht_len <= 80) ? 1296 : 1944;
+            // Compute block length using same logic as TX (mapper_impl.cc)
+            // d_ldpc_block_length tag cannot propagate through TPP_DONT blocks
+            int n_dbps = ht_n_dbps_from_mcs(d_ht_mcs);
+            int n_data_bits = (16 + 8 * d_ht_len + 6 + n_dbps - 1) / n_dbps * n_dbps;
+            unsigned block_length = (n_data_bits <= 324) ? 648 :
+                                    (n_data_bits <= 648) ? 1296 : 1944;
+            fprintf(stderr, "[LDPC_DEBUG] n_data_bits=%d block_length=%u\n",
+                    n_data_bits, block_length);
             unsigned rate_index;
             switch (d_ht_mcs) {
-            case 0: case 1: case 3: rate_index = 0; break; // 1/2
-            case 5: rate_index = 1; break; // 2/3
-            case 2: case 4: case 6: rate_index = 2; break; // 3/4
-            case 7: rate_index = 3; break; // 5/6
+            case 0: case 1: case 3: rate_index = 0; break;
+            case 5: rate_index = 1; break;
+            case 2: case 4: case 6: rate_index = 2; break;
+            case 7: rate_index = 3; break;
             default: rate_index = 0; break;
             }
 
@@ -606,40 +722,72 @@ private:
             int n = d_ldpc_codec.get_n();
             int k = d_ldpc_codec.get_k();
 
-            std::vector<uint8_t> decoded_cw(n);
-            d_ldpc_codec.decode(d_rx_llr.data(), (int)d_rx_llr.size(),
-                                decoded_cw.data(), n, 50, true);
-
-            // Extract info bits (first K bits) into bytes
-            // SERVICE field: first 16 bits
-            // PSDU: remaining bits
-            d_out_bytes.assign((size_t)d_ht_len + 2, 0);
-            for (int i = 0; i < 16 && i < k; i++) {
-                d_out_bytes[i / 8] |= (decoded_cw[i] << (i % 8));
-            }
-            for (int i = 0; i < d_ht_len * 8 && (i + 16) < k; i++) {
-                int bit_idx = i + 16;
-                d_out_bytes[2 + i / 8] |= (decoded_cw[bit_idx] << (i % 8));
+            if ((int)d_rx_llr.size() < n) {
+                d_rx_llr.resize(n, 0.0f);
             }
 
-            const uint8_t* psdu = d_out_bytes.data() + 2;
-            if (d_ht_len < 4) {
-                fprintf(stderr, "[DECODE_FAIL] invalid psdu len for FCS: %d\n", d_ht_len);
+            // LDPC needs descrambled LLR, but scrambler seed is in the decoded data.
+            // Strategy: decode with default seed, extract seed from SERVICE field,
+            // then retry with correct seed if FCS fails.
+            // CRITICAL: tavildar LDPC decoder maps LLR>0 -> bit 0, but our LLR
+            // computation maps LLR>0 -> bit 1. Invert LLR signs before decode.
+            for (size_t i = 0; i < d_rx_llr.size(); i++) {
+                d_rx_llr[i] = -d_rx_llr[i];
+            }
+            std::vector<float> base_llr(d_rx_llr.begin(), d_rx_llr.begin() + n);
+            std::vector<uint8_t> decoded_cw(k);
+            int best_seed = d_scrambler_seed;
+            bool fcs_ok = false;
+
+            // TX scrambles first, then LDPC-encodes. So RX must LDPC-decode
+            // first (on scrambled LLR), then descramble the decoded bits.
+            // generate_bits() zeros SERVICE field before scramble, so the
+            // traditional seed-in-SERVICE search does not apply.
+            std::vector<int> seeds_to_try;
+            seeds_to_try.push_back(d_scrambler_seed);
+            seeds_to_try.push_back(1);
+
+            for (int trial_seed : seeds_to_try) {
+                // 1. LDPC decode on scrambled LLR (correct order)
+                d_ldpc_codec.decode(base_llr.data(), n,
+                                    decoded_cw.data(), k, 50, true);
+
+                // 2. Descramble the decoded bits (not the LLRs)
+                int state = trial_seed;
+                for (int i = 0; i < k; i++) {
+                    int feedback = ((state & 64) != 0) ^ ((state & 8) != 0);
+                    decoded_cw[i] ^= feedback;
+                    state = ((state << 1) & 0x7e) | feedback;
+                }
+
+                d_out_bytes.assign((size_t)d_ht_len + 2, 0);
+                for (int i = 0; i < 16 && i < k; i++) {
+                    d_out_bytes[i / 8] |= (decoded_cw[i] << (i % 8));
+                }
+                for (int i = 0; i < d_ht_len * 8 && (i + 16) < k; i++) {
+                    d_out_bytes[2 + i / 8] |= (decoded_cw[i + 16] << (i % 8));
+                }
+
+                const uint8_t* psdu = d_out_bytes.data() + 2;
+                if (d_ht_len >= 4) {
+                    const uint32_t rx_fcs = read_le_u32(psdu + d_ht_len - 4);
+                    boost::crc_32_type crc;
+                    crc.process_bytes(psdu, d_ht_len - 4);
+                    if (crc.checksum() == rx_fcs) {
+                        fcs_ok = true;
+                        best_seed = trial_seed;
+                        break;
+                    }
+                }
+            }
+
+            if (!fcs_ok) {
+                fprintf(stderr, "[DECODE_FAIL] LDPC FCS error after seed search len=%d\n", d_ht_len);
                 return;
             }
 
-            const uint32_t rx_fcs = read_le_u32(psdu + d_ht_len - 4);
-            boost::crc_32_type crc;
-            crc.process_bytes(psdu, d_ht_len - 4);
-            const uint32_t calc_fcs = crc.checksum();
-
-            if (calc_fcs != rx_fcs) {
-                fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x len=%d\n", calc_fcs, rx_fcs, d_ht_len);
-                return;
-            }
-
-            fprintf(stderr, "[DECODE_SUCCESS] LDPC FCS OK, publishing message len=%d\n", d_ht_len);
-            pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
+            fprintf(stderr, "[DECODE_SUCCESS] LDPC FCS OK seed=%d len=%d\n", best_seed, d_ht_len);
+            pmt::pmt_t blob = pmt::make_blob(d_out_bytes.data() + 2, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(105));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
             return;
@@ -906,28 +1054,91 @@ private:
                  << std::endl;
         }
 
-        if (calc_fcs != rx_fcs) {
-            fprintf(stderr, "[DECODE_FAIL] FCS error calc=0x%x rx=0x%x len=%d\n", calc_fcs, rx_fcs, d_ht_len);
+        if (calc_fcs == rx_fcs) {
+            if (d_debug) {
+                dout << "[decode_mac] FCS OK"
+                     << " calc=0x" << std::hex << calc_fcs
+                     << " rx=0x"   << rx_fcs
+                     << std::dec << std::endl;
+            }
+            fprintf(stderr, "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d\n", d_ht_len);
+            pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
+            d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
+            message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
+            fprintf(stderr, "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
             return;
         }
 
-        if (d_debug) {
-            dout << "[decode_mac] FCS OK"
-                 << " calc=0x" << std::hex << calc_fcs
-                 << " rx=0x"   << rx_fcs
-                 << std::dec << std::endl;
+        fprintf(stderr, "[DECODE_FAIL] Conv FCS error calc=0x%x rx=0x%x len=%d, trying LDPC fallback\n",
+                calc_fcs, rx_fcs, d_ht_len);
+
+        // ============================================================
+        // LDPC fallback
+        // ============================================================
+        {
+            const float noise_var = 1.0f;
+            d_rx_llr.assign((size_t)(n_sym * n_cbps), 0.0f);
+            compute_llr_block(d_rx_eq.data(), d_rx_llr.data(),
+                              n_sym, 52, n_bpsc, noise_var);
+            descramble_llr(d_rx_llr.data(), (int)d_rx_llr.size(), d_scrambler_seed);
+
+            // Compute block length using same logic as TX (mapper_impl.cc)
+            int n_dbps_fb = ht_n_dbps_from_mcs(d_ht_mcs);
+            int n_data_bits_fb = (16 + 8 * d_ht_len + 6 + n_dbps_fb - 1) / n_dbps_fb * n_dbps_fb;
+            unsigned block_length = (n_data_bits_fb <= 324) ? 648 :
+                                    (n_data_bits_fb <= 648) ? 1296 : 1944;
+            fprintf(stderr, "[LDPC_DEBUG] fallback n_data_bits=%d block_length=%u\n",
+                    n_data_bits_fb, block_length);
+            unsigned rate_index;
+            switch (d_ht_mcs) {
+            case 0: case 1: case 3: rate_index = 0; break;
+            case 5: rate_index = 1; break;
+            case 2: case 4: case 6: rate_index = 2; break;
+            case 7: rate_index = 3; break;
+            default: rate_index = 0; break;
+            }
+
+            if (!d_ldpc_codec.init(block_length, rate_index)) {
+                fprintf(stderr, "[DECODE_FAIL] LDPC init failed\n");
+                return;
+            }
+
+            int n = d_ldpc_codec.get_n();
+            int k = d_ldpc_codec.get_k();
+
+            if ((int)d_rx_llr.size() < n) {
+                d_rx_llr.resize(n, 0.0f);
+            }
+
+            std::vector<uint8_t> decoded_cw(k);
+            d_ldpc_codec.decode(d_rx_llr.data(), n,
+                                decoded_cw.data(), k, 50, true);
+
+            d_out_bytes.assign((size_t)d_ht_len + 2, 0);
+            for (int i = 0; i < 16 && i < k; i++) {
+                d_out_bytes[i / 8] |= (decoded_cw[i] << (i % 8));
+            }
+            for (int i = 0; i < d_ht_len * 8 && (i + 16) < k; i++) {
+                d_out_bytes[2 + i / 8] |= (decoded_cw[i + 16] << (i % 8));
+            }
+
+            const uint8_t* psdu_ldpc = d_out_bytes.data() + 2;
+            const uint32_t rx_fcs_ldpc = read_le_u32(psdu_ldpc + d_ht_len - 4);
+            boost::crc_32_type crc_ldpc;
+            crc_ldpc.process_bytes(psdu_ldpc, d_ht_len - 4);
+            const uint32_t calc_fcs_ldpc = crc_ldpc.checksum();
+
+            if (calc_fcs_ldpc != rx_fcs_ldpc) {
+                fprintf(stderr, "[DECODE_FAIL] LDPC FCS error calc=0x%x rx=0x%x len=%d\n",
+                        calc_fcs_ldpc, rx_fcs_ldpc, d_ht_len);
+                return;
+            }
+
+            fprintf(stderr, "[DECODE_SUCCESS] LDPC FCS OK (fallback), publishing message len=%d\n", d_ht_len);
+            pmt::pmt_t blob = pmt::make_blob(psdu_ldpc, d_ht_len);
+            d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
+            message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
         }
-
-        // 7) 发消息
-        pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
-
-        d_meta = pmt::dict_add(d_meta,
-                               pmt::mp("dlt"),
-                               pmt::from_long(LINKTYPE_IEEE802_11));
-
-        fprintf(stderr, "[DECODE_SUCCESS] FCS OK, publishing message len=%d\n", d_ht_len);
-        message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
-        fprintf(stderr, "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
     }
 
     void descramble(uint8_t* decoded)
@@ -994,6 +1205,7 @@ private:
     ldpc_wifi_codec d_ldpc_codec;
     std::vector<float> d_rx_llr;
     int d_scrambler_seed;
+    int d_ldpc_block_length;
 };
 
 

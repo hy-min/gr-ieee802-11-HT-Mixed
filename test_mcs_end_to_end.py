@@ -84,8 +84,9 @@ def run_mcs_test(mcs, test_params):
     out_buf_size = test_params.get('out_buf_size', 96000)
     sensitivity = test_params.get('sensitivity', 0.01)
     test_duration = test_params.get('test_duration', 2)
+    cooldown = test_params.get('cooldown', 2)
 
-    print(f"参数: pdu_length={pdu_length}, interval={interval}, encoding={encoding}")
+    print(f"参数: pdu_length={pdu_length}, interval={interval}, encoding={encoding}, cooldown={cooldown}")
 
     # 创建wifi_phy_hier实例
     print(f"创建wifi_phy_hier实例 (编码={encoding})...")
@@ -100,6 +101,11 @@ def run_mcs_test(mcs, test_params):
     except Exception as e:
         print(f"错误: 创建wifi_phy_hier失败: {e}")
         return None
+
+    # 设置LDPC模式
+    use_ldpc = test_params.get('use_ldpc', False)
+    wifi_phy.ieee802_11_mapper_0.set_use_ldpc(use_ldpc)
+    print(f"  set_use_ldpc({use_ldpc})")
 
     # MAC层
     try:
@@ -182,8 +188,11 @@ def run_mcs_test(mcs, test_params):
 
     try:
         tb.start()
-        # 运行足够长时间以接收至少一个包
+        # 活跃发送阶段
         time.sleep(test_duration)
+        # 冷却阶段：让在途帧完成处理
+        if cooldown > 0:
+            time.sleep(cooldown)
         tb.stop()
         tb.wait()
     except Exception as e:
@@ -230,7 +239,8 @@ def main():
         'interval': 1000,       # 消息间隔（毫秒）
         'snr_db': 30,           # 高SNR以确保成功
         'out_buf_size': 96000,  # 输出缓冲区大小
-        'test_duration': 12,    # 测试持续时间（秒），增加以允许最后帧完成RX处理
+        'test_duration': 5,     # 活跃发送时间（秒）
+        'cooldown': 3,          # 冷却时间（秒），停止发送后等待在途帧完成
         'sensitivity': 0.01,    # 接收灵敏度
     }
 
@@ -238,12 +248,23 @@ def main():
     for key, value in test_params.items():
         print(f"  {key}: {value}")
 
-    # 测试的MCS列表 (0-7)
-    mcs_list = list(range(8))
-
+    # 测试MCS0 Conv作为baseline，然后测试MCS 0-7的LDPC
     results = []
 
-    for mcs in mcs_list:
+    # Conv baseline
+    print("\n" + "="*70)
+    print("Baseline: MCS0 Conv")
+    print("="*70)
+    result = run_mcs_test(0, test_params)
+    if result:
+        results.append(result)
+
+    # LDPC tests for MCS 0-7
+    print("\n" + "="*70)
+    print("LDPC模式测试: MCS 0-7")
+    print("="*70)
+    test_params['use_ldpc'] = True
+    for mcs in range(8):
         result = run_mcs_test(mcs, test_params)
         if result:
             results.append(result)
