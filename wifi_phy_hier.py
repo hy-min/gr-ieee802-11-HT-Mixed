@@ -42,6 +42,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.message_port_register_hier_in("mac_in")
         self.message_port_register_hier_out("carrier")
         self.message_port_register_hier_out("mac_out")
+        self.message_port_register_hier_out("constellation")
 
         ##################################################
         # Parameters
@@ -125,6 +126,7 @@ class wifi_phy_hier(gr.hier_block2):
         ##################################################
         self.msg_connect((self.ieee802_11_decode_mac_0, 'out'), (self, 'mac_out'))
         self.msg_connect((self.ieee802_11_frame_equalizer_0, 'symbols'), (self, 'carrier'))
+        self.msg_connect((self.ieee802_11_frame_equalizer_0, 'symbols'), (self, 'constellation'))
         self.msg_connect((self, 'mac_in'), (self.ieee802_11_mapper_0, 'in'))
         self.connect((self.blocks_complex_to_mag_0, 0), (self.blocks_divide_xx_0, 0))
         self.connect((self.blocks_complex_to_mag_squared_0, 0), (self.blocks_moving_average_xx_1, 0))
