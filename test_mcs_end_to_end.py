@@ -18,6 +18,14 @@ import pmt
 import numpy as np
 from gnuradio import gr, blocks, channels, pdu
 from gnuradio.filter import pfb
+
+try:
+    from PyQt5 import Qt, sip, QtWidgets
+    from gnuradio import qtgui
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
+
 import ieee802_11
 
 # 导入wifi_phy_hier
@@ -387,6 +395,222 @@ def run_batch_mode():
     else:
         print("\n✗ 部分测试失败")
         return 1
+
+class MCSEndToEndGUI(gr.top_block, Qt.QWidget):
+    """GUI mode for test_mcs_end_to_end with constellation display."""
+
+    def __init__(self):
+        gr.top_block.__init__(self, "MCS End-to-End Test + Constellation")
+        Qt.QWidget.__init__(self)
+        self.setWindowTitle("MCS End-to-End Test + Constellation Display")
+        self.resize(800, 600)
+
+        # ===== GUI Layout =====
+        self.top_layout = Qt.QVBoxLayout()
+        self.setLayout(self.top_layout)
+
+        # Control panel
+        self.control_layout = Qt.QHBoxLayout()
+        self.top_layout.addLayout(self.control_layout)
+
+        # MCS chooser
+        self.mcs_label = Qt.QLabel("TX MCS:")
+        self.control_layout.addWidget(self.mcs_label)
+
+        self.mcs_combo = Qt.QComboBox()
+        self.mcs_combo.addItems(GUI_MCS_NAMES)
+        self.mcs_combo.currentIndexChanged.connect(self.set_mcs)
+        self.control_layout.addWidget(self.mcs_combo)
+
+        # LDPC toggle
+        self.ldpc_check = Qt.QCheckBox("LDPC")
+        self.ldpc_check.setToolTip("Enable LDPC coding (unchecked = BCC)")
+        self.ldpc_check.stateChanged.connect(self.set_use_ldpc)
+        self.control_layout.addWidget(self.ldpc_check)
+
+        # SNR slider
+        self.snr_label = Qt.QLabel("SNR (dB):")
+        self.control_layout.addWidget(self.snr_label)
+
+        self.snr_slider = Qt.QSlider(Qt.Qt.Horizontal)
+        self.snr_slider.setRange(0, 40)
+        self.snr_slider.setValue(30)
+        self.snr_slider.valueChanged.connect(self.set_snr)
+        self.control_layout.addWidget(self.snr_slider)
+
+        self.snr_value_label = Qt.QLabel("30 dB")
+        self.control_layout.addWidget(self.snr_value_label)
+
+        # Status labels
+        self.rx_mcs_label = Qt.QLabel("RX MCS: --")
+        self.control_layout.addWidget(self.rx_mcs_label)
+
+        self.sent_label = Qt.QLabel("Sent: 0")
+        self.control_layout.addWidget(self.sent_label)
+
+        self.recv_label = Qt.QLabel("Recv: 0")
+        self.control_layout.addWidget(self.recv_label)
+
+        self.control_layout.addStretch(1)
+
+        # ===== GNU Radio Blocks =====
+
+        # WiFi PHY
+        self.wifi_phy = wifi_phy_hier(
+            bandwidth=10e6,
+            chan_est=ieee802_11.LS,
+            encoding=ieee802_11.BPSK_1_2,
+            frequency=5.89e9,
+            sensitivity=0.01
+        )
+
+        # Message strobe
+        self.msg_strobe = blocks.message_strobe(pmt.intern("x" * 10), 1000)
+
+        # MAC layer
+        self.mac = ieee802_11.mac(
+            [0x23, 0x23, 0x23, 0x23, 0x23, 0x23],
+            [0x42, 0x42, 0x42, 0x42, 0x42, 0x42],
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+        )
+
+        # Message debug (for counting)
+        self.msg_debug_mac = blocks.message_debug(True, gr.log_levels.info)
+        self.msg_debug_rx = blocks.message_debug(True, gr.log_levels.info)
+
+        # Packet pad
+        try:
+            import foo
+            self.packet_pad = foo.packet_pad2(False, False, 0.001, 500, 0)
+            self.packet_pad.set_min_output_buffer(960000)
+            use_packet_pad = True
+        except ImportError:
+            use_packet_pad = False
+
+        # SNR / channel
+        self.snr = 30.0
+        self.multiply_const = blocks.multiply_const_cc(1.0)
+
+        noise_voltage = 10**(-self.snr / 20.0)
+        self.channel = channels.channel_model(
+            noise_voltage=noise_voltage,
+            frequency_offset=0.0,
+            epsilon=1.0,
+            taps=[1.0],
+            noise_seed=0,
+            block_tags=False
+        )
+
+        # Resampler
+        self.resampler = pfb.arb_resampler_ccf(
+            1.0, taps=None, flt_size=32, atten=100
+        )
+        self.resampler.declare_sample_delay(0)
+
+        # Constellation display
+        self.pdu_to_stream = blocks.pdu_to_tagged_stream(
+            gr.types.complex_t, 'packet_len'
+        )
+
+        self.constellation_sink = qtgui.const_sink_c(480, "", 1, None)
+        self.constellation_sink.set_update_time(0.10)
+        self.constellation_sink.set_x_axis(-2, 2)
+        self.constellation_sink.set_y_axis(-2, 2)
+
+        constellation_widget = sip.wrapinstance(
+            self.constellation_sink.qwidget(), QtWidgets.QWidget
+        )
+        self.top_layout.addWidget(constellation_widget)
+
+        # Encoding stripper and MCS detector
+        self.encoding_stripper = encoding_stripper()
+        self.mcs_detect = mcs_detector(self.update_constellation_range)
+
+        # ===== Connections =====
+
+        # Message connections
+        self.msg_connect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
+        self.msg_connect((self.mac, 'phy out'), (self.encoding_stripper, 'pdu'))
+        self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy, 'mac_in'))
+        self.msg_connect((self.wifi_phy, 'mac_out'), (self.msg_debug_rx, 'store'))
+        self.msg_connect((self.mac, 'phy out'), (self.msg_debug_mac, 'store'))
+        self.msg_connect((self.wifi_phy, 'constellation'), (self.pdu_to_stream, 'pdus'))
+        self.msg_connect((self.wifi_phy, 'constellation'), (self.mcs_detect, 'pdu'))
+
+        # Stream connections (loopback)
+        if use_packet_pad:
+            self.connect((self.wifi_phy, 0), (self.packet_pad, 0))
+            self.connect((self.packet_pad, 0), (self.multiply_const, 0))
+        else:
+            self.connect((self.wifi_phy, 0), (self.multiply_const, 0))
+
+        self.connect((self.multiply_const, 0), (self.channel, 0))
+        self.connect((self.channel, 0), (self.resampler, 0))
+        self.connect((self.resampler, 0), (self.wifi_phy, 0))
+
+        # Constellation stream
+        self.connect((self.pdu_to_stream, 0), (self.constellation_sink, 0))
+
+        # Status update timer
+        self.status_timer = Qt.QTimer(self)
+        self.status_timer.timeout.connect(self.update_status)
+        self.status_timer.start(500)
+
+    def set_mcs(self, index):
+        encoding = GUI_MCS_VALUES[index]
+        self.wifi_phy.set_encoding(encoding)
+        print(f"[MCS] TX set to {GUI_MCS_NAMES[index]} (encoding={encoding})")
+
+    def set_use_ldpc(self, state):
+        enabled = (state == Qt.Qt.Checked)
+        self.wifi_phy.set_use_ldpc(enabled)
+        print(f"[LDPC] {'Enabled' if enabled else 'Disabled'} (BCC)")
+
+    def set_snr(self, value):
+        self.snr = float(value)
+        self.snr_value_label.setText(f"{value} dB")
+        noise_voltage = 10**(-self.snr / 20.0)
+        self.channel.set_noise_voltage(noise_voltage)
+
+    def update_constellation_range(self, mcs):
+        xmin, xmax = CONSTELLATION_RANGES.get(mcs, (-2, 2))
+        self.constellation_sink.set_x_axis(xmin, xmax)
+        self.constellation_sink.set_y_axis(xmin, xmax)
+        self.rx_mcs_label.setText(f"RX MCS: {GUI_MCS_NAMES[mcs]}")
+        print(f"[CONSTELLATION] Auto-adapted to MCS {mcs}: range [{xmin}, {xmax}]")
+
+    def update_status(self):
+        sent = self.msg_debug_mac.num_messages()
+        recv = self.msg_debug_rx.num_messages()
+        self.sent_label.setText(f"Sent: {sent}")
+        self.recv_label.setText(f"Recv: {recv}")
+
+    def closeEvent(self, event):
+        sent = self.msg_debug_mac.num_messages()
+        recv = self.msg_debug_rx.num_messages()
+        print(f"\n[GUI] Test session ended")
+        print(f"  Sent messages: {sent}")
+        print(f"  Received messages: {recv}")
+        self.stop()
+        self.wait()
+        event.accept()
+
+
+def run_gui_mode():
+    """Launch the interactive GUI mode."""
+    if not GUI_AVAILABLE:
+        print("ERROR: GUI mode requires PyQt5 and gnuradio.qtgui.")
+        print("Install with: pip install PyQt5")
+        return 1
+
+    from PyQt5 import Qt
+    qapp = Qt.QApplication(sys.argv)
+    gui = MCSEndToEndGUI()
+    gui.show()
+    gui.start()
+    qapp.exec_()
+    return 0
+
 
 def main():
     parser = argparse.ArgumentParser(
