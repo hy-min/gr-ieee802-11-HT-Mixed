@@ -49,6 +49,52 @@ MCS_DESCRIPTIONS = {
     7: "64-QAM 5/6",
 }
 
+
+class encoding_stripper(gr.basic_block):
+    """Remove encoding/mcs tags from PDU meta so mapper uses set_encoding()."""
+
+    def __init__(self):
+        gr.basic_block.__init__(
+            self,
+            name="encoding_stripper",
+            in_sig=None,
+            out_sig=None
+        )
+        self.message_port_register_in(pmt.intern("pdu"))
+        self.message_port_register_out(pmt.intern("pdu"))
+        self.set_msg_handler(pmt.intern("pdu"), self.handle_pdu)
+
+    def handle_pdu(self, msg):
+        meta = pmt.car(msg)
+        data = pmt.cdr(msg)
+        meta = pmt.dict_delete(meta, pmt.mp("encoding"))
+        meta = pmt.dict_delete(meta, pmt.mp("mcs"))
+        self.message_port_pub(pmt.intern("pdu"), pmt.cons(meta, data))
+
+
+class mcs_detector(gr.basic_block):
+    """Detect MCS from constellation PDU meta and trigger callback."""
+
+    def __init__(self, callback):
+        gr.basic_block.__init__(
+            self,
+            name="mcs_detector",
+            in_sig=None,
+            out_sig=None
+        )
+        self.message_port_register_in(pmt.intern("pdu"))
+        self.set_msg_handler(pmt.intern("pdu"), self.handle_pdu)
+        self.callback = callback
+        self.last_mcs = -1
+
+    def handle_pdu(self, msg):
+        meta = pmt.car(msg)
+        mcs = pmt.to_long(pmt.dict_ref(meta, pmt.mp('mcs'), pmt.from_long(0)))
+        if mcs != self.last_mcs:
+            self.last_mcs = mcs
+            self.callback(mcs)
+
+
 def run_mcs_test(mcs, test_params):
     """
     运行单个MCS的端到端测试
