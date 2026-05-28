@@ -29,7 +29,8 @@ except ImportError:
 import ieee802_11
 
 # 导入wifi_phy_hier
-sys.path.insert(0, 'examples')
+sys.path.insert(0, '/home/hy/gr-ieee802-11')
+sys.path.insert(0, '/home/hy/gr-ieee802-11/examples')
 from wifi_phy_hier import wifi_phy_hier
 
 # MCS到编码映射（基于decode_mac.cc的mcs_to_encoding函数）
