@@ -10,6 +10,7 @@ MCS 0-7端到端性能测试和系统验证
 5. 验证数据完整性和测量性能
 """
 
+import argparse
 import os
 import sys
 import time
@@ -224,96 +225,25 @@ def run_mcs_test(mcs, test_params):
     return result
 
 def main():
-    print("="*70)
-    print("HT Mixed模式 MCS 0-7端到端性能测试")
-    print("="*70)
+    parser = argparse.ArgumentParser(
+        description='HT Mixed mode MCS 0-7 end-to-end test'
+    )
+    parser.add_argument(
+        '--gui', action='store_true',
+        help='Launch interactive GUI mode with constellation display'
+    )
+    args = parser.parse_args()
 
-    # 设置环境变量禁用RPC
     os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
     os.environ['GR_RPC_ENABLE'] = 'False'
     os.environ['GR_RPC_SERVER_ENABLE'] = 'False'
+    os.environ['GR_RPC_PORT'] = '0'
+    os.environ['GR_CONTROLPORT_ON'] = 'False'
 
-    # 测试参数
-    test_params = {
-        'pdu_length': 10,       # 测试数据长度（字节）
-        'interval': 1000,       # 消息间隔（毫秒）
-        'snr_db': 30,           # 高SNR以确保成功
-        'out_buf_size': 96000,  # 输出缓冲区大小
-        'test_duration': 5,     # 活跃发送时间（秒）
-        'cooldown': 3,          # 冷却时间（秒），停止发送后等待在途帧完成
-        'sensitivity': 0.01,    # 接收灵敏度
-    }
-
-    print(f"测试参数:")
-    for key, value in test_params.items():
-        print(f"  {key}: {value}")
-
-    # 测试MCS0 Conv作为baseline，然后测试MCS 0-7的LDPC
-    results = []
-
-    # Conv baseline
-    print("\n" + "="*70)
-    print("Baseline: MCS0 Conv")
-    print("="*70)
-    result = run_mcs_test(0, test_params)
-    if result:
-        results.append(result)
-
-    # LDPC tests for MCS 0-7
-    print("\n" + "="*70)
-    print("LDPC模式测试: MCS 0-7")
-    print("="*70)
-    test_params['use_ldpc'] = True
-    for mcs in range(8):
-        result = run_mcs_test(mcs, test_params)
-        if result:
-            results.append(result)
-
-    # 打印总结报告
-    print("\n" + "="*70)
-    print("测试总结报告")
-    print("="*70)
-
-    if not results:
-        print("没有成功的测试结果")
-        return 1
-
-    print(f"\n共测试 {len(results)} 个MCS模式:")
-
-    success_count = 0
-    for result in results:
-        mcs = result['mcs']
-        desc = result['description']
-        success = result['success']
-        rx_msgs = result['received_messages']
-
-        status = "✓ 通过" if success and rx_msgs > 0 else "✗ 失败"
-        print(f"  MCS{mcs:2d} ({desc:15s}): {status} (接收消息: {rx_msgs})")
-
-        if success and rx_msgs > 0:
-            success_count += 1
-
-    print(f"\n成功: {success_count}/{len(results)}")
-
-    # 保存详细结果到文件
-    output_file = "/tmp/mcs_test_results.txt"
-    with open(output_file, 'w') as f:
-        f.write("MCS端到端测试结果\n")
-        f.write("="*50 + "\n")
-        for result in results:
-            f.write(f"\nMCS{result['mcs']}: {result['description']}\n")
-            for key, value in result.items():
-                if key not in ['mcs', 'description']:
-                    f.write(f"  {key}: {value}\n")
-
-    print(f"\n详细结果已保存到: {output_file}")
-
-    if success_count == len(results):
-        print("\n✓ 所有测试通过!")
-        return 0
+    if args.gui:
+        return run_gui_mode()
     else:
-        print("\n✗ 部分测试失败")
-        return 1
+        return run_batch_mode()
 
 if __name__ == "__main__":
     # 注意：此脚本需要在conda环境中运行，并使用LD_PRELOAD禁用RPC
