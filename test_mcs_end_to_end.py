@@ -75,17 +75,28 @@ GUI_MCS_VALUES = [
     ieee802_11.QAM64_5_6,
 ]
 
-# Constellation display ranges per MCS
+# Constellation display ranges per MCS (key = standard HT-MCS 0-7)
 CONSTELLATION_RANGES = {
-    0: (-1.5, 1.5),   # BPSK 1/2
-    1: (-1.5, 1.5),   # BPSK 3/4
-    2: (-1.5, 1.5),   # QPSK 1/2
-    3: (-1.5, 1.5),   # QPSK 3/4
-    4: (-3.0, 3.0),   # 16QAM 1/2
-    5: (-3.0, 3.0),   # 16QAM 3/4
-    6: (-7.0, 7.0),   # 64QAM 2/3
-    7: (-7.0, 7.0),   # 64QAM 3/4
-    8: (-7.0, 7.0),   # 64QAM 5/6
+    0: (-1.5, 1.5),   # BPSK 1/2 (MCS0)
+    1: (-1.5, 1.5),   # QPSK 1/2 (MCS1)
+    2: (-1.5, 1.5),   # QPSK 3/4 (MCS2)
+    3: (-3.0, 3.0),   # 16QAM 1/2 (MCS3)
+    4: (-3.0, 3.0),   # 16QAM 3/4 (MCS4)
+    5: (-7.0, 7.0),   # 64QAM 2/3 (MCS5)
+    6: (-7.0, 7.0),   # 64QAM 3/4 (MCS6)
+    7: (-7.0, 7.0),   # 64QAM 5/6 (MCS7)
+}
+
+# Standard HT-MCS to display name (for RX mcs_detector callback)
+RX_MCS_NAMES = {
+    0: 'BPSK 1/2 (MCS0)',
+    1: 'QPSK 1/2 (MCS1)',
+    2: 'QPSK 3/4 (MCS2)',
+    3: '16QAM 1/2 (MCS3)',
+    4: '16QAM 3/4 (MCS4)',
+    5: '64QAM 2/3 (MCS5)',
+    6: '64QAM 3/4 (MCS6)',
+    7: '64QAM 5/6 (MCS7)',
 }
 
 
@@ -577,7 +588,7 @@ class MCSEndToEndGUI(gr.top_block, Qt.QWidget):
         xmin, xmax = CONSTELLATION_RANGES.get(mcs, (-2, 2))
         self.constellation_sink.set_x_axis(xmin, xmax)
         self.constellation_sink.set_y_axis(xmin, xmax)
-        self.rx_mcs_label.setText(f"RX MCS: {GUI_MCS_NAMES[mcs]}")
+        self.rx_mcs_label.setText(f"RX MCS: {RX_MCS_NAMES.get(mcs, 'Unknown')}")
         print(f"[CONSTELLATION] Auto-adapted to MCS {mcs}: range [{xmin}, {xmax}]")
 
     def update_status(self):
