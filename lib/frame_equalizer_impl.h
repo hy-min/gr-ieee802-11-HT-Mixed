@@ -27,6 +27,7 @@ private:
     std::shared_ptr<gr::digital::constellation> d_bpsk;
     std::shared_ptr<gr::digital::constellation> d_qpsk;
     std::shared_ptr<gr::digital::constellation> d_16qam;
+    std::shared_ptr<gr::digital::constellation> d_64qam;
 
     int d_current_symbol;
     int d_copied;

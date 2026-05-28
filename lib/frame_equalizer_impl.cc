@@ -3,6 +3,7 @@
 #include <gnuradio/io_signature.h>
 #include <gnuradio/digital/constellation.h>
 #include <pmt/pmt.h>
+#include <ieee802_11/constellations.h>
 
 #include <algorithm>
 #include <array>
@@ -152,6 +153,11 @@ static std::shared_ptr<gr::digital::constellation> make_qpsk_constellation()
 static std::shared_ptr<gr::digital::constellation> make_16qam_constellation()
 {
     return gr::digital::constellation_16qam::make();
+}
+
+static std::shared_ptr<gr::digital::constellation> make_64qam_constellation()
+{
+    return gr::ieee802_11::constellation_64qam::make();
 }
 
 // Map standard 802.11n HT-MCS (0-7, as carried in HT-SIG) back to our
@@ -1612,6 +1618,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_bpsk = make_bpsk_constellation();
     d_qpsk = make_qpsk_constellation();
     d_16qam = make_16qam_constellation();
+    d_64qam = make_64qam_constellation();
 
     set_tag_propagation_policy(TPP_DONT);
     message_port_register_out(pmt::mp("symbols"));
@@ -2164,6 +2171,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
         case 1: cnst = d_bpsk;  break;
         case 2: cnst = d_qpsk;  break;
         case 4: cnst = d_16qam; break;
+        case 6: cnst = d_64qam; break;
         default: cnst = d_bpsk; break;
         }
 
@@ -2390,7 +2398,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     0,
                     out_off,
                     pmt::intern("mcs"),
-                    pmt::from_uint64((uint64_t)d_frame_encoding),
+                    pmt::from_uint64((uint64_t)d_frame_mcs),
                     pmt::intern(this->name()));
 
                 // Forward LDPC info so decode_mac can collect the right number of symbols
