@@ -49,6 +49,36 @@ MCS_DESCRIPTIONS = {
     7: "64-QAM 5/6",
 }
 
+# GUI mode: MCS names and encoding values for dropdown
+GUI_MCS_NAMES = [
+    'BPSK 1/2 (MCS0)', 'BPSK 3/4',
+    'QPSK 1/2 (MCS1)', 'QPSK 3/4 (MCS2)',
+    '16QAM 1/2 (MCS3)', '16QAM 3/4 (MCS4)',
+    '64QAM 2/3 (MCS5)', '64QAM 3/4 (MCS6)',
+    '64QAM 5/6 (MCS7)',
+]
+
+GUI_MCS_VALUES = [
+    ieee802_11.BPSK_1_2, ieee802_11.BPSK_3_4,
+    ieee802_11.QPSK_1_2, ieee802_11.QPSK_3_4,
+    ieee802_11.QAM16_1_2, ieee802_11.QAM16_3_4,
+    ieee802_11.QAM64_2_3, ieee802_11.QAM64_3_4,
+    ieee802_11.QAM64_5_6,
+]
+
+# Constellation display ranges per MCS
+CONSTELLATION_RANGES = {
+    0: (-1.5, 1.5),   # BPSK 1/2
+    1: (-1.5, 1.5),   # BPSK 3/4
+    2: (-1.5, 1.5),   # QPSK 1/2
+    3: (-1.5, 1.5),   # QPSK 3/4
+    4: (-3.0, 3.0),   # 16QAM 1/2
+    5: (-3.0, 3.0),   # 16QAM 3/4
+    6: (-7.0, 7.0),   # 64QAM 2/3
+    7: (-7.0, 7.0),   # 64QAM 3/4
+    8: (-7.0, 7.0),   # 64QAM 5/6
+}
+
 
 class encoding_stripper(gr.basic_block):
     """Remove encoding/mcs tags from PDU meta so mapper uses set_encoding()."""
