@@ -33,7 +33,7 @@ import pmt
 
 
 class wifi_phy_hier(gr.hier_block2):
-    def __init__(self, bandwidth=10e6, chan_est=ieee802_11.LS, encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.56):
+    def __init__(self, bandwidth=10e6, chan_est=ieee802_11.LS, encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.56, use_ldpc=False):
         gr.hier_block2.__init__(
             self, "WiFi PHY Hier",
                 gr.io_signature(1, 1, gr.sizeof_gr_complex*1),
@@ -52,6 +52,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.encoding = encoding
         self.frequency = frequency
         self.sensitivity = sensitivity
+        self.use_ldpc = use_ldpc
 
         ##################################################
         # Variables
@@ -68,6 +69,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.sync_short = ieee802_11.sync_short(sensitivity, 2, False, False)
         self.sync_long = ieee802_11.sync_long(sync_length, False, False)
         self.ieee802_11_mapper_0 = ieee802_11.mapper(encoding, False)
+        self.ieee802_11_mapper_0.set_use_ldpc(use_ldpc)
         self.ieee802_11_frame_equalizer_0 = ieee802_11.frame_equalizer(chan_est, frequency, bandwidth, False, False)
         self.ieee802_11_frame_equalizer_0.set_min_output_buffer((max_symbols * 52 * 8))
         self.ieee802_11_frame_equalizer_0.set_output_multiple(52)
@@ -187,6 +189,13 @@ class wifi_phy_hier(gr.hier_block2):
     def set_encoding(self, encoding):
         self.encoding = encoding
         self.ieee802_11_mapper_0.set_encoding(self.encoding)
+
+    def get_use_ldpc(self):
+        return self.use_ldpc
+
+    def set_use_ldpc(self, use_ldpc):
+        self.use_ldpc = use_ldpc
+        self.ieee802_11_mapper_0.set_use_ldpc(self.use_ldpc)
 
     def get_frequency(self):
         return self.frequency

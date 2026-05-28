@@ -119,6 +119,12 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         self.mcs_combo.currentIndexChanged.connect(self.set_mcs)
         self.control_layout.addWidget(self.mcs_combo)
 
+        # LDPC toggle
+        self.ldpc_check = Qt.QCheckBox("LDPC")
+        self.ldpc_check.setToolTip("Enable LDPC coding (unchecked = BCC)")
+        self.ldpc_check.stateChanged.connect(self.set_use_ldpc)
+        self.control_layout.addWidget(self.ldpc_check)
+
         # SNR slider
         self.snr_label = Qt.QLabel("SNR (dB):")
         self.control_layout.addWidget(self.snr_label)
@@ -231,6 +237,11 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         encoding = self.mcs_values[index]
         self.wifi_phy.set_encoding(encoding)
         print(f"[MCS] TX set to {self.mcs_names[index]} (encoding={encoding})")
+
+    def set_use_ldpc(self, state):
+        enabled = (state == Qt.Qt.Checked)
+        self.wifi_phy.set_use_ldpc(enabled)
+        print(f"[LDPC] {'Enabled' if enabled else 'Disabled'} (BCC)")
 
     def set_snr(self, value):
         self.snr = float(value)

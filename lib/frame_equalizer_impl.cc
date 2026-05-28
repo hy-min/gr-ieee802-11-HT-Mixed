@@ -1585,6 +1585,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_enable_soft_output(false),
       d_frame_bytes(0),
       d_frame_encoding(0),
+      d_frame_mcs(0),
       d_frame_symbols(0),
       d_frame_mod(1),
       d_frame_n_bpsc(1),
@@ -1660,6 +1661,7 @@ void frame_equalizer_impl::reset_frame_state(void)
 {
     d_frame_bytes = 0;
     d_frame_encoding = 0;
+    d_frame_mcs = 0;
     d_frame_symbols = 0;
     d_frame_mod = 1;
     d_frame_n_bpsc = 1;
@@ -1832,6 +1834,7 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
     d_have_header = true;
 
     d_frame_encoding = ht_mcs_to_encoding(mcs);
+    d_frame_mcs = mcs;
     d_frame_bytes = len_bytes;
     d_use_ldpc = use_ldpc;
 
@@ -2350,7 +2353,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             {
                 pmt::pmt_t meta = pmt::make_dict();
                 meta = pmt::dict_add(meta, pmt::mp("packet_len"), pmt::from_long(52));
-                meta = pmt::dict_add(meta, pmt::mp("mcs"), pmt::from_long(d_frame_encoding));
+                meta = pmt::dict_add(meta, pmt::mp("mcs"), pmt::from_long(d_frame_mcs));
                 pmt::pmt_t vec = pmt::init_c32vector(52, out52);
                 message_port_pub(pmt::mp("symbols"), pmt::cons(meta, vec));
             }

@@ -41,6 +41,7 @@ private:
 
     int d_frame_bytes;
     int d_frame_encoding;
+    int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta
 
     int d_frame_symbols;
     int d_frame_mod;
