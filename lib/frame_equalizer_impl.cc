@@ -2181,6 +2181,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
                               raw_bits52,
                               cnst);
 
+        // Normalize symbols to correct for kFftNormalize scaling in channel estimate
+        for (int k = 0; k < 52; k++) {
+            raw_eq52[k] /= kFftNormalize;
+        }
+
         int nonzero_cnt = 0;
         double eqp52 = 0.0;
 
