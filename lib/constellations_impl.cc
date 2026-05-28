@@ -217,17 +217,21 @@ constellation_64qam_impl::~constellation_64qam_impl() {}
 
 unsigned int constellation_64qam_impl::decision_maker(const gr_complex* sample)
 {
-    unsigned int ret = 0;
-    const float level = sqrt(float(1 / 42.0));
-    float re = sample->real();
-    float im = sample->imag();
+    // Use nearest-neighbor search to handle arbitrary symbol scaling
+    // (frame_equalizer outputs symbols with large amplitude due to TX/RX
+    // scaling mismatch between L-LTF and data symbols)
+    unsigned int best_idx = 0;
+    float best_dist = std::numeric_limits<float>::max();
 
-    ret |= re > 0;
-    ret |= (std::abs(re) < (4 * level)) << 1;
-    ret |= (std::abs(re) < (6 * level) && std::abs(re) > (2 * level)) << 2;
-    ret |= (im > 0) << 3;
-    ret |= (std::abs(im) < (4 * level)) << 4;
-    ret |= (std::abs(im) < (6 * level) && std::abs(im) > (2 * level)) << 5;
+    for (unsigned int i = 0; i < d_constellation.size(); i++) {
+        const float re = sample->real() - d_constellation[i].real();
+        const float im = sample->imag() - d_constellation[i].imag();
+        const float dist = re * re + im * im;
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+        }
+    }
 
-    return ret;
+    return best_idx;
 }
