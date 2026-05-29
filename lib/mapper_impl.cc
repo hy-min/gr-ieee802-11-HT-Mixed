@@ -157,6 +157,38 @@ private:
         return (mcs >= 0 && mcs <= 7);
     }
 
+    // Map Encoding enum back to HT-MCS (0-7).  Inverse of ht_mcs_to_encoding().
+    static int encoding_to_ht_mcs(Encoding enc)
+    {
+        switch (enc) {
+        case BPSK_1_2:    return 0;
+        case QPSK_1_2:    return 1;
+        case QPSK_3_4:    return 2;
+        case QAM16_1_2:   return 3;
+        case QAM16_3_4:   return 4;
+        case QAM64_2_3:   return 5;
+        case QAM64_3_4:   return 6;
+        case QAM64_5_6:   return 7;
+        default:          return 0;
+        }
+    }
+
+    // Map HT-MCS (0-7) to Encoding enum.  Inverse of encoding_to_ht_mcs().
+    static Encoding mcs_to_encoding(int mcs)
+    {
+        switch (mcs) {
+        case 0: return BPSK_1_2;
+        case 1: return QPSK_1_2;
+        case 2: return QPSK_3_4;
+        case 3: return QAM16_1_2;
+        case 4: return QAM16_3_4;
+        case 5: return QAM64_2_3;
+        case 6: return QAM64_3_4;
+        case 7: return QAM64_5_6;
+        default: return BPSK_1_2;
+        }
+    }
+
     static int ht_n_bpsc_from_mcs(int mcs)
     {
         switch (mcs) {
@@ -253,7 +285,7 @@ private:
                                   const char* interleaved_data,
                                   const char* symbols)
     {
-        if (!ht_mode || mcs != 0) {
+        if (!ht_mode || mcs < 0 || mcs > 7) {
             return;
         }
         if (frame.n_sym <= 0 || data_carriers < 52 || frame.n_encoded_bits < 52) {
@@ -451,15 +483,13 @@ private:
 
         frame_param frame(d_ofdm, psdu_length);
 
-        // 确定有效的 MCS：优先使用 meta 中的 mcs，否则使用 d_ofdm.encoding
+        // 确定有效的 MCS：优先使用 meta 中的 mcs，否则从 d_ofdm.encoding 映射回 HT-MCS
         int effective_mcs = mcs;
         if (effective_mcs < 0) {
-            // 检查 d_ofdm.encoding 是否是 HT MCS (0-7)
-            if (d_ofdm.encoding >= 0 && d_ofdm.encoding <= 7) {
-                effective_mcs = (int)d_ofdm.encoding;
-                if (d_debug) {
-                    std::cout << "[MAPPER] using d_ofdm.encoding as effective MCS: " << effective_mcs << std::endl;
-                }
+            effective_mcs = encoding_to_ht_mcs(d_ofdm.encoding);
+            if (d_debug) {
+                std::cout << "[MAPPER] using encoding_to_ht_mcs(" << (int)d_ofdm.encoding
+                          << ") = " << effective_mcs << std::endl;
             }
         }
 
@@ -557,17 +587,22 @@ private:
                      pmt::from_long(psdu_length),
                      srcid);
 
+        // Header formatter (signal_field) expects Encoding enum (0-8) in the
+        // 'encoding' tag.  HT-MCS (0-7) is different because BPSK_3_4 shifts
+        // the enum by one.  Emit both: 'encoding' = Encoding enum,
+        // 'mcs' = HT-MCS so RX frame_equalizer can use either.
+        int tag_enc = (mcs >= 0) ? mcs_to_encoding(mcs) : (int)d_ofdm.encoding;
+        int tag_mcs = (mcs >= 0) ? mcs : encoding_to_ht_mcs(d_ofdm.encoding);
         add_item_tag(0,
                      nitems_written(0),
                      pmt::mp("encoding"),
-                     pmt::from_long((mcs >= 0) ? mcs : (int)d_ofdm.encoding),
+                     pmt::from_long(tag_enc),
                      srcid);
 
-        // 添加 mcs 标签供 HT-SIG 使用
         add_item_tag(0,
                      nitems_written(0),
                      pmt::mp("mcs"),
-                     pmt::from_long((mcs >= 0) ? mcs : (int)d_ofdm.encoding),
+                     pmt::from_long(tag_mcs),
                      srcid);
 
         add_item_tag(0,

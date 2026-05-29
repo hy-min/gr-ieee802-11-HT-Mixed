@@ -267,25 +267,47 @@ static void hard_16qam_bits(const gr_complex& x, uint8_t bits[4])
 }
 
 // Hard demodulation for 64-QAM (6 bits per subcarrier)
-// Based on constellation_64qam_impl::decision_maker
-static void hard_64qam_bits(const gr_complex& x, uint8_t bits[6])
+// Maps to constellation_64qam_impl::d_constellation Gray-code ordering.
+// |I|/|Q| level -> (bit2,bit1) lookup: 7->(0,0), 5->(1,0), 3->(0,1), 1->(1,1)
+static void hard_64qam_bits(const gr_complex& x, uint8_t bits[6], float level)
 {
-    const float level = sqrtf(1.0f / 42.0f);
-    float re = x.real();
-    float im = x.imag();
+    // 64QAM constellation I/Q levels: 1, 3, 5, 7 * level (absolute values)
+    static const float kIqLevels[4] = { 1.0f, 3.0f, 5.0f, 7.0f };
+    // Gray-code lookup: index 0=|I|=1, 1=|I|=3, 2=|I|=5, 3=|I|=7
+    // Each pair is (bit2, bit1)
+    static const uint8_t kLevelToBits[4][2] = {
+        {0, 1}, // |level|=1 -> bits[high]=0, bits[low]=1
+        {1, 1}, // |level|=3 -> bits[high]=1, bits[low]=1
+        {1, 0}, // |level|=5 -> bits[high]=1, bits[low]=0
+        {0, 0}, // |level|=7 -> bits[high]=0, bits[low]=0
+    };
 
-    // Bit 0: real > 0
-    bits[0] = (re > 0) ? 1 : 0;
-    // Bit 1: |real| < 4*level
-    bits[1] = (std::abs(re) < (4 * level)) ? 1 : 0;
-    // Bit 2: |real| < 6*level && |real| > 2*level
-    bits[2] = (std::abs(re) < (6 * level) && std::abs(re) > (2 * level)) ? 1 : 0;
-    // Bit 3: imag > 0
-    bits[3] = (im > 0) ? 1 : 0;
-    // Bit 4: |imag| < 4*level
-    bits[4] = (std::abs(im) < (4 * level)) ? 1 : 0;
-    // Bit 5: |imag| < 6*level && |imag| > 2*level
-    bits[5] = (std::abs(im) < (6 * level) && std::abs(im) > (2 * level)) ? 1 : 0;
+    auto map_component = [&](float v, int bit0_idx, int bit1_idx, int bit2_idx) {
+        float av = std::abs(v);
+        // Find nearest level by absolute distance
+        int best_idx = 0;
+        float best_dist = std::abs(av - kIqLevels[0] * level);
+        for (int i = 1; i < 4; i++) {
+            float d = std::abs(av - kIqLevels[i] * level);
+            if (d < best_dist) {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+        bits[bit0_idx] = (v >= 0.0f) ? 1 : 0;
+        bits[bit1_idx] = kLevelToBits[best_idx][1];
+        bits[bit2_idx] = kLevelToBits[best_idx][0];
+    };
+
+    map_component(x.real(), 0, 1, 2);
+    map_component(x.imag(), 3, 4, 5);
+
+    // Diagnostic: verify fix is active (unique string)
+    static int hard64_call_count = 0;
+    hard64_call_count++;
+    if (hard64_call_count == 1) {
+        fprintf(stderr, "[HARD64QAM_FIX] hard_64qam_bits Gray-code lookup fix active\n");
+    }
 }
 
 } // anonymous namespace
@@ -570,6 +592,28 @@ private:
 
         // 1) hard demap
         const int n_bpsc = ht_n_bpsc_from_mcs(d_ht_mcs);
+        // Compute dynamic level for 64QAM to handle TX/RX amplitude mismatch.
+        // frame_equalizer output amplitude is ~1.3x the standard value due to
+        // TX/RX scaling.  Use max(|re|,|im|)/7 for best outer-point accuracy.
+        float qam64_level = sqrtf(1.0f / 42.0f);
+        if (n_bpsc == 6) {
+            double re_min = 1e9, re_max = -1e9, im_min = 1e9, im_max = -1e9;
+            float max_abs = 0.0f;
+            for (size_t k = 0; k < d_rx_eq.size(); k++) {
+                float re = d_rx_eq[k].real();
+                float im = d_rx_eq[k].imag();
+                re_min = std::min(re_min, (double)re);
+                re_max = std::max(re_max, (double)re);
+                im_min = std::min(im_min, (double)im);
+                im_max = std::max(im_max, (double)im);
+                max_abs = std::max(max_abs, std::max(std::abs(re), std::abs(im)));
+            }
+            if (max_abs > 0.1f) {
+                qam64_level = max_abs / 7.0f;
+            }
+            fprintf(stderr, "[DECODE_MAC] 64QAM sym stats: re=[%.3f,%.3f] im=[%.3f,%.3f] n=%zu max_abs=%.3f level=%.4f\n",
+                    re_min, re_max, im_min, im_max, d_rx_eq.size(), max_abs, qam64_level);
+        }
         size_t bit_idx = 0;
         for (size_t k = 0; k < d_rx_eq.size(); k++) {
             const gr_complex& sym = d_rx_eq[k];
@@ -597,7 +641,7 @@ private:
             case 6: // 64-QAM
                 {
                     uint8_t bits[6];
-                    hard_64qam_bits(sym, bits);
+                    hard_64qam_bits(sym, bits, qam64_level);
                     for (int i = 0; i < 6; i++) {
                         d_rx_bits[bit_idx++] = bits[i];
                     }
@@ -726,14 +770,9 @@ private:
                 d_rx_llr.resize(n, 0.0f);
             }
 
-            // LDPC needs descrambled LLR, but scrambler seed is in the decoded data.
-            // Strategy: decode with default seed, extract seed from SERVICE field,
-            // then retry with correct seed if FCS fails.
-            // CRITICAL: tavildar LDPC decoder maps LLR>0 -> bit 0, but our LLR
-            // computation maps LLR>0 -> bit 1. Invert LLR signs before decode.
-            for (size_t i = 0; i < d_rx_llr.size(); i++) {
-                d_rx_llr[i] = -d_rx_llr[i];
-            }
+            // LLR functions in llr_demod.h are written to match TX constellation
+            // bit mapping and tavildar decoder convention (LLR>0 -> bit=0).
+            // No sign inversion needed.
             std::vector<float> base_llr(d_rx_llr.begin(), d_rx_llr.begin() + n);
             std::vector<uint8_t> decoded_cw(k);
             int best_seed = d_scrambler_seed;
@@ -961,12 +1000,17 @@ private:
 
         // 3) 准备 decoder 参数
         d_ofdm = ofdm_param(mcs_to_encoding(d_ht_mcs));
+        // Override with HT 52-carrier parameters; ofdm_param constructor uses
+        // legacy 48-carrier values which mismatch HT mode (e.g., 288 vs 312 for 64QAM)
+        d_ofdm.n_bpsc = ht_n_bpsc_from_mcs(d_ht_mcs);
+        d_ofdm.n_cbps = ht_n_cbps_from_mcs(d_ht_mcs);
+        d_ofdm.n_dbps = ht_n_dbps_from_mcs(d_ht_mcs);
         d_frame = frame_param(d_ofdm, d_ht_len);
 
         d_frame.psdu_size      = d_ht_len;
         d_frame.n_sym          = n_sym;
-        d_frame.n_data_bits    = n_sym * n_dbps;
-        d_frame.n_encoded_bits = n_sym * n_cbps;
+        d_frame.n_data_bits    = n_sym * d_ofdm.n_dbps;
+        d_frame.n_encoded_bits = n_sym * d_ofdm.n_cbps;
         d_frame.n_pad          = d_frame.n_data_bits - (16 + 8 * d_ht_len + 6);
 
         if (d_frame.n_pad < 0) {

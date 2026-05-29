@@ -83,6 +83,7 @@ int chunks_to_symbols_impl::work(int noutput_items,
             break;
         case QAM64_2_3:
         case QAM64_3_4:
+        case QAM64_5_6:
             d_mapping = d_64qam;
             break;
         default:

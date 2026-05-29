@@ -74,6 +74,8 @@ static int encoding_to_ht_mcs(Encoding enc)
         return 5; // MCS5
     case QAM64_3_4:
         return 6; // MCS6
+    case QAM64_5_6:
+        return 7; // MCS7
     default:
         // BPSK_3_4 (legacy-only) or anything unknown -> fallback MCS0
         return 0;

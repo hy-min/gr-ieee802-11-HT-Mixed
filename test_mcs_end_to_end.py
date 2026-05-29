@@ -139,9 +139,11 @@ class mcs_detector(gr.basic_block):
 
     def handle_pdu(self, msg):
         meta = pmt.car(msg)
-        mcs = pmt.to_long(pmt.dict_ref(meta, pmt.mp('mcs'), pmt.from_long(0)))
+        mcs = pmt.to_long(pmt.dict_ref(meta, pmt.mp('mcs'), pmt.from_long(-1)))
+        print(f"[MCS_DETECT] received mcs={mcs} last={self.last_mcs}", flush=True)
         if mcs != self.last_mcs:
             self.last_mcs = mcs
+            print(f"[MCS_DETECT] MCS changed to {mcs}, calling callback", flush=True)
             self.callback(mcs)
 
 
@@ -262,10 +264,16 @@ def run_mcs_test(mcs, test_params):
 
     # ========== 连接流图 ==========
 
+    # encoding_stripper: MAC layer always sets encoding=BPSK_1_2 in PDU meta,
+    # which overrides mapper's set_encoding(). Strip it so the requested MCS
+    # is actually used.
+    enc_stripper = encoding_stripper()
+
     # 消息连接
     tb.msg_connect((msg_strobe, 'strobe'), (mac, 'app in'))
     tb.msg_connect((mac, 'phy out'), (msg_debug_mac, 'store'))
-    tb.msg_connect((mac, 'phy out'), (wifi_phy, 'mac_in'))
+    tb.msg_connect((mac, 'phy out'), (enc_stripper, 'pdu'))
+    tb.msg_connect((enc_stripper, 'pdu'), (wifi_phy, 'mac_in'))
     tb.msg_connect((wifi_phy, 'mac_out'), (msg_debug_rx, 'store'))
 
     # 数据流连接
@@ -445,12 +453,12 @@ class MCSEndToEndGUI(gr.top_block, Qt.QWidget):
         self.control_layout.addWidget(self.snr_label)
 
         self.snr_slider = Qt.QSlider(Qt.Qt.Horizontal)
-        self.snr_slider.setRange(0, 40)
-        self.snr_slider.setValue(30)
+        self.snr_slider.setRange(0, 50)
+        self.snr_slider.setValue(40)
         self.snr_slider.valueChanged.connect(self.set_snr)
         self.control_layout.addWidget(self.snr_slider)
 
-        self.snr_value_label = Qt.QLabel("30 dB")
+        self.snr_value_label = Qt.QLabel("40 dB")
         self.control_layout.addWidget(self.snr_value_label)
 
         # Status labels
@@ -500,7 +508,7 @@ class MCSEndToEndGUI(gr.top_block, Qt.QWidget):
             use_packet_pad = False
 
         # SNR / channel
-        self.snr = 30.0
+        self.snr = 40.0
         self.multiply_const = blocks.multiply_const_cc(1.0)
 
         noise_voltage = 10**(-self.snr / 20.0)
@@ -570,7 +578,9 @@ class MCSEndToEndGUI(gr.top_block, Qt.QWidget):
 
     def set_mcs(self, index):
         encoding = GUI_MCS_VALUES[index]
+        print(f"[GUI] Calling wifi_phy.set_encoding({encoding})...")
         self.wifi_phy.set_encoding(encoding)
+        print(f"[GUI] wifi_phy.encoding now = {self.wifi_phy.encoding}")
         print(f"[MCS] TX set to {GUI_MCS_NAMES[index]} (encoding={encoding})")
 
     def set_use_ldpc(self, state):

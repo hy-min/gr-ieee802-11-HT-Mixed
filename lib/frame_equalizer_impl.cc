@@ -1480,10 +1480,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         static int decode_call_count = 0;
         if (decode_call_count == 0) {
             bool crc_pass = (crc_rx == crc_calc);
-            fprintf(stderr, "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d\n",
+            fprintf(stderr, "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d mcs=%d len=%d\n",
                     rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
                     crc_pass ? "PASS" : "FAIL",
-                    crc_rx, crc_calc, adv_coding);
+                    crc_rx, crc_calc, adv_coding, mcs, psdu_length);
             // Print equalized bits for HT-SIG0
             fprintf(stderr, "[HTSIG_BITS] eq48=");
             for (int i = 0; i < 48; i++) fprintf(stderr, "%d", eqbits48_a[i]);
@@ -1884,6 +1884,8 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
         d_frame_symbols =
             (16 + 8 * len_bytes + 6 + d_frame_n_dbps - 1) / d_frame_n_dbps;
         d_ldpc_n_sym = -1;
+        fprintf(stderr, "[EQ_CONV_PARAMS] mcs=%d len=%d n_dbps=%d n_sym=%d\n",
+                mcs, len_bytes, d_frame_n_dbps, d_frame_symbols);
     }
 }
 

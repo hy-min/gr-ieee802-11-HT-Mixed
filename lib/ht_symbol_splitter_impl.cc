@@ -199,12 +199,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 }
             }
 
-            // CRITICAL FIX: Use CP offset (16) from the tag position.
-            // The tag position marks where sync_long starts COPY output (L-LTF start).
-            // L-LTF0 DATA starts CP=16 samples after that point.
-            // The old hardcoded +176 worked only when d_frame_start=160.
-            int64_t cp_length = 16;
-            int64_t new_frame_start_abs = (int64_t)tag_abs_pos + cp_length;
+            // sync_long's wifi_start is at L-LTF0 DATA start (rel=0), NOT CP start.
+            // Do NOT add cp_length - the tag already marks the DATA boundary.
+            int64_t new_frame_start_abs = (int64_t)tag_abs_pos;
 
             fprintf(stderr,
                     "[SPLITTER_FRAME_START] seq=%d d_frame_start=%llu "
