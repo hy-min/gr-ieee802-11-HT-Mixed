@@ -1851,8 +1851,9 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
 
     // For LDPC, n_sym is determined by the LDPC block size
     if (use_ldpc) {
-        // Same logic as TX mapper_impl.cc setup_ht_params
-        int data_bits = 16 + 8 * len_bytes + 6; // SERVICE + DATA + TAIL
+        // 802.11n standard LDPC: use padded data_bits (same as TX mapper)
+        int raw_data_bits = 16 + 8 * len_bytes + 6; // SERVICE + DATA + TAIL
+        int data_bits = ((raw_data_bits + d_frame_n_dbps - 1) / d_frame_n_dbps) * d_frame_n_dbps;
         // LDPC code rates for each MCS (rate_index)
         int rate_index;
         switch (mcs) {
@@ -1872,14 +1873,18 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
         case 2: k = block_length * 3 / 4; break;
         case 3: k = block_length * 5 / 6; break;
         }
+        int m = block_length - k; // parity bits per block
         int num_blocks = (data_bits + k - 1) / k;
         if (num_blocks < 1) num_blocks = 1;
-        int ldpc_encoded_bits = num_blocks * block_length;
+        // Standard: encoded bits = data_bits + num_blocks * m (without shortening)
+        // Align to full OFDM symbols (repetition fills the gap)
+        int ldpc_encoded_bits = data_bits + num_blocks * m;
         int n_cbps = d_frame_n_cbps;
         d_frame_symbols = (ldpc_encoded_bits + n_cbps - 1) / n_cbps;
+        int aligned_encoded = d_frame_symbols * n_cbps;
         d_ldpc_n_sym = d_frame_symbols;
-        fprintf(stderr, "[EQ_LDPC_PARAMS] mcs=%d len=%d data_bits=%d block=%d k=%d blocks=%d encoded=%d n_sym=%d\n",
-                mcs, len_bytes, data_bits, block_length, k, num_blocks, ldpc_encoded_bits, d_frame_symbols);
+        fprintf(stderr, "[EQ_LDPC_PARAMS] mcs=%d len=%d data_bits=%d block=%d k=%d m=%d blocks=%d raw=%d aligned=%d n_sym=%d\n",
+                mcs, len_bytes, data_bits, block_length, k, m, num_blocks, ldpc_encoded_bits, aligned_encoded, d_frame_symbols);
     } else {
         d_frame_symbols =
             (16 + 8 * len_bytes + 6 + d_frame_n_dbps - 1) / d_frame_n_dbps;

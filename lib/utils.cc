@@ -251,33 +251,100 @@ bool ldpc_encode(const char* scrambled_data, char* out, frame_param& frame, ofdm
 
     int k = codec.get_k();
     int n = codec.get_n();
+    int m = n - k; // number of parity bits per block
 
-    // Encode in code blocks
-    int total_encoded = 0;
+    // Number of LDPC code blocks
+    int n_blocks = (data_bits + k - 1) / k;
+    if (n_blocks < 1) n_blocks = 1;
+
+    // --- 802.11n standard shortening + puncturing ---
+    // For each block:
+    //   1. Fill info[0:block_info_bits] with data, info[block_info_bits:k] = 0 (shortening)
+    //   2. Encode to n bits (systematic: info + parity)
+    //   3. Output: info[0:block_info_bits] (actual data, no shortening) + parity[0:m]
+    //   4. Total per block: block_info_bits + m
+    //
+    // If total output < n_encoded_bits: repeat parity bits (repetition)
+    // If total output > n_encoded_bits: delete parity bits (puncturing)
+
+    std::vector<int> block_info_bits(n_blocks);
+    std::vector<int> block_nsh(n_blocks);
+    int total_output_bits = 0;
+
+    for (int b = 0; b < n_blocks; b++) {
+        block_info_bits[b] = std::min(k, data_bits - b * k);
+        if (block_info_bits[b] < 0) block_info_bits[b] = 0;
+        block_nsh[b] = k - block_info_bits[b]; // shortening bits for this block
+        total_output_bits += block_info_bits[b] + m;
+    }
+
+    int n_puncture = 0;
+    int n_repeat = 0;
+    if (total_output_bits > frame.n_encoded_bits) {
+        n_puncture = total_output_bits - frame.n_encoded_bits;
+    } else if (total_output_bits < frame.n_encoded_bits) {
+        n_repeat = frame.n_encoded_bits - total_output_bits;
+    }
+
+    fprintf(stderr, "[LDPC_ENCODE] data_bits=%d block=%d n=%d k=%d m=%d blocks=%d "
+            "total_out=%d target=%d puncture=%d repeat=%d\n",
+            data_bits, block_length, n, k, m, n_blocks,
+            total_output_bits, frame.n_encoded_bits, n_puncture, n_repeat);
+
+    // Encode each block and write to output
     int bit_offset = 0;
+    int out_offset = 0;
 
-    while (bit_offset < data_bits && total_encoded < frame.n_encoded_bits) {
-        int block_info_bits = std::min(k, data_bits - bit_offset);
+    for (int b = 0; b < n_blocks; b++) {
+        int npld = block_info_bits[b];
+        int nsh = block_nsh[b];
 
+        // Fill info bits (with shortening zeros at the end)
         std::vector<uint8_t> info(k, 0);
-        for (int i = 0; i < block_info_bits; i++) {
+        for (int i = 0; i < npld; i++) {
             info[i] = scrambled_data[bit_offset + i] & 1;
         }
 
+        // Encode
         std::vector<uint8_t> coded(n);
         codec.encode(info.data(), k, coded.data(), n);
 
-        int copy_n = std::min(n, frame.n_encoded_bits - total_encoded);
-        for (int i = 0; i < copy_n; i++) {
-            out[total_encoded++] = coded[i] & 1;
+        // Output info bits (only actual data, skip shortening)
+        for (int i = 0; i < npld; i++) {
+            out[out_offset++] = coded[i] & 1;
         }
 
-        bit_offset += block_info_bits;
+        // Output parity bits
+        for (int i = 0; i < m; i++) {
+            out[out_offset++] = coded[k + i] & 1;
+        }
+
+        bit_offset += npld;
     }
 
-    // Pad remaining with zeros
-    while (total_encoded < frame.n_encoded_bits) {
-        out[total_encoded++] = 0;
+    // Puncturing: delete parity bits from the end
+    if (n_puncture > 0) {
+        out_offset -= n_puncture;
+        if (out_offset < 0) out_offset = 0;
+        fprintf(stderr, "[LDPC_ENCODE] punctured %d parity bits, final out=%d\n",
+                n_puncture, out_offset);
+    }
+
+    // Repetition: repeat parity bits
+    // Standard: repeat from the parity bits of the last code block
+    if (n_repeat > 0) {
+        int parity_start = out_offset - m; // start of last block's parity
+        if (parity_start < 0) parity_start = 0;
+        for (int i = 0; i < n_repeat; i++) {
+            out[out_offset++] = out[parity_start + (i % m)] & 1;
+        }
+        fprintf(stderr, "[LDPC_ENCODE] repeated %d parity bits, final out=%d\n",
+                n_repeat, out_offset);
+    }
+
+    // Pad remaining with zeros (should not happen if math is correct)
+    while (out_offset < frame.n_encoded_bits) {
+        out[out_offset++] = 0;
     }
 
     return true;

@@ -393,7 +393,8 @@ private:
         frame.n_encoded_bits = frame.n_sym * ht_n_cbps;
 
         if (use_ldpc) {
-            // For LDPC, n_encoded_bits must fit complete LDPC code block(s)
+            // 802.11n standard LDPC: shortening + puncturing/repetition
+            // n_encoded_bits = data_bits + num_blocks * m (without shortening bits)
             unsigned rate_index;
             switch (mcs) {
             case 0: case 1: case 3: rate_index = 0; break; // 1/2
@@ -413,20 +414,22 @@ private:
             case 2: k = block_length * 3 / 4; break;
             case 3: k = block_length * 5 / 6; break;
             }
+            int m = block_length - k; // parity bits per block
 
             int num_blocks = (frame.n_data_bits + k - 1) / k;
-            int ldpc_encoded_bits = num_blocks * block_length;
+            if (num_blocks < 1) num_blocks = 1;
 
-            if (ldpc_encoded_bits > frame.n_encoded_bits) {
-                frame.n_encoded_bits = ldpc_encoded_bits;
-                frame.n_sym = (frame.n_encoded_bits + ht_n_cbps - 1) / ht_n_cbps;
-                // n_data_bits and n_pad stay the same
-                std::cout << "[MAPPER][LDPC] adjusted n_sym=" << frame.n_sym
-                          << " n_encoded_bits=" << frame.n_encoded_bits
-                          << " num_blocks=" << num_blocks
-                          << " block_length=" << block_length
-                          << " k=" << k << std::endl;
-            }
+            // Standard: encoded bits = data_bits (info without shortening) + num_blocks * m (parity)
+            // Align to full OFDM symbols: repetition fills the gap
+            int ldpc_encoded_bits = frame.n_data_bits + num_blocks * m;
+            int ldpc_n_sym = (ldpc_encoded_bits + ht_n_cbps - 1) / ht_n_cbps;
+            frame.n_encoded_bits = ldpc_n_sym * ht_n_cbps; // aligned to n_sym * n_cbps
+            frame.n_sym = ldpc_n_sym;
+            std::cout << "[MAPPER][LDPC] adjusted n_sym=" << frame.n_sym
+                      << " n_encoded_bits=" << frame.n_encoded_bits
+                      << " num_blocks=" << num_blocks
+                      << " block_length=" << block_length
+                      << " k=" << k << " m=" << m << std::endl;
         }
     }
 

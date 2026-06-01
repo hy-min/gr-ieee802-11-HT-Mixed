@@ -741,14 +741,11 @@ private:
             compute_llr_block(d_rx_eq.data(), d_rx_llr.data(),
                               n_sym, 52, n_bpsc, noise_var);
 
-            // Compute block length using same logic as TX (mapper_impl.cc)
-            // d_ldpc_block_length tag cannot propagate through TPP_DONT blocks
+            // 802.11n standard LDPC decode with shortening + puncturing/repetition
             int n_dbps = ht_n_dbps_from_mcs(d_ht_mcs);
-            int n_data_bits = (16 + 8 * d_ht_len + 6 + n_dbps - 1) / n_dbps * n_dbps;
-            unsigned block_length = (n_data_bits <= 324) ? 648 :
-                                    (n_data_bits <= 648) ? 1296 : 1944;
-            fprintf(stderr, "[LDPC_DEBUG] n_data_bits=%d block_length=%u\n",
-                    n_data_bits, block_length);
+            int data_bits = (16 + 8 * d_ht_len + 6 + n_dbps - 1) / n_dbps * n_dbps;
+            unsigned block_length = (data_bits <= 324) ? 648 :
+                                    (data_bits <= 648) ? 1296 : 1944;
             unsigned rate_index;
             switch (d_ht_mcs) {
             case 0: case 1: case 3: rate_index = 0; break;
@@ -763,48 +760,100 @@ private:
                 return;
             }
 
-            int n = d_ldpc_codec.get_n();
-            int k = d_ldpc_codec.get_k();
+            int n = d_ldpc_codec.get_n();  // block_length
+            int k = d_ldpc_codec.get_k();  // info bits per block
+            int m = n - k;                  // parity bits per block
+            int n_blocks = (data_bits + k - 1) / k;
+            if (n_blocks < 1) n_blocks = 1;
 
-            if ((int)d_rx_llr.size() < n) {
-                d_rx_llr.resize(n, 0.0f);
+            // Compute puncture / repetition
+            int total_output = data_bits + n_blocks * m;
+            int received_bits = n_sym * n_cbps;
+            int n_puncture = (total_output > received_bits) ? total_output - received_bits : 0;
+            int n_repeat   = (total_output < received_bits) ? received_bits - total_output : 0;
+
+            fprintf(stderr, "[LDPC_STD] data_bits=%d blocks=%d k=%d m=%d n=%d total_out=%d recv=%d puncture=%d repeat=%d\n",
+                    data_bits, n_blocks, k, m, n, total_output, received_bits, n_puncture, n_repeat);
+
+            // Separate info LLR and parity LLR from received stream
+            // TX order: [info block0][parity block0][info block1][parity block1]...[repetition]
+            std::vector<float> info_llr(data_bits);
+            std::vector<float> parity_llr(n_blocks * m, 0.0f);
+
+            for (int i = 0; i < data_bits && i < received_bits; i++) {
+                info_llr[i] = d_rx_llr[i];
             }
 
-            // LLR functions in llr_demod.h are written to match TX constellation
-            // bit mapping and tavildar decoder convention (LLR>0 -> bit=0).
-            // No sign inversion needed.
-            std::vector<float> base_llr(d_rx_llr.begin(), d_rx_llr.begin() + n);
-            std::vector<uint8_t> decoded_cw(k);
+            int parity_received = received_bits - data_bits;
+            if (parity_received > 0) {
+                for (int i = 0; i < parity_received && i < n_blocks * m; i++) {
+                    parity_llr[i] = d_rx_llr[data_bits + i];
+                }
+            }
+
+            // Handle repetition: merge repeated parity LLRs
+            if (n_repeat > 0 && parity_received > 0) {
+                for (int i = 0; i < n_repeat; i++) {
+                    int src_idx = parity_received - n_repeat + i;
+                    int dst_idx = i % (n_blocks * m);
+                    parity_llr[dst_idx] += d_rx_llr[data_bits + src_idx];
+                }
+            }
+
+            // Decode each block
+            std::vector<uint8_t> decoded_all(data_bits);
+            int info_offset = 0;
+            int parity_offset = 0;
+
+            for (int b = 0; b < n_blocks; b++) {
+                int npld = std::min(k, data_bits - b * k);
+                int nsh = k - npld;
+
+                // Reconstruct full codeword LLR: info + shortening(0) + parity
+                std::vector<float> block_llr(n, 0.0f);
+                for (int i = 0; i < npld; i++) {
+                    block_llr[i] = info_llr[info_offset + i];
+                }
+                // shortening bits: LLR = 0 (already zero)
+                for (int i = 0; i < m; i++) {
+                    block_llr[k + i] = parity_llr[parity_offset + i];
+                }
+
+                std::vector<uint8_t> decoded_cw(k);
+                d_ldpc_codec.decode(block_llr.data(), n,
+                                    decoded_cw.data(), k, 50, true);
+
+                // Copy only actual info bits (skip shortening)
+                for (int i = 0; i < npld; i++) {
+                    decoded_all[info_offset + i] = decoded_cw[i];
+                }
+
+                info_offset += npld;
+                parity_offset += m;
+            }
+
+            // Descramble and check FCS
             int best_seed = d_scrambler_seed;
             bool fcs_ok = false;
-
-            // TX scrambles first, then LDPC-encodes. So RX must LDPC-decode
-            // first (on scrambled LLR), then descramble the decoded bits.
-            // generate_bits() zeros SERVICE field before scramble, so the
-            // traditional seed-in-SERVICE search does not apply.
             std::vector<int> seeds_to_try;
             seeds_to_try.push_back(d_scrambler_seed);
             seeds_to_try.push_back(1);
 
             for (int trial_seed : seeds_to_try) {
-                // 1. LDPC decode on scrambled LLR (correct order)
-                d_ldpc_codec.decode(base_llr.data(), n,
-                                    decoded_cw.data(), k, 50, true);
-
-                // 2. Descramble the decoded bits (not the LLRs)
+                std::vector<uint8_t> descrambled = decoded_all;
                 int state = trial_seed;
-                for (int i = 0; i < k; i++) {
+                for (int i = 0; i < (int)descrambled.size(); i++) {
                     int feedback = ((state & 64) != 0) ^ ((state & 8) != 0);
-                    decoded_cw[i] ^= feedback;
+                    descrambled[i] ^= feedback;
                     state = ((state << 1) & 0x7e) | feedback;
                 }
 
                 d_out_bytes.assign((size_t)d_ht_len + 2, 0);
-                for (int i = 0; i < 16 && i < k; i++) {
-                    d_out_bytes[i / 8] |= (decoded_cw[i] << (i % 8));
+                for (int i = 0; i < 16 && i < (int)descrambled.size(); i++) {
+                    d_out_bytes[i / 8] |= (descrambled[i] << (i % 8));
                 }
-                for (int i = 0; i < d_ht_len * 8 && (i + 16) < k; i++) {
-                    d_out_bytes[2 + i / 8] |= (decoded_cw[i + 16] << (i % 8));
+                for (int i = 0; i < d_ht_len * 8 && (i + 16) < (int)descrambled.size(); i++) {
+                    d_out_bytes[2 + i / 8] |= (descrambled[i + 16] << (i % 8));
                 }
 
                 const uint8_t* psdu = d_out_bytes.data() + 2;
