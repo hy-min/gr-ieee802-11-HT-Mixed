@@ -67,7 +67,9 @@ class wifi_phy_hier(gr.hier_block2):
         ##################################################
 
         self.sync_short = ieee802_11.sync_short(sensitivity, 2, False, False)
+        self.sync_short.set_min_output_buffer(500000)
         self.sync_long = ieee802_11.sync_long(sync_length, False, False)
+        self.sync_long.set_min_output_buffer(500000)
         self.ieee802_11_mapper_0 = ieee802_11.mapper(encoding, False)
         self.ieee802_11_mapper_0.set_use_ldpc(use_ldpc)
         self.ieee802_11_frame_equalizer_0 = ieee802_11.frame_equalizer(chan_est, frequency, bandwidth, False, False)

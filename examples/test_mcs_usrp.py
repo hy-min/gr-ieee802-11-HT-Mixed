@@ -344,14 +344,28 @@ class MCSEndToEndUSRP(gr.top_block, Qt.QWidget):
             (self.wifi_phy_rx, 'constellation'), (self.mcs_detect, 'pdu')
         )
 
+        # Dummy input for TX-only PHY (prevents "missing connection" error)
+        # The input is not used for TX, but GR requires it connected
+        self.null_src = blocks.null_source(gr.sizeof_gr_complex)
+        self.connect((self.null_src, 0), (self.wifi_phy_tx, 0))
+
         # TX stream: wifi_phy_tx -> uhd_sink
         self.connect((self.wifi_phy_tx, 0), (self.uhd_usrp_sink, 0))
 
-        # RX stream: uhd_source -> wifi_phy_rx
-        self.connect((self.uhd_usrp_source, 0), (self.wifi_phy_rx, 0))
+        # RX buffer: large buffer to decouple USRP source from PHY processing
+        self.rx_buffer = blocks.copy(gr.sizeof_gr_complex)
+        self.rx_buffer.set_min_output_buffer(5000000)
 
-        # Spectrum: branch from uhd_source to freq_sink
-        self.connect((self.uhd_usrp_source, 0), (self.freq_sink, 0))
+        # RX stream: uhd_source -> buffer -> wifi_phy_rx
+        self.connect((self.uhd_usrp_source, 0), (self.rx_buffer, 0))
+        self.connect((self.rx_buffer, 0), (self.wifi_phy_rx, 0))
+
+        # Dummy output sink for RX-only PHY (discards TX output)
+        self.null_sink = blocks.null_sink(gr.sizeof_gr_complex)
+        self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
+
+        # Spectrum: branch from rx_buffer to freq_sink
+        self.connect((self.rx_buffer, 0), (self.freq_sink, 0))
 
         # Constellation: pdu_to_stream -> constellation_sink
         self.connect((self.pdu_to_stream, 0), (self.constellation_sink, 0))
