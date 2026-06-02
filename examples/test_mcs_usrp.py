@@ -220,15 +220,24 @@ class MCSEndToEndUSRP(gr.top_block, Qt.QWidget):
 
     def _setup_gr_blocks(self):
         """Setup all GNU Radio blocks."""
-        # WiFi PHY (hardware-agnostic)
-        self.wifi_phy = wifi_phy_hier(
+        # TX WiFi PHY
+        self.wifi_phy_tx = wifi_phy_hier(
             bandwidth=10e6,
             chan_est=ieee802_11.LS,
             encoding=GUI_MCS_VALUES[0],
             frequency=5.89e9,
             sensitivity=0.01
         )
-        self.wifi_phy.set_use_ldpc(self.args.ldpc)
+        self.wifi_phy_tx.set_use_ldpc(self.args.ldpc)
+
+        # RX WiFi PHY (separate instance)
+        self.wifi_phy_rx = wifi_phy_hier(
+            bandwidth=10e6,
+            chan_est=ieee802_11.LS,
+            encoding=GUI_MCS_VALUES[0],
+            frequency=5.89e9,
+            sensitivity=0.01
+        )
 
         # Message strobe
         self.msg_strobe = blocks.message_strobe(
@@ -320,24 +329,26 @@ class MCSEndToEndUSRP(gr.top_block, Qt.QWidget):
 
     def _make_connections(self):
         """Connect all GNU Radio blocks."""
-        # Message connections
+        # TX Message connections
         self.msg_connect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
         self.msg_connect((self.mac, 'phy out'), (self.encoding_stripper, 'pdu'))
-        self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy, 'mac_in'))
-        self.msg_connect((self.wifi_phy, 'mac_out'), (self.msg_debug_rx, 'store'))
+        self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy_tx, 'mac_in'))
         self.msg_connect((self.mac, 'phy out'), (self.msg_debug_mac, 'store'))
+
+        # RX Message connections
+        self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
         self.msg_connect(
-            (self.wifi_phy, 'constellation'), (self.pdu_to_stream, 'pdus')
+            (self.wifi_phy_rx, 'constellation'), (self.pdu_to_stream, 'pdus')
         )
         self.msg_connect(
-            (self.wifi_phy, 'constellation'), (self.mcs_detect, 'pdu')
+            (self.wifi_phy_rx, 'constellation'), (self.mcs_detect, 'pdu')
         )
 
-        # TX stream: wifi_phy -> uhd_sink
-        self.connect((self.wifi_phy, 0), (self.uhd_usrp_sink, 0))
+        # TX stream: wifi_phy_tx -> uhd_sink
+        self.connect((self.wifi_phy_tx, 0), (self.uhd_usrp_sink, 0))
 
-        # RX stream: uhd_source -> wifi_phy
-        self.connect((self.uhd_usrp_source, 0), (self.wifi_phy, 0))
+        # RX stream: uhd_source -> wifi_phy_rx
+        self.connect((self.uhd_usrp_source, 0), (self.wifi_phy_rx, 0))
 
         # Spectrum: branch from uhd_source to freq_sink
         self.connect((self.uhd_usrp_source, 0), (self.freq_sink, 0))
@@ -348,13 +359,13 @@ class MCSEndToEndUSRP(gr.top_block, Qt.QWidget):
     def set_mcs(self, index):
         """Callback for MCS combo box."""
         encoding = GUI_MCS_VALUES[index]
-        self.wifi_phy.set_encoding(encoding)
+        self.wifi_phy_tx.set_encoding(encoding)
         print(f"[MCS] TX set to {GUI_MCS_NAMES[index]} (encoding={encoding})")
 
     def set_use_ldpc(self, state):
         """Callback for LDPC checkbox."""
         enabled = (state == Qt.Qt.Checked)
-        self.wifi_phy.set_use_ldpc(enabled)
+        self.wifi_phy_tx.set_use_ldpc(enabled)
         print(f"[LDPC] {'Enabled' if enabled else 'Disabled'}")
 
     def set_tx_gain(self, value):
@@ -450,7 +461,7 @@ def main():
     # Set initial MCS from command line
     if args.mcs < len(GUI_MCS_VALUES):
         tb.mcs_combo.setCurrentIndex(args.mcs)
-        tb.wifi_phy.set_encoding(GUI_MCS_VALUES[args.mcs])
+        tb.wifi_phy_tx.set_encoding(GUI_MCS_VALUES[args.mcs])
 
     tb.show()
     tb.start()
