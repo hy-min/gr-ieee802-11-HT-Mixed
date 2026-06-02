@@ -85,6 +85,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.ht_header_tagged_0 = ieee802_11.ht_header_tagged(13, True, 'psdu_len', 'encoding', 'packet_len')
         # RX FFT: shift=False for natural order (matches kHeader48Bin in frame_equalizer)
         self.fft_vxx_0_1 = fft.fft_vcc(64, True, window.rectangular(64), False, 1)
+        self.fft_vxx_0_1.set_min_output_buffer((max_symbols * 64 * 8))
         # TX IFFT: shift=False, window normalizes by 1/sqrt(52)
         self.fft_vxx_0_0 = fft.fft_vcc(64, False, tuple([1/52**.5] * 64), False, 1)
         self.fft_vxx_0_0.set_min_output_buffer((max_symbols * 52 * 8 * 10))

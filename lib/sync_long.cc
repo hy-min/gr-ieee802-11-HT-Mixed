@@ -104,15 +104,30 @@ public:
                 ninput = offset - nread;
                 fprintf(stderr, "[SYNC_LONG_TAG] offset>nread, ninput=%d\n", ninput);
             } else {
-                if (d_offset && (d_state == SYNC)) {
+                std::string tag_key = pmt::symbol_to_string(d_tags.front().key);
+
+                // CRITICAL FIX for USRP continuous streaming:
+                // In loopback mode, sync_long finds frame via correlation search in SYNC state.
+                // In USRP mode, data arrives in small chunks (< 64 samples), preventing the
+                // while loop from running. When wifi_start tag arrives (offset <= nread),
+                // we can't complete correlation search. Direct SYNC->COPY transition using
+                // the tag preserves frame detection.
+                if (d_state == SYNC && tag_key == "wifi_start") {
+                    d_freq_offset_short = pmt::to_double(d_tags.front().value);
+                    d_frame_start = 0;  // Tag marks frame start, ht_symbol_splitter handles alignment
+                    d_state = COPY;
+                    d_offset = 0;
+                    d_count = 0;
+                    d_wifi_start_added = false;
+                    fprintf(stderr, "[SYNC_LONG] SYNC->COPY via wifi_start tag at offset=%llu\n",
+                            (unsigned long long)offset);
+                } else if (d_offset && (d_state == SYNC)) {
                     throw std::runtime_error("wtf");
-                }
-                if (d_state == COPY) {
+                } else if (d_state == COPY) {
                     // FIX: Don't transition to RESET when wifi_start arrives during HT-Mixed preamble!
                     // In Legacy mode (802.11a/g), wifi_start at end of preamble means DATA follows.
                     // In HT-Mixed mode, HT-SIG comes after L-SIG, so we need to continue COPY.
                     // Only transition to RESET if we've processed enough samples to cover the full HT preamble.
-                    std::string tag_key = pmt::symbol_to_string(d_tags.front().key);
                     if (tag_key == "wifi_start") {
                         // wifi_start during COPY - this is a new frame detected by sync_short.
                         // CRITICAL FIX: Go directly to SYNC, not RESET.
@@ -179,6 +194,16 @@ public:
 
                     break;
                 }
+            }
+
+            // CRITICAL FIX: Prevent deadlock with small input chunks.
+            // In continuous streaming (e.g., USRP), downstream blocks may
+            // deliver data in small chunks (< 64 samples). If we don't consume
+            // anything, the read pointer never advances, and we deadlock.
+            // Consume all available data even if we can't process it yet.
+            if (i == 0 && ninput > 0) {
+                i = ninput;
+                fprintf(stderr, "[SYNC_LONG] SYNC state: consuming %d samples to prevent deadlock\n", ninput);
             }
 
             break;
@@ -270,9 +295,13 @@ public:
 
         // in sync state we need at least a symbol to correlate
         // with the pattern
+        // CRITICAL FIX: Lower from 64 to 1 to prevent deadlock with small
+        // input chunks in continuous streaming (e.g., USRP hardware).
+        // The while loop in SYNC state checks (i + 63 < ninput) anyway,
+        // so having less than 64 samples just means the loop won't run.
         if (d_state == SYNC) {
-            ninput_items_required[0] = 64;
-            ninput_items_required[1] = 64;
+            ninput_items_required[0] = 1;
+            ninput_items_required[1] = 1;
 
         } else {
             ninput_items_required[0] = noutput_items;
