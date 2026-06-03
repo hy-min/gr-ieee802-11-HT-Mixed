@@ -40,6 +40,7 @@ list(APPEND ieee802_11_sources
     ht_header_tagged_impl.cc
     sync_long.cc
     sync_short.cc
+    sync_short_fused.cc
     utils.cc
     ldpc/LdpcCode.cpp
     ldpc/ldpc_wifi_codec.cc

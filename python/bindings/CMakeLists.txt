@@ -41,6 +41,7 @@ set(ieee802_11_python_files
     ht_header_tagged_python.cc
     sync_long_python.cc
     sync_short_python.cc
+    sync_short_fused_python.cc
     equalizer_python.cc
     insert_ht_training_python.cc
     python_bindings.cc

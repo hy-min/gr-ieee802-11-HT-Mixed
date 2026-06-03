@@ -17,6 +17,7 @@ void bind_signal_field(py::module& m);
 void bind_ht_header_tagged(py::module& m);
 void bind_sync_long(py::module& m);
 void bind_sync_short(py::module& m);
+void bind_sync_short_fused(py::module& m);
 void bind_equalizer(py::module& m);
 
 // ✅ Make insert_ht_training consistent with others: global binder
@@ -33,6 +34,7 @@ PYBIND11_MODULE(ieee802_11_python, m)
     bind_chunks_to_symbols(m);
     bind_mapper(m);
     bind_sync_short(m);
+    bind_sync_short_fused(m);
     bind_sync_long(m);
     bind_signal_field(m);
     bind_ht_header_tagged(m);
