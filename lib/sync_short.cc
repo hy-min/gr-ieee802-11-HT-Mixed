@@ -1,3 +1,14 @@
+
+// USRP debug log control - uncomment to enable verbose logs
+#define USRP_DEBUG_LOGS
+#ifdef USRP_DEBUG_LOGS
+#define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
+#else
+#define USRP_LOG(...) ((void)0)
+#define USRP_LOG_STD(...) ((void)0)
+#endif
+
 /*
  * Copyright (C) 2013, 2016 Bastian Bloessl <bloessl@ccs-labs.org>
  *
@@ -19,6 +30,7 @@
 #include <ieee802_11/sync_short.h>
 
 #include <iostream>
+#include <cmath>
 
 using namespace gr::ieee802_11;
 
@@ -59,7 +71,7 @@ public:
           d_threshold(threshold)
     {
 
-        set_tag_propagation_policy(block::TPP_DONT);
+        set_tag_propagation_policy(block::TPP_ALL_TO_ALL);
     }
 
     int general_work(int noutput_items,
@@ -68,7 +80,7 @@ public:
                      gr_vector_void_star& output_items)
     {
 
-        std::fprintf(stderr, "[SYNC-SHORT] general_work called: noutput=%d ninput=%d threshold=%.3f state=%d\n",
+        USRP_LOG_STD( "[SYNC-SHORT] general_work called: noutput=%d ninput=%d threshold=%.3f state=%d\n",
                      noutput_items, ninput_items[0], d_threshold, d_state);
 
         const gr_complex* in = (const gr_complex*)input_items[0];
@@ -89,7 +101,7 @@ public:
             int i;
 
             for (i = 0; i < ninput; i++) {
-                if (in_cor[i] > d_threshold) {
+                if (std::isfinite(in_cor[i]) && in_cor[i] > d_threshold) {
                     if (d_plateau < MIN_PLATEAU) {
                         d_plateau++;
 
@@ -100,7 +112,7 @@ public:
                         d_plateau = 0;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i);
                         dout << "SHORT Frame!" << std::endl;
-                        std::fprintf(stderr, "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
+                        USRP_LOG_STD( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
                                      i, in_cor[i], d_freq_offset);
                         break;
                     }
@@ -120,10 +132,11 @@ public:
             int max_below = 0;
             // Power threshold for gap detector: noise power ~0.001 (30dB SNR),
             // signal power ~1.0. Use 0.01 as threshold (20dB below signal).
-            const float POWER_THRESHOLD = 0.01f;
+            // FIX for USRP: lowered from 0.01 to 0.0001 to handle low RX power (-30+ dBFS)
+            const float POWER_THRESHOLD = 0.0001f;
             while (o < ninput && o < noutput && d_copied < MAX_SAMPLES) {
                 float power = std::norm(in[o]);
-                bool high_correlation = (in_cor[o] > d_threshold);
+                bool high_correlation = (std::isfinite(in_cor[o]) && in_cor[o] > d_threshold);
                 bool high_power = (power >= POWER_THRESHOLD);
                 // CRITICAL FIX: Only consider it a valid signal spike if BOTH
                 // correlation AND power are high. During noise-only gaps, the
@@ -149,7 +162,7 @@ public:
                         d_below_threshold = 0;
                         d_copied = 0;
                         d_plateau = 0;
-                        fprintf(stderr, "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
+                        USRP_LOG( "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
                                 o, power);
                         break;
                     }
@@ -163,7 +176,7 @@ public:
             }
 
             if (o > 0) {
-                fprintf(stderr, "[SYNC-SHORT] COPY work: consumed=%d min_cor=%.4f max_cor=%.4f max_below=%d threshold=%.3f\n",
+                USRP_LOG( "[SYNC-SHORT] COPY work: consumed=%d min_cor=%.4f max_cor=%.4f max_below=%d threshold=%.3f\n",
                         o, min_cor, max_cor, max_below, d_threshold);
             }
 

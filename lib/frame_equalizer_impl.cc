@@ -1,5 +1,16 @@
 #include "frame_equalizer_impl.h"
 
+// USRP debug log control - uncomment to enable verbose logs
+#define USRP_DEBUG_LOGS
+#ifdef USRP_DEBUG_LOGS
+#define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
+#else
+#define USRP_LOG(...) ((void)0)
+#define USRP_LOG_STD(...) ((void)0)
+#endif
+
+
 #include <gnuradio/io_signature.h>
 #include <gnuradio/digital/constellation.h>
 #include <pmt/pmt.h>
@@ -284,7 +295,7 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx, H52_tx_order);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
-    fprintf(stderr, "[EQ_HTDATA] sym=%d cpe_deg=%.1f rot=%.4f%+.4fi H[0]=%.4f%+.4fi sym64[%d]=%.4f%+.4fi eq[0]=...\n",
+    USRP_LOG( "[EQ_HTDATA] sym=%d cpe_deg=%.1f rot=%.4f%+.4fi H[0]=%.4f%+.4fi sym64[%d]=%.4f%+.4fi eq[0]=...\n",
             data_sym_idx, cpe * 180.0f / M_PI, rot.real(), rot.imag(),
             H52_tx_order[0].real(), H52_tx_order[0].imag(),
             sc_to_fft_bin(kTxOrder52[0]), sym64[sc_to_fft_bin(kTxOrder52[0])].real(), sym64[sc_to_fft_bin(kTxOrder52[0])].imag());
@@ -298,7 +309,7 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
             out52[i] = gr_complex(0.0f, 0.0f);
         }
     }
-    fprintf(stderr, "[EQ_HTDATA] sym=%d eq[0]=%.4f%+.4fi eq[25]=%.4f%+.4fi eq[26]=%.4f%+.4fi eq[51]=%.4f%+.4fi\n",
+    USRP_LOG( "[EQ_HTDATA] sym=%d eq[0]=%.4f%+.4fi eq[25]=%.4f%+.4fi eq[26]=%.4f%+.4fi eq[51]=%.4f%+.4fi\n",
             data_sym_idx, out52[0].real(), out52[0].imag(), out52[25].real(), out52[25].imag(), out52[26].real(), out52[26].imag(), out52[51].real(), out52[51].imag());
 }
 
@@ -524,7 +535,7 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         }
         double denom = std::sqrt(energy0 * energy1);
         double similarity = (denom > 1e-6) ? (corr_real / denom) : 0.0;
-        fprintf(stderr, "[LTF_CORR] similarity=%.4f energy0=%.2f energy1=%.2f\n",
+        USRP_LOG( "[LTF_CORR] similarity=%.4f energy0=%.2f energy1=%.2f\n",
                 similarity, energy0, energy1);
     }
 
@@ -1480,22 +1491,22 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         static int decode_call_count = 0;
         if (decode_call_count == 0) {
             bool crc_pass = (crc_rx == crc_calc);
-            fprintf(stderr, "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d mcs=%d len=%d\n",
+            USRP_LOG( "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d mcs=%d len=%d\n",
                     rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
                     crc_pass ? "PASS" : "FAIL",
                     crc_rx, crc_calc, adv_coding, mcs, psdu_length);
             // Print equalized bits for HT-SIG0
-            fprintf(stderr, "[HTSIG_BITS] eq48=");
-            for (int i = 0; i < 48; i++) fprintf(stderr, "%d", eqbits48_a[i]);
-            fprintf(stderr, "\n");
+            USRP_LOG( "[HTSIG_BITS] eq48=");
+            for (int i = 0; i < 48; i++) USRP_LOG( "%d", eqbits48_a[i]);
+            USRP_LOG( "\n");
             // Print deinterleaved bits for HT-SIG0
-            fprintf(stderr, "[HTSIG_BITS] deint48=");
-            for (int i = 0; i < 48; i++) fprintf(stderr, "%d", deintl48_a[i]);
-            fprintf(stderr, "\n");
+            USRP_LOG( "[HTSIG_BITS] deint48=");
+            for (int i = 0; i < 48; i++) USRP_LOG( "%d", deintl48_a[i]);
+            USRP_LOG( "\n");
             // Print decoded (viterbi) bits
-            fprintf(stderr, "[HTSIG_BITS] viterbi=");
-            for (int i = 0; i < 48; i++) fprintf(stderr, "%d", decoded_bits[i] & 1);
-            fprintf(stderr, "\n");
+            USRP_LOG( "[HTSIG_BITS] viterbi=");
+            for (int i = 0; i < 48; i++) USRP_LOG( "%d", decoded_bits[i] & 1);
+            USRP_LOG( "\n");
         }
         decode_call_count++;
     }
@@ -1883,13 +1894,13 @@ void frame_equalizer_impl::set_ht_frame_params_from_mcs_len(int mcs, int len_byt
         d_frame_symbols = (ldpc_encoded_bits + n_cbps - 1) / n_cbps;
         int aligned_encoded = d_frame_symbols * n_cbps;
         d_ldpc_n_sym = d_frame_symbols;
-        fprintf(stderr, "[EQ_LDPC_PARAMS] mcs=%d len=%d data_bits=%d block=%d k=%d m=%d blocks=%d raw=%d aligned=%d n_sym=%d\n",
+        USRP_LOG( "[EQ_LDPC_PARAMS] mcs=%d len=%d data_bits=%d block=%d k=%d m=%d blocks=%d raw=%d aligned=%d n_sym=%d\n",
                 mcs, len_bytes, data_bits, block_length, k, m, num_blocks, ldpc_encoded_bits, aligned_encoded, d_frame_symbols);
     } else {
         d_frame_symbols =
             (16 + 8 * len_bytes + 6 + d_frame_n_dbps - 1) / d_frame_n_dbps;
         d_ldpc_n_sym = -1;
-        fprintf(stderr, "[EQ_CONV_PARAMS] mcs=%d len=%d n_dbps=%d n_sym=%d\n",
+        USRP_LOG( "[EQ_CONV_PARAMS] mcs=%d len=%d n_dbps=%d n_sym=%d\n",
                 mcs, len_bytes, d_frame_n_dbps, d_frame_symbols);
     }
 }
@@ -2002,12 +2013,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
     std::map<uint64_t, double> wifi_freq_offsets;
     static int eq_tag_probe_count = 0;
     if (!wifi_tags.empty() && eq_tag_probe_count < 20) {
-        fprintf(stderr, "[EQ_TAGS] abs_in=%llu n_in=%d n_tags=%zu",
+        USRP_LOG( "[EQ_TAGS] abs_in=%llu n_in=%d n_tags=%zu",
                 (unsigned long long)abs_in_start, n_in, wifi_tags.size());
         for (const auto& t : wifi_tags) {
-            fprintf(stderr, " offset=%llu", (unsigned long long)t.offset);
+            USRP_LOG( " offset=%llu", (unsigned long long)t.offset);
         }
-        fprintf(stderr, "\n");
+        USRP_LOG( "\n");
         eq_tag_probe_count++;
     }
     for (const auto& t : wifi_tags) {
@@ -2053,7 +2064,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             eq_frame_seq++;
-            fprintf(stderr, "[EQ_FRAME_START] frame_seq=%d abs_in_off=%llu skip_count=%d\n",
+            USRP_LOG( "[EQ_FRAME_START] frame_seq=%d abs_in_off=%llu skip_count=%d\n",
                     eq_frame_seq, (unsigned long long)abs_in_off, eq_skip_count);
             eq_skip_count = 0;
             d_in_frame = true;
@@ -2078,13 +2089,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
             if (!allow_takeover && d_sym_idx >= d_data_start_rel) {
                 allow_takeover = true;
                 const int end_rel = d_data_start_rel + d_frame_symbols - 1;
-                fprintf(stderr,
+                USRP_LOG(
                         "[EQ_FRAME_PREEMPT] abs_in_off=%llu d_sym_idx=%d end_rel=%d\n",
                         (unsigned long long)abs_in_off, d_sym_idx, end_rel);
             }
 
             if (allow_takeover) {
-                fprintf(stderr, "[EQ_FRAME_TAKEOVER] frame_seq=%d abs_in_off=%llu d_have_ht=%d d_sym_idx=%d\n",
+                USRP_LOG( "[EQ_FRAME_TAKEOVER] frame_seq=%d abs_in_off=%llu d_have_ht=%d d_sym_idx=%d\n",
                         eq_frame_seq + 1, (unsigned long long)abs_in_off, d_have_ht_header, d_sym_idx);
                 eq_frame_seq++;
                 eq_skip_count = 0;
@@ -2092,7 +2103,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 d_in_frame = true;
             } else {
                 int remaining = (d_data_start_rel + d_frame_symbols) - d_sym_idx;
-                fprintf(stderr,
+                USRP_LOG(
                         "[EQ_FRAME_TAKEOVER_REJECT] abs_in_off=%llu d_sym_idx=%d end_rel=%d remaining=%d\n",
                         (unsigned long long)abs_in_off, d_sym_idx,
                         d_data_start_rel + d_frame_symbols - 1, remaining);
@@ -2134,10 +2145,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 compute_subcarrier_energy(eq_htsig0, E_I_ht, E_Q_ht);
                 double ratio_ht = (E_I_ht > 1e-10) ? E_Q_ht / E_I_ht : 0.0;
 
-                fprintf(stderr, "[FRAME_DETECT] EQ ratio_ht=%.3f E_I=%.2f E_Q=%.2f\n",
+                USRP_LOG( "[FRAME_DETECT] EQ ratio_ht=%.3f E_I=%.2f E_Q=%.2f\n",
                         ratio_ht, E_I_ht, E_Q_ht);
 
-                if (ratio_ht > 1.5) {
+                // FIX: Lower threshold for USRP over-the-air reception.
+                // CFO residue and low SNR reduce QBPSK rotation visibility.
+                // Observed ratio_ht ~1.37 for valid HT-Mixed frames.
+                if (ratio_ht > 1.2) {
                     d_is_ht_frame = true;
                 } else {
                     d_is_ht_frame = false;
@@ -2155,9 +2169,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 double E_I_lsig, E_Q_lsig;
                 compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
                 double ratio_lsig = (E_I_lsig > 1e-10) ? E_Q_lsig / E_I_lsig : 0.0;
-                fprintf(stderr, "[FRAME_DETECT] L-SIG EQ ratio=%.3f E_I=%.2f E_Q=%.2f (expect < 1.0 for BPSK)\n",
+                USRP_LOG( "[FRAME_DETECT] L-SIG EQ ratio=%.3f E_I=%.2f E_Q=%.2f (expect < 1.0 for BPSK)\n",
                         ratio_lsig, E_I_lsig, E_Q_lsig);
-                fprintf(stderr, "[FRAME_DETECT] Detected %s frame (HT-SIG ratio=%.3f, L-SIG ratio=%.3f)\n",
+                USRP_LOG( "[FRAME_DETECT] Detected %s frame (HT-SIG ratio=%.3f, L-SIG ratio=%.3f)\n",
                         d_is_ht_frame ? "HT" : "Legacy", ratio_ht, ratio_lsig);
             }
         }
@@ -2378,11 +2392,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 message_port_pub(pmt::mp("symbols"), pmt::cons(meta, vec));
             }
 
-            fprintf(stderr, "[EQ_EMIT] sym=%d/%d produced=%d nout=%d\n", d_sym_idx, d_data_start_rel, produced, noutput_items);
+            USRP_LOG( "[EQ_EMIT] sym=%d/%d produced=%d nout=%d\n", d_sym_idx, d_data_start_rel, produced, noutput_items);
 
             if (tag_this_output_as_frame_start) {
                 const uint64_t out_off = this->nitems_written(0) + produced;
-                fprintf(stderr, "[EQ_TAG] frame_bytes out_off=%llu nwritten=%llu produced=%d\n",
+                USRP_LOG( "[EQ_TAG] frame_bytes out_off=%llu nwritten=%llu produced=%d\n",
                         (unsigned long long)out_off, (unsigned long long)this->nitems_written(0), produced);
 
                 this->add_item_tag(
@@ -2428,7 +2442,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         pmt::intern("ldpc_n_sym"),
                         pmt::from_long(d_ldpc_n_sym),
                         pmt::intern(this->name()));
-                    fprintf(stderr, "[EQ_TAG] use_ldpc=1 ldpc_n_sym=%d\n", d_ldpc_n_sym);
+                    USRP_LOG( "[EQ_TAG] use_ldpc=1 ldpc_n_sym=%d\n", d_ldpc_n_sym);
                 }
             }
 
@@ -2443,20 +2457,20 @@ int frame_equalizer_impl::general_work(int noutput_items,
         if (d_have_ht_header && d_frame_symbols > 0) {
             const int end_rel = d_data_start_rel + d_frame_symbols;
             if (d_sym_idx >= end_rel) {
-                fprintf(stderr, "[EQ_FRAME_END] frame end reached sym_idx=%d end_rel=%d misproc=%d\n",
+                USRP_LOG( "[EQ_FRAME_END] frame end reached sym_idx=%d end_rel=%d misproc=%d\n",
                         d_sym_idx, end_rel, d_takeover_reject_symbols);
                 reset_frame_state();
                 d_in_frame = false;
             }
         } else if (d_in_frame && !d_have_ht_header && d_sym_idx >= d_data_start_rel + 5) {
-            fprintf(stderr, "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d, discarding remaining symbols until next wifi_start\n", d_sym_idx);
+            USRP_LOG( "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d, discarding remaining symbols until next wifi_start\n", d_sym_idx);
             reset_frame_state();
             d_discard_until_wifi_start = true;
             d_in_frame = false;
         }
 
         if (d_in_frame && d_sym_idx > kMaxFrameRel) {
-            fprintf(stderr, "[EQ_FRAME_END] max frame exceeded sym_idx=%d\n", d_sym_idx);
+            USRP_LOG( "[EQ_FRAME_END] max frame exceeded sym_idx=%d\n", d_sym_idx);
             reset_frame_state();
             d_discard_until_wifi_start = true;
             d_in_frame = false;

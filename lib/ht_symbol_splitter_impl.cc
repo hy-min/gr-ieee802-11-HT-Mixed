@@ -1,3 +1,14 @@
+
+// USRP debug log control - uncomment to enable verbose logs
+#define USRP_DEBUG_LOGS
+#ifdef USRP_DEBUG_LOGS
+#define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
+#else
+#define USRP_LOG(...) ((void)0)
+#define USRP_LOG_STD(...) ((void)0)
+#endif
+
 /*
  * HT Symbol Splitter: Converts 80-sample HT-Mixed OFDM symbols to 64-sample FFT blocks
  *
@@ -101,7 +112,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     static int fft_out_count = 0;
     call_count++;
     if (call_count <= 10) {
-        fprintf(stderr, "[SPLITTER_WORK] call=%d noutput=%d ninput=%d start_abs=%llu ignore=%d buf_cnt=%d\n",
+        USRP_LOG( "[SPLITTER_WORK] call=%d noutput=%d ninput=%d start_abs=%llu ignore=%d buf_cnt=%d\n",
                 call_count, noutput_items, ninput_items[0], (unsigned long long)start_abs_idx, d_ignore_mode, d_buffer_count);
     }
 
@@ -112,7 +123,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     // DEBUG: verify no out-of-range tags leaked in
     for (const auto& t : tags) {
         if (t.offset < start_abs_idx || t.offset >= start_abs_idx + (uint64_t)ninput_items[0]) {
-            fprintf(stderr, "[SPLITTER_TAG_BUG] offset=%llu outside range [%llu,%llu)\n",
+            USRP_LOG( "[SPLITTER_TAG_BUG] offset=%llu outside range [%llu,%llu)\n",
                     (unsigned long long)t.offset,
                     (unsigned long long)start_abs_idx,
                     (unsigned long long)(start_abs_idx + ninput_items[0]));
@@ -121,7 +132,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     // PROBE: Print all tags found
     for (const auto& tag : tags) {
-        fprintf(stderr, "[SPLITTER_TAG] offset=%llu key=%s value=%.2f\n",
+        USRP_LOG( "[SPLITTER_TAG] offset=%llu key=%s value=%.2f\n",
                 (unsigned long long)tag.offset,
                 pmt::symbol_to_string(tag.key).c_str(),
                 pmt::is_number(tag.value) ? pmt::to_double(tag.value) : 0.0);
@@ -151,7 +162,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         while (!d_pending_tag_queue.empty()) {
             d_pending_tag_queue.pop();
         }
-        fprintf(stderr, "[SPLITTER_FRAME_EXIT] seq=%d buf_cleared items_reset\n",
+        USRP_LOG( "[SPLITTER_FRAME_EXIT] seq=%d buf_cleared items_reset\n",
                 d_frame_seq_counter);
     };
 
@@ -203,7 +214,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // Do NOT add cp_length - the tag already marks the DATA boundary.
             int64_t new_frame_start_abs = (int64_t)tag_abs_pos;
 
-            fprintf(stderr,
+            USRP_LOG(
                     "[SPLITTER_FRAME_START] seq=%d d_frame_start=%llu "
                     "sync=%lld wifi_pos=%llu start_abs=%lld\n",
                     d_frame_seq_counter + 1,
@@ -233,7 +244,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     d_pending_tag_queue.pop();
                 }
                 d_frame_seq_counter++;
-                d_frame_start_abs = new_frame_start_abs;
+                // FIX: Add 176-sample offset to skip L-STF (160) + L-LTF CP (16).
+                // sync_long with d_frame_start=320 outputs from original signal[0]=L-STF start.
+                // We need to start at L-LTF0 DATA = original signal[176].
+                d_frame_start_abs = new_frame_start_abs + 176;
                 d_frame_start_known = true;
                 d_in_frame = true;
                 d_wifi_start_accepted = true;
@@ -243,15 +257,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 d_wifi_start_value = d_frame_start_abs;
                 d_wifi_start_produced = produced;
                 d_force_buffer_reset = true;
-                fprintf(stderr,
+                USRP_LOG(
                         "[SPLITTER_FRAME_START] immediate seq=%d start_abs=%lld\n",
                         d_frame_seq_counter, (long long)d_frame_start_abs);
             } else {
                 // Active frame: defer transition until buffer is empty
                 d_pending_frame_transition = true;
-                d_pending_frame_start_abs = new_frame_start_abs;
+                // FIX: Add 176-sample offset (same as immediate transition)
+                d_pending_frame_start_abs = new_frame_start_abs + 176;
                 d_pending_wifi_start_pos = tag_abs_pos;
-                fprintf(stderr,
+                USRP_LOG(
                         "[SPLITTER_FRAME_START] deferred seq=%d -> pending "
                         "start_abs=%lld wifi_pos=%llu\n",
                         d_frame_seq_counter + 1,
@@ -302,7 +317,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             for (int j = 0; j < d_fft_size; j++) {
                 td_energy += std::norm(d_buffer[j]);
             }
-            fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+            USRP_LOG( "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
                     fft_out_count, (unsigned long long)last_rel_idx, td_energy,
                     d_buffer[0].real(), d_buffer[0].imag());
 
@@ -313,7 +328,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                              pmt::string_to_symbol("wifi_start"),
                              pmt::from_double(d_wifi_start_value),
                              pmt::string_to_symbol(name()));
-                fprintf(stderr,
+                USRP_LOG(
                         "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (delayed)\n",
                         d_frame_seq_counter,
                         (unsigned long long)current_fft_pos,
@@ -326,11 +341,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     while (i < ninput_items[0]) {
         // PROBE: Debug while loop
         if (i % 100 == 0 && i > 0) {
-            fprintf(stderr, "[SPLITTER_LOOP] i=%d ninput=%d produced=%d\n", i, ninput_items[0], produced);
+            USRP_LOG( "[SPLITTER_LOOP] i=%d ninput=%d produced=%d\n", i, ninput_items[0], produced);
         }
         // Check if we're near the end
         if (i >= 800 && i < 813) {
-            fprintf(stderr, "[SPLITTER_DEBUG] i=%d remaining=%d d_buffer=%d\n", i, ninput_items[0] - i, d_buffer_count);
+            USRP_LOG( "[SPLITTER_DEBUG] i=%d remaining=%d d_buffer=%d\n", i, ninput_items[0] - i, d_buffer_count);
         }
         uint64_t current_idx = start_abs_idx + i;
 
@@ -353,7 +368,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             d_wifi_start_next_fft = true;
             d_wifi_start_value = d_frame_start_abs;
             d_wifi_start_produced = produced;
-            fprintf(stderr,
+            USRP_LOG(
                     "[SPLITTER_FRAME_TRANSITION] seq=%d start_abs=%lld\n",
                     d_frame_seq_counter, (long long)d_frame_start_abs);
         }
@@ -589,7 +604,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // ============================================================
             // PROBE: Print when buffer is full
             if (d_buffer_count == d_fft_size) {
-                fprintf(stderr, "[SPLITTER_BUFFER_FULL] rel_idx=%d frame_start=%lld current=%lld\n",
+                USRP_LOG( "[SPLITTER_BUFFER_FULL] rel_idx=%d frame_start=%lld current=%lld\n",
                         rel_idx, (long long)d_frame_start_abs, (long long)current_idx);
 
                 uint64_t out_rel_idx = current_idx - d_frame_start_abs;
@@ -638,14 +653,19 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         total_energy += std::norm(d_buffer[zz]);
                     }
                     // Skip near-zero-energy FFTs (RESET gap between frames)
-                    if (total_energy < 10.0f) {
+                    // FIX: For USRP reception, signal amplitude is much lower than
+                    // simulation. Energy threshold must scale with signal power.
+                    // Observed: 64-sample energy ~0.04 at amp~0.0265.
+                    // Use adaptive threshold: 1% of expected energy for amp~1.0 (64.0).
+                    const float ENERGY_THRESHOLD = 0.001f;
+                    if (total_energy < ENERGY_THRESHOLD) {
                         d_buffer_count = 0;
                         d_buffer_filled = false;
-                        fprintf(stderr, "[SPLITTER_ENERGY_DROP] rel=%llu energy=%.2f frame=%d in_frame=%d\n",
+                        USRP_LOG( "[SPLITTER_ENERGY_DROP] rel=%llu energy=%.2f frame=%d in_frame=%d\n",
                                 (unsigned long long)rel_idx, total_energy,
                                 d_frame_seq_counter, d_in_frame ? 1 : 0);
                         if (d_in_frame && rel_idx >= 544) {
-                            fprintf(stderr,
+                            USRP_LOG(
                                     "[SPLITTER_FRAME_EXIT] energy_drop rel=%llu\n",
                                     (unsigned long long)rel_idx);
                             exit_frame_state();
@@ -676,7 +696,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                             }
                         }
                         // PROBE: Print FFT buffer content before output
-                        fprintf(stderr, "[SPLITTER_FFT] type=%d rel_idx=%d first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
+                        USRP_LOG( "[SPLITTER_FFT] type=%d rel_idx=%d first=%.4f%+.4fi last=%.4f%+.4fi energy=%.2f\n",
                                 symbol_type, rel_idx,
                                 d_buffer[0].real(), d_buffer[0].imag(),
                                 d_buffer[63].real(), d_buffer[63].imag(),
@@ -693,7 +713,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                          pmt::string_to_symbol("wifi_start"),
                                          pmt::from_double(d_wifi_start_value),
                                          pmt::string_to_symbol(name()));
-                            fprintf(stderr,
+                            USRP_LOG(
                                     "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (delayed)\n",
                                     d_frame_seq_counter,
                                     (unsigned long long)fft_pos,
@@ -712,7 +732,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                          pmt::string_to_symbol("wifi_start"),
                                          pmt::from_double(front.second),
                                          pmt::string_to_symbol(name()));
-                            fprintf(stderr,
+                            USRP_LOG(
                                     "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld\n",
                                     d_frame_seq_counter,
                                     (unsigned long long)tag_out_pos,
@@ -721,7 +741,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         }
 
                         fft_out_count++;
-                        fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
+                        USRP_LOG( "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
                                 fft_out_count, (unsigned long long)rel_idx, (double)total_energy,
                                 d_buffer[0].real(), d_buffer[0].imag());
                     }
@@ -749,7 +769,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // ============================================================
             if (remaining_items < items_needed_for_current_symbol && d_buffer_count == d_fft_size && !at_end_of_input) {
                 // Buffer is full - output it and return
-                fprintf(stderr, "[SPLITTER_STARVE] FULL buf=%d remaining=%d rel=%llu produced=%d nout=%d\n",
+                USRP_LOG( "[SPLITTER_STARVE] FULL buf=%d remaining=%d rel=%llu produced=%d nout=%d\n",
                         d_buffer_count, remaining_items, (unsigned long long)rel_idx, produced, noutput_items);
 
                 uint64_t fft_pos = nitems_written(0) + produced;
@@ -760,7 +780,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                  pmt::string_to_symbol("wifi_start"),
                                  pmt::from_double(front.second),
                                  pmt::string_to_symbol(name()));
-                    fprintf(stderr,
+                    USRP_LOG(
                             "[SPLITTER_TAG_EMIT] seq=%d wifi_start at fft_pos=%llu value=%lld (full_starve)\n",
                             d_frame_seq_counter,
                             (unsigned long long)tag_out_pos,
@@ -786,7 +806,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     i++;
                     consumed++;
                 }
-                fprintf(stderr, "[SPLITTER_STARVE] PARTIAL preserve buf=%d remaining=%d rel=%llu\n",
+                USRP_LOG( "[SPLITTER_STARVE] PARTIAL preserve buf=%d remaining=%d rel=%llu\n",
                         d_buffer_count, remaining_items, (unsigned long long)rel_idx);
                 d_items_processed += consumed;
                 d_last_rel_idx = rel_idx;
@@ -810,7 +830,7 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
     consume_each(consumed);
     // PROBE: Print final production
-    fprintf(stderr, "[SPLITTER_RETURN] produced=%d consumed=%d\n", produced, consumed);
+    USRP_LOG( "[SPLITTER_RETURN] produced=%d consumed=%d\n", produced, consumed);
     return produced;
 }
 

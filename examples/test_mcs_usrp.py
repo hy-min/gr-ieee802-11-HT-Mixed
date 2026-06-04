@@ -1,8 +1,9 @@
 #!/home/hy/conda/envs/gnuradio/bin/python
 """
 USRP X310 Hardware Test for 802.11n HT-Mixed Mode
-TX: Radio 0 (UBX TX/RX port)
-RX: Radio 1 (UBX RX2 port)
+FDD dual-daughterboard config:
+  TX: Radio#0 (A:0) TX/RX port
+  RX: Radio#1 (B:0) RX2 port
 Features: Real-time constellation display, spectrum monitor, MCS switching
 """
 
@@ -176,11 +177,11 @@ class MCSEndToEndUSRP(gr.top_block, Qt.QWidget):
         self.tx_gain_value = Qt.QLabel(f"{int(self.tx_gain)} dB")
         self.control_layout.addWidget(self.tx_gain_value)
 
-        # RX Gain (0-37.5 dB for UBX)
+        # RX Gain (0-31.5 dB for UBX)
         self.rx_gain_label = Qt.QLabel("RX Gain:")
         self.control_layout.addWidget(self.rx_gain_label)
         self.rx_gain_slider = Qt.QSlider(Qt.Qt.Horizontal)
-        self.rx_gain_slider.setRange(0, 37)
+        self.rx_gain_slider.setRange(0, 31)
         self.rx_gain_slider.setValue(int(self.rx_gain))
         self.rx_gain_slider.valueChanged.connect(self.set_rx_gain)
         self.control_layout.addWidget(self.rx_gain_slider)
@@ -276,7 +277,8 @@ class MCSEndToEndUSRP(gr.top_block, Qt.QWidget):
         self.uhd_usrp_sink.set_antenna("TX/RX", 0)
         self.uhd_usrp_sink.set_subdev_spec("A:0", 0)
 
-        # ===== USRP RX (Radio 1) =====
+        # ===== USRP RX (Radio 1, RX2 port) =====
+        # FDD dual-daughterboard: TX on Radio#0 A:0, RX on Radio#1 B:0
         self.uhd_usrp_source = uhd.usrp_source(
             device_addr="addr=192.168.10.2",
             stream_args=uhd.stream_args(
@@ -440,8 +442,8 @@ def main():
         description='USRP X310 802.11n HT-Mixed Mode Test with GUI'
     )
     parser.add_argument(
-        '--freq', type=float, default=2437,
-        help='Center frequency in MHz (default: 2437 = Wi-Fi Ch 6)'
+        '--freq', type=float, default=5180,
+        help='Center frequency in MHz (default: 5180 = Wi-Fi Ch 6)'
     )
     parser.add_argument(
         '--tx-gain', type=float, default=10,
@@ -449,7 +451,7 @@ def main():
     )
     parser.add_argument(
         '--rx-gain', type=float, default=20,
-        help='RX gain in dB (default: 20)'
+        help='RX gain in dB, max 31.5 for UBX (default: 20)'
     )
     parser.add_argument(
         '--mcs', type=int, default=0, choices=range(9),

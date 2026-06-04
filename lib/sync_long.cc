@@ -1,3 +1,14 @@
+
+// USRP debug log control - uncomment to enable verbose logs
+#define USRP_DEBUG_LOGS
+#ifdef USRP_DEBUG_LOGS
+#define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
+#else
+#define USRP_LOG(...) ((void)0)
+#define USRP_LOG_STD(...) ((void)0)
+#endif
+
 /*
  * Copyright (C) 2013, 2016 Bastian Bloessl <bloessl@ccs-labs.org>
  *
@@ -49,6 +60,7 @@ public:
           d_offset(0),
           d_state(SYNC),
           d_wifi_start_added(false),
+          d_sync_samples(0),
           SYNC_LENGTH(sync_length)
     {
 
@@ -71,7 +83,7 @@ public:
         // VERSION PROBE: Verify correct library is loaded
         static int version_printed = 0;
         if (version_printed == 0) {
-            fprintf(stderr, "[SYNC_LONG_VERSION] tagprobe_v2 built=%s %s\n", __DATE__, __TIME__);
+            USRP_LOG( "[SYNC_LONG_VERSION] tagprobe_v2 built=%s %s\n", __DATE__, __TIME__);
             version_printed = 1;
         }
         // Work call counter for debugging
@@ -88,7 +100,8 @@ public:
         int ninput = std::min(std::min(ninput_items[0], ninput_items[1]), 8192);
 
         const uint64_t nread = nitems_read(0);
-        get_tags_in_range(d_tags, 0, nread, nread + ninput);
+        // FIX: Search from 0 to catch tags that were consumed while in SYNC state
+        get_tags_in_range(d_tags, 0, 0, nread + ninput);
         if (d_tags.size()) {
             std::sort(d_tags.begin(), d_tags.end(), gr::tag_t::offset_compare);
 
@@ -96,13 +109,13 @@ public:
 
             // PROBE: Show tag processing details
             std::string first_key = pmt::symbol_to_string(d_tags.front().key);
-            fprintf(stderr, "[SYNC_LONG_TAG] ntags=%zu first_key=%s offset=%llu nread=%llu state=%d d_count=%d\n",
+            USRP_LOG( "[SYNC_LONG_TAG] ntags=%zu first_key=%s offset=%llu nread=%llu state=%d d_count=%d\n",
                     d_tags.size(), first_key.c_str(), (unsigned long long)offset,
                     (unsigned long long)nread, d_state, d_count);
 
             if (offset > nread) {
                 ninput = offset - nread;
-                fprintf(stderr, "[SYNC_LONG_TAG] offset>nread, ninput=%d\n", ninput);
+                USRP_LOG( "[SYNC_LONG_TAG] offset>nread, ninput=%d\n", ninput);
             } else {
                 std::string tag_key = pmt::symbol_to_string(d_tags.front().key);
 
@@ -114,12 +127,16 @@ public:
                 // the tag preserves frame detection.
                 if (d_state == SYNC && tag_key == "wifi_start") {
                     d_freq_offset_short = pmt::to_double(d_tags.front().value);
-                    d_frame_start = 0;  // Tag marks frame start, ht_symbol_splitter handles alignment
+                    // FIX: d_frame_start must compensate for blocks_delay(320).
+                    // When SYNC->COPY via tag, blocks_delay hasn't accumulated
+                    // enough samples yet. First 320 in_delayed samples are zeros.
+                    // Skip them by setting d_frame_start = sync_length.
+                    d_frame_start = 320;  // Compensate blocks_delay
                     d_state = COPY;
                     d_offset = 0;
                     d_count = 0;
                     d_wifi_start_added = false;
-                    fprintf(stderr, "[SYNC_LONG] SYNC->COPY via wifi_start tag at offset=%llu\n",
+                    USRP_LOG( "[SYNC_LONG] SYNC->COPY via wifi_start tag at offset=%llu\n",
                             (unsigned long long)offset);
                 } else if (d_offset && (d_state == SYNC)) {
                     throw std::runtime_error("wtf");
@@ -141,7 +158,7 @@ public:
                         // so 64-sample alignment in sync_long output is not critical.
                         if (d_count < 1000) {
                             // Still in first frame's preamble/data - ignore this wifi_start
-                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d\n", d_count);
+                            USRP_LOG( "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d\n", d_count);
                         } else {
                             // New frame: direct SYNC transition to preserve full preamble
                             int saved_count = d_count;
@@ -150,12 +167,13 @@ public:
                             d_wifi_start_added = false;
                             d_cor.clear();
                             d_count = 0;
-                            fprintf(stderr, "[SYNC_LONG_FAST_SYNC] Direct SYNC for new frame (was d_count=%d)\n", saved_count);
+                            d_sync_samples = 0;  // Reset for new frame's SYNC period
+                            USRP_LOG( "[SYNC_LONG_FAST_SYNC] Direct SYNC for new frame (was d_count=%d)\n", saved_count);
                         }
                     } else {
                         // Other tag - use original behavior
                         d_state = RESET;
-                        fprintf(stderr, "[SYNC_LONG_TAG] RESET due to non-wifi_start tag: %s\n", tag_key.c_str());
+                        USRP_LOG( "[SYNC_LONG_TAG] RESET due to non-wifi_start tag: %s\n", tag_key.c_str());
                     }
                 }
                 d_freq_offset_short = pmt::to_double(d_tags.front().value);
@@ -186,6 +204,7 @@ public:
                     d_count = 0;
                     if (detected) {
                         d_state = COPY;
+                        USRP_LOG( "[SYNC_LONG] SYNC->COPY d_sync_samples=%d\n", d_sync_samples + i);
                     } else {
                         // No valid detection - stay in SYNC state, clear correlation for new search
                         d_cor.clear();
@@ -203,9 +222,10 @@ public:
             // Consume all available data even if we can't process it yet.
             if (i == 0 && ninput > 0) {
                 i = ninput;
-                fprintf(stderr, "[SYNC_LONG] SYNC state: consuming %d samples to prevent deadlock\n", ninput);
+                USRP_LOG( "[SYNC_LONG] SYNC state: consuming %d samples to prevent deadlock\n", ninput);
             }
 
+            d_sync_samples += i;
             break;
         }
 
@@ -238,9 +258,14 @@ public:
                 // Output all samples from d_frame_start onwards (1:1 mapping)
                 // CP removal is handled by ht_symbol_splitter downstream
                 if (rel >= 0) {
-                    // CFO correction disabled
-                    if (std::abs(d_freq_offset) > 100.0) {
-                        out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
+                    // FIX: Enable CFO correction for USRP over-the-air reception.
+                    // CRITICAL: Must compensate CFO accumulated during SYNC period too.
+                    // d_sync_samples tracks actual SYNC state consumption (may differ from SYNC_LENGTH).
+                    // Residual phase without SYNC compensation: d_sync_samples * CFO rad.
+                    if (std::abs(d_freq_offset) > 0.001) {
+                        // Total phase = SYNC_period + COPY_offset
+                        float total_phase = -(d_offset + static_cast<float>(d_sync_samples)) * d_freq_offset;
+                        out[o] = in_delayed[i] * std::exp(gr_complex(0.0f, total_phase));
                     } else {
                         out[o] = in_delayed[i];
                     }
@@ -282,7 +307,7 @@ public:
         // PROBE: Print production info AFTER d_count update
         static int sync_call_count = 0;
         sync_call_count++;
-        fprintf(stderr, "[SYNC_LONG_WORK] call=%d state=%d produced=%d consumed=%d d_count=%d\n",
+        USRP_LOG( "[SYNC_LONG_WORK] call=%d state=%d produced=%d consumed=%d d_count=%d\n",
                 sync_call_count, d_state, o, i, d_count);
 
         consume(0, i);
@@ -331,10 +356,13 @@ public:
         // Solution: Find ALL candidate pairs with diff≈80 and select the
         // one with best amplitude balance and position score.
         double top_mag = abs(get<0>(vec[0]));
-        fprintf(stderr, "[SYNC_LONG] Top correlation magnitude: %.4f\n", top_mag);
+        USRP_LOG( "[SYNC_LONG] Top correlation magnitude: %.4f\n", top_mag);
 
-        // Minimum thresholds (keep from previous implementation)
-        const double MIN_ABS_MAGNITUDE = 3.0;
+        // Minimum thresholds
+        // FIX: For USRP over-the-air reception, signal amplitude can be much
+        // lower than simulation/loopback (observed ~0.02 vs ~1.0). Lower the
+        // absolute threshold while keeping relative ratio for robustness.
+        const double MIN_ABS_MAGNITUDE = 0.01;
         const double MIN_PEAK_RATIO = 0.30;
 
         // ============================================================
@@ -409,20 +437,19 @@ public:
             int offset_compensation = 13;
             d_frame_start = best_ht_lower_peak + 1 - offset_compensation;
             if (d_frame_start < 0) d_frame_start = 0;
-            // CRITICAL FIX: Force d_frame_start=160 for all frames. Frame 1 works
-            // perfectly with d_frame_start=160 (LTF_CORR=0.9990). Frame 2+ have
-            // correlation peaks shifted by L-STF interference (lower_peak=199-201
-            // instead of 172). The preamble structure is identical for all frames;
-            // L-LTF0 DATA should always start at the same relative offset within
-            // the SYNC window. With SPLITTER using tag_abs_pos+16, d_frame_start
-            // must be constant for correct alignment.
-            if (d_frame_start != 160) {
-                fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to 160\n", d_frame_start);
-                d_frame_start = 160;
+            // CRITICAL FIX: Force d_frame_start=320 to skip blocks_delay(320) zeros.
+            // blocks_delay outputs 320 zeros at startup. sync_long's in_delayed
+            // is blocks_delay output. d_frame_start=320 ensures we start output
+            // when real signal arrives (in_delayed[320] = original signal[0]).
+            // Previously 160 caused first 160 output samples to be zeros,
+            // corrupting frame_equalizer's n=0/n=1 (LTF0/LTF1) processing.
+            if (d_frame_start != 320) {
+                USRP_LOG( "[SYNC_LONG] d_frame_start=%d -> forcing to 320 (skip delay zeros)\n", d_frame_start);
+                d_frame_start = 320;
             }
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
-            fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
+            USRP_LOG( "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
                     best_ht_i, get<1>(vec[best_ht_i]), best_ht_k, get<1>(vec[best_ht_k]),
                     best_ht_diff, best_ht_lower_peak, d_frame_start, best_ht_score);
             valid = true;
@@ -494,9 +521,14 @@ public:
             int offset_compensation = 13;
             d_frame_start = best_leg_lower_peak + 1 - offset_compensation;
             if (d_frame_start < 0) d_frame_start = 0;
+            // FIX: Force d_frame_start=320 to skip blocks_delay zeros
+            if (d_frame_start != 320) {
+                USRP_LOG( "[SYNC_LONG] Legacy d_frame_start=%d -> forcing to 320\n", d_frame_start);
+                d_frame_start = 320;
+            }
             mode = "Legacy-mode-plateau";
             d_freq_offset = d_freq_offset_short;
-            fprintf(stderr, "[SYNC_LONG] Legacy-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
+            USRP_LOG( "[SYNC_LONG] Legacy-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
                     best_leg_i, get<1>(vec[best_leg_i]), best_leg_k, get<1>(vec[best_leg_k]),
                     best_leg_diff, best_leg_lower_peak, d_frame_start, best_leg_score);
             valid = true;
@@ -511,9 +543,14 @@ public:
             int offset_compensation = 13;
             d_frame_start = peak_pos + 1 - offset_compensation;
             if (d_frame_start < 0) d_frame_start = 0;
+            // FIX: Force d_frame_start=320 to skip blocks_delay zeros
+            if (d_frame_start != 320) {
+                USRP_LOG( "[SYNC_LONG] Method2 d_frame_start=%d -> forcing to 320\n", d_frame_start);
+                d_frame_start = 320;
+            }
             mode = "Method2-peak";
             d_freq_offset = d_freq_offset_short;
-            fprintf(stderr, "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
+            USRP_LOG( "[SYNC_LONG] d_frame_start=%d (%s, peak_pos=%d)\n",
                     d_frame_start, mode, peak_pos);
             valid = true;
             return valid;
@@ -531,6 +568,7 @@ private:
     int d_offset;
     int d_frame_start;
     float d_freq_offset;
+    int d_sync_samples;  // SYNC period samples consumed (for CFO compensation)
     double d_freq_offset_short;
     bool d_wifi_start_added;  // Prevent duplicate wifi_start tags
 
