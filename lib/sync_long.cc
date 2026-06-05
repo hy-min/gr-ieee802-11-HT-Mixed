@@ -49,6 +49,7 @@ public:
           d_offset(0),
           d_state(SYNC),
           d_wifi_start_added(false),
+          d_tag_skip_count(0),
           SYNC_LENGTH(sync_length)
     {
 
@@ -114,7 +115,10 @@ public:
                 // the tag preserves frame detection.
                 if (d_state == SYNC && tag_key == "wifi_start") {
                     d_freq_offset_short = pmt::to_double(d_tags.front().value);
-                    d_frame_start = 0;  // Tag marks frame start, ht_symbol_splitter handles alignment
+                    // UNIFIED TIMING: Consume SYNC_LENGTH samples before outputting,
+                    // just like the correlation-search path does during SYNC state.
+                    d_tag_skip_count = SYNC_LENGTH;
+                    d_frame_start = 160;  // Same as correlation-search path
                     d_state = COPY;
                     d_offset = 0;
                     d_count = 0;
@@ -210,6 +214,15 @@ public:
         }
 
         case COPY: {
+            // UNIFIED TIMING: Skip initial samples when entering COPY via tag-jump.
+            // The correlation-search path consumes SYNC_LENGTH samples during SYNC state.
+            // We must consume the same amount to align both paths.
+            while (d_tag_skip_count > 0 && i < ninput) {
+                d_tag_skip_count--;
+                i++;
+                d_offset++;
+            }
+
             // Emit sync_offset tag so downstream blocks know our d_offset
             add_item_tag(0,
                          nitems_written(0),
@@ -533,6 +546,7 @@ private:
     float d_freq_offset;
     double d_freq_offset_short;
     bool d_wifi_start_added;  // Prevent duplicate wifi_start tags
+    int d_tag_skip_count;      // Samples to skip when entering COPY via tag-jump
 
     gr_complex* d_correlation;
     list<pair<gr_complex, int>> d_cor;
