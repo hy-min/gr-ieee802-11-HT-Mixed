@@ -269,7 +269,7 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
                 break;
             }
         }
-        if (h_idx < 0 || std::abs(H52_tx_order[h_idx]) < 0.1f) {
+        if (h_idx < 0 || std::abs(H52_tx_order[h_idx]) < 0.001f) {
             continue;
         }
         // Use EQUALIZED pilot to estimate residual CPE (not raw pilot)
@@ -303,7 +303,7 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
     for (int i = 0; i < 52; i++) {
         const int bin = sc_to_fft_bin(kTxOrder52[i]);
         const float h_mag = std::abs(H52_tx_order[i]);
-        if (h_mag > 0.1f) {
+        if (h_mag > 0.001f) {
             out52[i] = sym64[bin] / H52_tx_order[i] * rot;
         } else {
             out52[i] = gr_complex(0.0f, 0.0f);
@@ -653,7 +653,7 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
-        if (h_mag < 0.1f) {
+        if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52[i], H52[i]) * rot;
@@ -1385,7 +1385,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
-        if (h_mag < 0.1f) {
+        if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52_a[i], H52[i]) * cpe_rot;
@@ -1399,7 +1399,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
-        if (h_mag < 0.1f) {
+        if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52_b[i], H52[i]) * cpe_rot;
