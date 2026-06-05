@@ -116,8 +116,7 @@ class wifi_phy_hier(gr.hier_block2):
         self.blocks_tagged_stream_mux_0.set_min_output_buffer((max_symbols * 52 * 8))
         self.blocks_stream_to_vector_0 = blocks.stream_to_vector(gr.sizeof_gr_complex*1, 64)
         self.blocks_stream_to_vector_0.set_min_output_buffer(500000)
-        # energy_gate_factor=0 disables gating for debug; restore to 3.0 for production
-        self.sync_short_fused_0 = ieee802_11.sync_short_fused(sensitivity, 0.0, 1024)
+        self.sync_short_fused_0 = ieee802_11.sync_short_fused(sensitivity, 3.0, 1024)
         self.sync_short_fused_0.set_min_output_buffer(500000)
         self.blocks_delay_0 = blocks.delay(gr.sizeof_gr_complex*1, sync_length)
         self.blocks_delay_0.set_min_output_buffer(500000)
