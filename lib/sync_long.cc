@@ -262,9 +262,11 @@ public:
                 if (rel >= 0) {
                     // CFO correction: compensate phase accumulated during SYNC period
                     // d_sync_samples tracks actual SYNC consumption (or SYNC_LENGTH for tag-jump)
-                    // NOTE: Threshold kept at 100.0 for stability; CFO is handled by frame_equalizer
+                    // CFO compensation disabled: frame_equalizer handles CPE
                     if (std::abs(d_freq_offset) > 100.0) {
-                        float total_phase = -(d_offset + static_cast<float>(d_sync_samples)) * d_freq_offset;
+                        // Only compensate phase within COPY state.
+                        // d_sync_samples is SYNC/skip consumption outside the frame.
+                        float total_phase = -d_offset * d_freq_offset;
                         out[o] = in_delayed[i] * std::exp(gr_complex(0.0f, total_phase));
                     } else {
                         out[o] = in_delayed[i];

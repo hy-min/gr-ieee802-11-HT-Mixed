@@ -12,9 +12,10 @@ import time
 import signal
 
 # Disable ALL debug output from C layer
-orig_stderr_fd = os.dup(2)
-with open('/dev/null', 'w') as devnull:
-    os.dup2(devnull.fileno(), 2)
+# DEBUG: Temporarily disabled to see C-layer logs
+# orig_stderr_fd = os.dup(2)
+# with open('/dev/null', 'w') as devnull:
+#     os.dup2(devnull.fileno(), 2)
 
 os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
 os.environ['GR_RPC_ENABLE'] = 'False'
@@ -24,6 +25,7 @@ import pmt
 import ieee802_11
 
 sys.path.insert(0, '/home/hy/gr-ieee802-11')
+sys.path.insert(0, '/home/hy/gr-ieee802-11/examples')
 from wifi_phy_hier import wifi_phy_hier
 
 
@@ -147,7 +149,7 @@ class MinimalUSRPTest(gr.top_block):
         self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
         
         print(f"[TEST] Config: freq={args.freq}MHz rate={args.rate}MHz tx_gain={args.tx_gain} rx_gain={args.rx_gain}")
-        print(f"[TEST] C-layer stderr redirected to /dev/null (debug logs disabled)")
+        print(f"[TEST] C-layer stderr redirected to /dev/null")
         if args.capture:
             print(f"[TEST] Raw IQ capture enabled: {args.capture}")
 
@@ -176,8 +178,8 @@ def main():
     print("[TEST] LO should be locked now.")
 
     # Restore stderr for Python print output
-    os.dup2(orig_stderr_fd, 2)
-    os.close(orig_stderr_fd)
+    # os.dup2(orig_stderr_fd, 2)
+    # os.close(orig_stderr_fd)
 
     print(f"\n[TEST] Running for {args.duration} seconds...")
     print(f"[TEST] Press Ctrl+C to stop early\n")
