@@ -50,6 +50,7 @@ public:
           d_state(SYNC),
           d_wifi_start_added(false),
           d_tag_skip_count(0),
+          d_sync_samples(0),
           SYNC_LENGTH(sync_length)
     {
 
@@ -115,9 +116,11 @@ public:
                 // the tag preserves frame detection.
                 if (d_state == SYNC && tag_key == "wifi_start") {
                     d_freq_offset_short = pmt::to_double(d_tags.front().value);
+                    d_freq_offset = static_cast<float>(d_freq_offset_short);
                     // UNIFIED TIMING: Consume SYNC_LENGTH samples before outputting,
                     // just like the correlation-search path does during SYNC state.
                     d_tag_skip_count = SYNC_LENGTH;
+                    d_sync_samples = SYNC_LENGTH;  // Virtually consumed via skip
                     d_frame_start = 160;  // Same as correlation-search path
                     d_state = COPY;
                     d_offset = 0;
@@ -154,6 +157,8 @@ public:
                             d_wifi_start_added = false;
                             d_cor.clear();
                             d_count = 0;
+                            d_sync_samples = 0;
+                            d_tag_skip_count = 0;
                             fprintf(stderr, "[SYNC_LONG_FAST_SYNC] Direct SYNC for new frame (was d_count=%d)\n", saved_count);
                         }
                     } else {
@@ -210,6 +215,9 @@ public:
                 fprintf(stderr, "[SYNC_LONG] SYNC state: consuming %d samples to prevent deadlock\n", ninput);
             }
 
+            // Track actual SYNC consumption for CFO compensation
+            d_sync_samples += i;
+
             break;
         }
 
@@ -217,10 +225,11 @@ public:
             // UNIFIED TIMING: Skip initial samples when entering COPY via tag-jump.
             // The correlation-search path consumes SYNC_LENGTH samples during SYNC state.
             // We must consume the same amount to align both paths.
+            // NOTE: Do NOT increment d_offset here. d_offset tracks logical position
+            // within COPY state. The skipped samples are "virtual SYNC" consumption.
             while (d_tag_skip_count > 0 && i < ninput) {
                 d_tag_skip_count--;
                 i++;
-                d_offset++;
             }
 
             // Emit sync_offset tag so downstream blocks know our d_offset
@@ -251,9 +260,12 @@ public:
                 // Output all samples from d_frame_start onwards (1:1 mapping)
                 // CP removal is handled by ht_symbol_splitter downstream
                 if (rel >= 0) {
-                    // CFO correction disabled
+                    // CFO correction: compensate phase accumulated during SYNC period
+                    // d_sync_samples tracks actual SYNC consumption (or SYNC_LENGTH for tag-jump)
+                    // NOTE: Threshold kept at 100.0 for stability; CFO is handled by frame_equalizer
                     if (std::abs(d_freq_offset) > 100.0) {
-                        out[o] = in_delayed[i] * exp(gr_complex(0, -d_offset * d_freq_offset));
+                        float total_phase = -(d_offset + static_cast<float>(d_sync_samples)) * d_freq_offset;
+                        out[o] = in_delayed[i] * std::exp(gr_complex(0.0f, total_phase));
                     } else {
                         out[o] = in_delayed[i];
                     }
@@ -275,6 +287,7 @@ public:
                 if (o > 0 && ((d_count + o) % 64) == 0) {
                     d_offset = 0;
                     d_wifi_start_added = false;
+                    d_sync_samples = 0;  // Reset for new SYNC phase
                     d_state = SYNC;
                     break;
                 } else {
@@ -547,6 +560,7 @@ private:
     double d_freq_offset_short;
     bool d_wifi_start_added;  // Prevent duplicate wifi_start tags
     int d_tag_skip_count;      // Samples to skip when entering COPY via tag-jump
+    int d_sync_samples;        // Actual samples consumed during SYNC state
 
     gr_complex* d_correlation;
     list<pair<gr_complex, int>> d_cor;
