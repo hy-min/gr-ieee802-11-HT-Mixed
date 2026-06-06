@@ -14,6 +14,14 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+// USRP debug log control - uncomment to enable verbose logs
+// #define USRP_DEBUG_LOGS
+#ifdef USRP_DEBUG_LOGS
+#define USRP_LOG(...) do { USRP_LOG( __VA_ARGS__); } while(0)
+#else
+#define USRP_LOG(...) ((void)0)
+#endif
+
 #include "utils.h"
 #include <gnuradio/io_signature.h>
 #include <ieee802_11/sync_short.h>
@@ -68,7 +76,7 @@ public:
                      gr_vector_void_star& output_items)
     {
 
-        std::fprintf(stderr, "[SYNC-SHORT] general_work called: noutput=%d ninput=%d threshold=%.3f state=%d\n",
+        USRP_LOG( "[SYNC-SHORT] general_work called: noutput=%d ninput=%d threshold=%.3f state=%d\n",
                      noutput_items, ninput_items[0], d_threshold, d_state);
 
         const gr_complex* in = (const gr_complex*)input_items[0];
@@ -100,7 +108,7 @@ public:
                         d_plateau = 0;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i);
                         dout << "SHORT Frame!" << std::endl;
-                        std::fprintf(stderr, "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
+                        USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
                                      i, in_cor[i], d_freq_offset);
                         break;
                     }
@@ -149,7 +157,7 @@ public:
                         d_below_threshold = 0;
                         d_copied = 0;
                         d_plateau = 0;
-                        fprintf(stderr, "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
+                        USRP_LOG( "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
                                 o, power);
                         break;
                     }
@@ -163,7 +171,7 @@ public:
             }
 
             if (o > 0) {
-                fprintf(stderr, "[SYNC-SHORT] COPY work: consumed=%d min_cor=%.4f max_cor=%.4f max_below=%d threshold=%.3f\n",
+                USRP_LOG( "[SYNC-SHORT] COPY work: consumed=%d min_cor=%.4f max_cor=%.4f max_below=%d threshold=%.3f\n",
                         o, min_cor, max_cor, max_below, d_threshold);
             }
 

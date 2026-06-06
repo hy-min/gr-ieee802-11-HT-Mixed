@@ -1,3 +1,13 @@
+// USRP debug log control - uncomment to enable verbose logs
+// #define USRP_DEBUG_LOGS
+#ifdef USRP_DEBUG_LOGS
+#define USRP_LOG(...) do { USRP_LOG( __VA_ARGS__); } while(0)
+#define USRP_LOG_STD(...) do { std::USRP_LOG( __VA_ARGS__); } while(0)
+#else
+#define USRP_LOG(...) ((void)0)
+#define USRP_LOG_STD(...) ((void)0)
+#endif
+
 #include <ieee802_11/decode_mac.h>
 #include "utils.h"
 #include "viterbi_decoder/viterbi_decoder.h"
@@ -306,7 +316,7 @@ static void hard_64qam_bits(const gr_complex& x, uint8_t bits[6], float level)
     static int hard64_call_count = 0;
     hard64_call_count++;
     if (hard64_call_count == 1) {
-        fprintf(stderr, "[HARD64QAM_FIX] hard_64qam_bits Gray-code lookup fix active\n");
+        USRP_LOG( "[HARD64QAM_FIX] hard_64qam_bits Gray-code lookup fix active\n");
     }
 }
 
@@ -364,7 +374,7 @@ public:
         const gr_complex* in = (const gr_complex*)input_items[0];
         int i = 0;
         const uint64_t nread = nitems_read(0);
-        fprintf(stderr, "[DECODE_MAC_GW] call=%d ninput=%d nread=%llu in_frame=%d copied=%llu/%llu\n",
+        USRP_LOG( "[DECODE_MAC_GW] call=%d ninput=%d nread=%llu in_frame=%d copied=%llu/%llu\n",
                 gw_call_count, ninput_items[0], (unsigned long long)nread,
                 d_in_frame ? 1 : 0,
                 (unsigned long long)d_items_copied, (unsigned long long)d_items_expected);
@@ -374,12 +384,12 @@ public:
             get_tags_in_range(tags, 0, nread + i, nread + i + 1);
 
             if (!tags.empty()) {
-                fprintf(stderr, "[DECODE_TAG] nread=%llu i=%d n_tags=%zu",
+                USRP_LOG( "[DECODE_TAG] nread=%llu i=%d n_tags=%zu",
                         (unsigned long long)nread, i, tags.size());
                 for (const auto& t : tags) {
-                    fprintf(stderr, " key=%s", pmt::symbol_to_string(t.key).c_str());
+                    USRP_LOG( " key=%s", pmt::symbol_to_string(t.key).c_str());
                 }
-                fprintf(stderr, "\n");
+                USRP_LOG( "\n");
             }
 
             // Also search for LDPC tags in a wider window (they may be offset)
@@ -459,7 +469,7 @@ public:
                     for (auto& tt : all_tags) {
                         if (pmt::eq(tt.key, pmt::mp("ldpc_n_sym"))) {
                             int tx_n_sym = (int)pmt::to_long(tt.value);
-                            fprintf(stderr, "[DECODE_TAG] ldpc_n_sym=%d current=%d use_ldpc=%d\n",
+                            USRP_LOG( "[DECODE_TAG] ldpc_n_sym=%d current=%d use_ldpc=%d\n",
                                     tx_n_sym, d_ht_n_sym, d_use_ldpc ? 1 : 0);
                             if (tx_n_sym > d_ht_n_sym) {
                                 d_ht_n_sym = tx_n_sym;
@@ -565,10 +575,10 @@ private:
             }
         }
 
-        fprintf(stderr, "[DECODE_AND_PUBLISH] called n_sym=%d n_cbps=%d n_dbps=%d d_ht_len=%d rx_eq_size=%zu use_ldpc=%d\n",
+        USRP_LOG( "[DECODE_AND_PUBLISH] called n_sym=%d n_cbps=%d n_dbps=%d d_ht_len=%d rx_eq_size=%zu use_ldpc=%d\n",
                 d_ht_n_sym, d_ht_n_cbps, ht_n_dbps_from_mcs(d_ht_mcs), d_ht_len, d_rx_eq.size(), d_use_ldpc ? 1 : 0);
         if (d_rx_eq.empty() || d_ht_n_sym <= 0) {
-            fprintf(stderr, "[DECODE_AND_PUBLISH] no data captured\n");
+            USRP_LOG( "[DECODE_AND_PUBLISH] no data captured\n");
             return;
         }
 
@@ -578,10 +588,10 @@ private:
             int n_sc = 52; // HT 20MHz data carriers
             n_sym = (int)(d_rx_eq.size() / n_sc);
             if ((int)d_rx_eq.size() % n_sc != 0) {
-                fprintf(stderr, "[DECODE_LDPC] rx_eq_size=%zu not multiple of %d, using n_sym=%d\n",
+                USRP_LOG( "[DECODE_LDPC] rx_eq_size=%zu not multiple of %d, using n_sym=%d\n",
                         d_rx_eq.size(), n_sc, n_sym);
             }
-            fprintf(stderr, "[DECODE_LDPC] using n_sym=%d (from rx_eq_size=%zu)\n",
+            USRP_LOG( "[DECODE_LDPC] using n_sym=%d (from rx_eq_size=%zu)\n",
                     n_sym, d_rx_eq.size());
         }
         const int n_cbps = d_ht_n_cbps;
@@ -611,7 +621,7 @@ private:
             if (max_abs > 0.1f) {
                 qam64_level = max_abs / 7.0f;
             }
-            fprintf(stderr, "[DECODE_MAC] 64QAM sym stats: re=[%.3f,%.3f] im=[%.3f,%.3f] n=%zu max_abs=%.3f level=%.4f\n",
+            USRP_LOG( "[DECODE_MAC] 64QAM sym stats: re=[%.3f,%.3f] im=[%.3f,%.3f] n=%zu max_abs=%.3f level=%.4f\n",
                     re_min, re_max, im_min, im_max, d_rx_eq.size(), max_abs, qam64_level);
         }
         size_t bit_idx = 0;
@@ -675,14 +685,14 @@ private:
                 }
                 double mean_re = re_sum / d_rx_eq.size();
                 double var_re = re_sq / d_rx_eq.size() - mean_re * mean_re;
-                fprintf(stderr, "[LDPC_DIAG] RX symbols: n=%zu mean_re=%.3f var_re=%.3f pos=%d neg=%d\n",
+                USRP_LOG( "[LDPC_DIAG] RX symbols: n=%zu mean_re=%.3f var_re=%.3f pos=%d neg=%d\n",
                         d_rx_eq.size(), mean_re, var_re, pos_re, neg_re);
                 // Print first 64 hard bits
-                fprintf(stderr, "[LDPC_DIAG] first64=");
+                USRP_LOG( "[LDPC_DIAG] first64=");
                 for (int i = 0; i < 64 && i < (int)d_rx_eq.size(); i++) {
-                    fprintf(stderr, "%d", hard_bpsk_bit(d_rx_eq[i]));
+                    USRP_LOG( "%d", hard_bpsk_bit(d_rx_eq[i]));
                 }
-                fprintf(stderr, "\n");
+                USRP_LOG( "\n");
             }
 
             // DEBUG: Compare RX hard bits with TX reference file
@@ -706,20 +716,20 @@ private:
                         if (first_mism < 0) first_mism = i;
                     }
                 }
-                fprintf(stderr, "[LDPC_DIAG] TX-vs-RX hard bits: cmp=%d tx=%zu rx=%zu mism=%d first_mism=%d\n",
+                USRP_LOG( "[LDPC_DIAG] TX-vs-RX hard bits: cmp=%d tx=%zu rx=%zu mism=%d first_mism=%d\n",
                         cmp_len, tx_bits.size(), d_rx_bits.size(), mism, first_mism);
                 if (first_mism >= 0 && first_mism < cmp_len) {
-                    fprintf(stderr, "[LDPC_DIAG] TX around first_mism: ");
+                    USRP_LOG( "[LDPC_DIAG] TX around first_mism: ");
                     for (int i = first_mism; i < std::min(first_mism + 16, cmp_len); i++)
-                        fprintf(stderr, "%d", tx_bits[i]);
-                    fprintf(stderr, "\n");
-                    fprintf(stderr, "[LDPC_DIAG] RX around first_mism: ");
+                        USRP_LOG( "%d", tx_bits[i]);
+                    USRP_LOG( "\n");
+                    USRP_LOG( "[LDPC_DIAG] RX around first_mism: ");
                     for (int i = first_mism; i < std::min(first_mism + 16, cmp_len); i++)
-                        fprintf(stderr, "%d", d_rx_bits[i]);
-                    fprintf(stderr, "\n");
+                        USRP_LOG( "%d", d_rx_bits[i]);
+                    USRP_LOG( "\n");
                 }
                 // Per-symbol BER analysis
-                fprintf(stderr, "[LDPC_DIAG] Per-symbol mismatches (n_cbps=%d):\n", n_cbps);
+                USRP_LOG( "[LDPC_DIAG] Per-symbol mismatches (n_cbps=%d):\n", n_cbps);
                 int sym_with_errors = 0;
                 for (int sym = 0; sym < n_sym && sym * n_cbps < cmp_len; sym++) {
                     int sym_mism = 0;
@@ -730,10 +740,10 @@ private:
                     }
                     if (sym_mism > 0) {
                         sym_with_errors++;
-                        fprintf(stderr, "[LDPC_DIAG]   sym=%d mism=%d/%d\n", sym, sym_mism, n_cbps);
+                        USRP_LOG( "[LDPC_DIAG]   sym=%d mism=%d/%d\n", sym, sym_mism, n_cbps);
                     }
                 }
-                fprintf(stderr, "[LDPC_DIAG] Symbols with errors: %d/%d\n", sym_with_errors, n_sym);
+                USRP_LOG( "[LDPC_DIAG] Symbols with errors: %d/%d\n", sym_with_errors, n_sym);
             }
 
             const float noise_var = 1.0f;
@@ -756,7 +766,7 @@ private:
             }
 
             if (!d_ldpc_codec.init(block_length, rate_index)) {
-                fprintf(stderr, "[DECODE_FAIL] LDPC init failed\n");
+                USRP_LOG( "[DECODE_FAIL] LDPC init failed\n");
                 return;
             }
 
@@ -772,7 +782,7 @@ private:
             int n_puncture = (total_output > received_bits) ? total_output - received_bits : 0;
             int n_repeat   = (total_output < received_bits) ? received_bits - total_output : 0;
 
-            fprintf(stderr, "[LDPC_STD] data_bits=%d blocks=%d k=%d m=%d n=%d total_out=%d recv=%d puncture=%d repeat=%d\n",
+            USRP_LOG( "[LDPC_STD] data_bits=%d blocks=%d k=%d m=%d n=%d total_out=%d recv=%d puncture=%d repeat=%d\n",
                     data_bits, n_blocks, k, m, n, total_output, received_bits, n_puncture, n_repeat);
 
             // Separate info LLR and parity LLR from received stream
@@ -870,11 +880,11 @@ private:
             }
 
             if (!fcs_ok) {
-                fprintf(stderr, "[DECODE_FAIL] LDPC FCS error after seed search len=%d\n", d_ht_len);
+                USRP_LOG( "[DECODE_FAIL] LDPC FCS error after seed search len=%d\n", d_ht_len);
                 return;
             }
 
-            fprintf(stderr, "[DECODE_SUCCESS] LDPC FCS OK seed=%d len=%d\n", best_seed, d_ht_len);
+            USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK seed=%d len=%d\n", best_seed, d_ht_len);
             pmt::pmt_t blob = pmt::make_blob(d_out_bytes.data() + 2, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(105));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
@@ -1063,7 +1073,7 @@ private:
         d_frame.n_pad          = d_frame.n_data_bits - (16 + 8 * d_ht_len + 6);
 
         if (d_frame.n_pad < 0) {
-            fprintf(stderr, "[DECODE_FAIL] invalid n_pad=%d\n", d_frame.n_pad);
+            USRP_LOG( "[DECODE_FAIL] invalid n_pad=%d\n", d_frame.n_pad);
             return;
         }
 
@@ -1080,7 +1090,7 @@ private:
         // 4) Viterbi
         uint8_t* decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deintl_bits.data());
         if (!decoded) {
-            fprintf(stderr, "[DECODE_FAIL] Viterbi decoder returned null\n");
+            USRP_LOG( "[DECODE_FAIL] Viterbi decoder returned null\n");
             return;
         }
 
@@ -1154,15 +1164,15 @@ private:
                      << " rx=0x"   << rx_fcs
                      << std::dec << std::endl;
             }
-            fprintf(stderr, "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d\n", d_ht_len);
+            USRP_LOG( "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d\n", d_ht_len);
             pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
-            fprintf(stderr, "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
+            USRP_LOG( "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
             return;
         }
 
-        fprintf(stderr, "[DECODE_FAIL] Conv FCS error calc=0x%x rx=0x%x len=%d, trying LDPC fallback\n",
+        USRP_LOG( "[DECODE_FAIL] Conv FCS error calc=0x%x rx=0x%x len=%d, trying LDPC fallback\n",
                 calc_fcs, rx_fcs, d_ht_len);
 
         // ============================================================
@@ -1180,7 +1190,7 @@ private:
             int n_data_bits_fb = (16 + 8 * d_ht_len + 6 + n_dbps_fb - 1) / n_dbps_fb * n_dbps_fb;
             unsigned block_length = (n_data_bits_fb <= 324) ? 648 :
                                     (n_data_bits_fb <= 648) ? 1296 : 1944;
-            fprintf(stderr, "[LDPC_DEBUG] fallback n_data_bits=%d block_length=%u\n",
+            USRP_LOG( "[LDPC_DEBUG] fallback n_data_bits=%d block_length=%u\n",
                     n_data_bits_fb, block_length);
             unsigned rate_index;
             switch (d_ht_mcs) {
@@ -1192,7 +1202,7 @@ private:
             }
 
             if (!d_ldpc_codec.init(block_length, rate_index)) {
-                fprintf(stderr, "[DECODE_FAIL] LDPC init failed\n");
+                USRP_LOG( "[DECODE_FAIL] LDPC init failed\n");
                 return;
             }
 
@@ -1222,12 +1232,12 @@ private:
             const uint32_t calc_fcs_ldpc = crc_ldpc.checksum();
 
             if (calc_fcs_ldpc != rx_fcs_ldpc) {
-                fprintf(stderr, "[DECODE_FAIL] LDPC FCS error calc=0x%x rx=0x%x len=%d\n",
+                USRP_LOG( "[DECODE_FAIL] LDPC FCS error calc=0x%x rx=0x%x len=%d\n",
                         calc_fcs_ldpc, rx_fcs_ldpc, d_ht_len);
                 return;
             }
 
-            fprintf(stderr, "[DECODE_SUCCESS] LDPC FCS OK (fallback), publishing message len=%d\n", d_ht_len);
+            USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK (fallback), publishing message len=%d\n", d_ht_len);
             pmt::pmt_t blob = pmt::make_blob(psdu_ldpc, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
