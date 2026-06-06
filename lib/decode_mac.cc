@@ -1,7 +1,7 @@
 // USRP debug log control - uncomment to enable verbose logs
-// #define USRP_DEBUG_LOGS
+#define USRP_DEBUG_LOGS
 #ifdef USRP_DEBUG_LOGS
-#define USRP_LOG(...) do { USRP_LOG( __VA_ARGS__); } while(0)
+#define USRP_LOG(...) do { fprintf(stderr,  __VA_ARGS__); } while(0)
 #define USRP_LOG_STD(...) do { std::USRP_LOG( __VA_ARGS__); } while(0)
 #else
 #define USRP_LOG(...) ((void)0)

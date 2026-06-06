@@ -1,7 +1,7 @@
 #include "frame_equalizer_impl.h"
 
 // USRP debug log control - uncomment to enable verbose logs
-// #define USRP_DEBUG_LOGS
+#define USRP_DEBUG_LOGS
 #ifdef USRP_DEBUG_LOGS
 #define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
 #define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
@@ -2483,4 +2483,5 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
 } // namespace ieee802_11
 } // namespace gr
+
 
