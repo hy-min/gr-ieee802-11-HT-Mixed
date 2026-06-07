@@ -290,7 +290,10 @@ extern bool ltf0_ever_saved;
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
                                               const gr_complex* H52_tx_order,
-                                              gr_complex* out52)
+                                              gr_complex* out52,
+                                              bool enable_cfo_comp,
+                                              const float* phase_diff_per_sc,
+                                              int sym_offset_from_ref)
 {
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx, H52_tx_order);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
@@ -308,7 +311,25 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
         } else {
             out52[i] = gr_complex(0.0f, 0.0f);
         }
+
+        // Apply CFO/SFO per-subcarrier phase compensation
+        if (enable_cfo_comp && phase_diff_per_sc) {
+            float phase = phase_diff_per_sc[i] * sym_offset_from_ref;
+            gr_complex cfo_rot = std::exp(gr_complex(0.0f, -phase));
+            out52[i] *= cfo_rot;
+        }
     }
+
+    if (enable_cfo_comp && phase_diff_per_sc) {
+        float avg_phase = 0.0f;
+        for (int i = 0; i < 52; i++) {
+            avg_phase += phase_diff_per_sc[i];
+        }
+        avg_phase /= 52.0f;
+        USRP_LOG("[CFO_COMP_HTDATA] sym=%d sym_offset=%d avg_phase_per_sc=%.6f rad total_avg_phase=%.4f rad\n",
+                 data_sym_idx, sym_offset_from_ref, avg_phase, avg_phase * sym_offset_from_ref);
+    }
+
     USRP_LOG( "[EQ_HTDATA] sym=%d eq[0]=%.4f%+.4fi eq[25]=%.4f%+.4fi eq[26]=%.4f%+.4fi eq[51]=%.4f%+.4fi\n",
             data_sym_idx, out52[0].real(), out52[0].imag(), out52[25].real(), out52[25].imag(), out52[26].real(), out52[26].imag(), out52[51].real(), out52[51].imag());
 }
@@ -1668,7 +1689,8 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_htsig0_rel(-1),
       d_htsig1_rel(-1),
       d_data_start_rel(kDataStartRel),
-      d_is_ht_frame(false)
+      d_is_ht_frame(false),
+      d_enable_cfo_comp(true)
 {
     d_bpsk = make_bpsk_constellation();
     d_qpsk = make_qpsk_constellation();
@@ -1755,6 +1777,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_cfo_estimated = false;
     std::memset(d_phase_diff_per_sc, 0, sizeof(d_phase_diff_per_sc));
     d_phase_diff_valid = false;
+    d_enable_cfo_comp = true;
 
     std::memset(d_early_bits, 0, sizeof(d_early_bits));
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
@@ -2515,7 +2538,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
                     d_H52_tx_order_valid = true;
                 }
-                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
+                int sym_offset = d_current_symbol - d_cfo_ref_current_symbol;
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52,
+                                                   d_enable_cfo_comp && d_phase_diff_valid,
+                                                   d_phase_diff_per_sc, sym_offset);
             } else {
                 if (!reorder_eq_52_mode(raw_eq52, out52, d_hdr_reorder_mode)) {
                     std::memcpy(out52, raw_eq52, 52 * sizeof(gr_complex));

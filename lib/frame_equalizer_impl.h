@@ -87,6 +87,7 @@ private:
     bool  d_cfo_estimated;          // true after L-LTF1 arrives
     float d_phase_diff_per_sc[52];  // per-subcarrier phase diff L-LTF1 vs L-LTF0 (rad)
     bool  d_phase_diff_valid;       // true after L-LTF1 arrives
+    bool  d_enable_cfo_comp;        // enable CFO/SFO compensation on HT-DATA
 
     void reset_frame_state(void);
 
