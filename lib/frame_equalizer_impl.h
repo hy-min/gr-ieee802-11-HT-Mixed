@@ -81,6 +81,13 @@ private:
     int d_htsig1_rel;
     int d_data_start_rel;
 
+    // CFO/SFO tracking: estimated from L-LTF0/L-LTF1 phase difference
+    float d_cfo_phase_per_symbol;   // CFO-induced phase per symbol (rad)
+    int   d_cfo_ref_current_symbol; // d_current_symbol of L-LTF0 (reference)
+    bool  d_cfo_estimated;          // true after L-LTF1 arrives
+    float d_phase_diff_per_sc[52];  // per-subcarrier phase diff L-LTF1 vs L-LTF0 (rad)
+    bool  d_phase_diff_valid;       // true after L-LTF1 arrives
+
     void reset_frame_state(void);
 
     bool parse_signal(const uint8_t* decoded_bits,

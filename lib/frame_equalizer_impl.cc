@@ -535,8 +535,9 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         }
         double denom = std::sqrt(energy0 * energy1);
         double similarity = (denom > 1e-6) ? (corr_real / denom) : 0.0;
-        USRP_LOG( "[LTF_CORR] similarity=%.4f energy0=%.2f energy1=%.2f\n",
-                similarity, energy0, energy1);
+        double phase_diff = (denom > 1e-6) ? std::atan2(corr_imag, corr_real) : 0.0;
+        USRP_LOG( "[LTF_CORR] similarity=%.4f phase_diff=%.4f(%.1fdeg) energy0=%.2f energy1=%.2f\n",
+                similarity, phase_diff, phase_diff * 180.0 / M_PI, energy0, energy1);
     }
 
     if (extract_call_count == 6 && ltf0_ever_saved) {
@@ -647,8 +648,9 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
                                                uint8_t* out_bits48,
                                                bool is_ht_sig)
 {
-    const float cpe = estimate_header_cpe_rad(rx52, H52, is_ht_sig);
-    const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
+    // NOTE: rx52 has already been phase-compensated in general_work.
+    // Do NOT apply additional CPE compensation here.
+    (void)is_ht_sig; // unused
 
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
@@ -656,7 +658,7 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52[i], H52[i]) * rot;
+            eq = safe_div(rx52[i], H52[i]);
         }
         out_eq48[i] = eq;
         out_bits48[i] = hard_bit_from_complex(eq);
@@ -1145,7 +1147,18 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     uint8_t eqbits48[48];
     uint8_t deintl48[48];
 
-    equalize_header52_to_bits48(rx52, H52, eqbits48, nullptr, false);  // false = L-SIG
+    // NOTE: rx52 (d_early_eqsym) has already been phase-compensated in general_work
+    // using per-subcarrier linear regression (CFO+SFO). Do NOT apply CPE again.
+    for (int i = 0; i < 48; i++) {
+        float h_mag = std::abs(H52[i]);
+        gr_complex eq;
+        if (h_mag < 0.001f) {
+            eq = gr_complex(0.0f, 0.0f);
+        } else {
+            eq = safe_div(rx52[i], H52[i]);
+        }
+        eqbits48[i] = hard_bit_from_complex(eq);
+    }
 
     if (invert_bits) {
         for (int i = 0; i < 48; i++) {
@@ -1163,8 +1176,21 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         std::memcpy(dbg_deintl48, deintl48, 48);
     }
 
+    // Diagnostic: print first 6 eq symbols (real, imag) and eqbits
+    {
+        USRP_LOG("[LSIG_EQ] inv=%d eq[0-5]=", invert_bits?1:0);
+        for (int i = 0; i < 6; i++) {
+            gr_complex eqsym = safe_div(rx52[i], H52[i]);
+            USRP_LOG("(%.2f,%.2f) ", eqsym.real(), eqsym.imag());
+        }
+        USRP_LOG(" bits=");
+        for (int i = 0; i < 12; i++) USRP_LOG("%d", eqbits48[i]);
+        USRP_LOG("\n");
+    }
+
     std::vector<uint8_t> dec24;
     if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
+        USRP_LOG("[LSIG_DECODE] FAIL: viterbi decode failed\n");
         return false;
     }
     if ((int)dec24.size() != 24) {
@@ -1213,6 +1239,7 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
 
     out_encoding = encoding;
     out_len_bytes = psdu_length;
+    USRP_LOG("[LSIG_DECODE] OK enc=%d len=%d\n", encoding, psdu_length);
     return true;
 }
 
@@ -1375,11 +1402,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     uint8_t deintl48_b[48];
     uint8_t enc96[96];
 
-    // Estimate and compensate residual CPE using HT-SIG0 pilots.
-    // The caller already applies QBPSK rotation (0/90/180/270°); CPE is the
-    // small remaining phase offset that can sit between those quadrants.
-    const float cpe = estimate_header_cpe_rad(rx52_a, H52, true);
-    const gr_complex cpe_rot = std::exp(gr_complex(0.0f, -cpe));
+    // NOTE: rx52_a/b (d_early_eqsym) has already been phase-compensated in general_work.
+    // Do NOT apply additional CPE compensation here.
 
     // Extract bits from HT-SIG0 (rx52_a)
     for (int i = 0; i < 48; i++) {
@@ -1388,24 +1412,23 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_a[i], H52[i]) * cpe_rot;
+            eq = safe_div(rx52_a[i], H52[i]);
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
         eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
     }
 
-    // Extract bits from HT-SIG1 (rx52_b) — use same CPE estimate
+    // Extract bits from HT-SIG1 (rx52_b)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_b[i], H52[i]) * cpe_rot;
+            eq = safe_div(rx52_b[i], H52[i]);
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
         eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
     }
 
@@ -1486,15 +1509,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
 
-    // ---- HT-SIG decode diagnostic probe (first call only) ----
+    // ---- HT-SIG decode diagnostic probe ----
     {
         static int decode_call_count = 0;
+        bool crc_pass = (crc_rx == crc_calc);
+        USRP_LOG( "[HTSIG_DECODE] #%d rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d mcs=%d len=%d\n",
+                decode_call_count, rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
+                crc_pass ? "PASS" : "FAIL",
+                crc_rx, crc_calc, adv_coding, mcs, psdu_length);
         if (decode_call_count == 0) {
-            bool crc_pass = (crc_rx == crc_calc);
-            USRP_LOG( "[HTSIG_DECODE] rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d mcs=%d len=%d\n",
-                    rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
-                    crc_pass ? "PASS" : "FAIL",
-                    crc_rx, crc_calc, adv_coding, mcs, psdu_length);
             // Print equalized bits for HT-SIG0
             USRP_LOG( "[HTSIG_BITS] eq48=");
             for (int i = 0; i < 48; i++) USRP_LOG( "%d", eqbits48_a[i]);
@@ -1545,6 +1568,27 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     out_agg = aggregation;
     out_use_ldpc = (adv_coding == 1);
     return true;
+}
+
+// Estimate CFO from L-LTF0 and L-LTF1 phase difference.
+// L-LTF0 and L-LTF1 transmit the same sequence; any common phase
+// rotation between them is due to CFO. Returns rad/sample.
+static float estimate_cfo_from_lltf52(const gr_complex* lltf0,
+                                       const gr_complex* lltf1)
+{
+    double phase_sum = 0.0;
+    int count = 0;
+    for (int i = 0; i < 52; i++) {
+        // Skip bins with near-zero energy (guard/pilot holes)
+        if (std::abs(lltf0[i]) < 1e-6f || std::abs(lltf1[i]) < 1e-6f) {
+            continue;
+        }
+        gr_complex ratio = lltf1[i] * std::conj(lltf0[i]);
+        float phase = std::arg(ratio);
+        phase_sum += phase;
+        count++;
+    }
+    return (count > 0) ? (float)(phase_sum / count) : 0.0f;
 }
 
 } // anonymous namespace
@@ -1705,6 +1749,12 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_htsig0_rel = -1;
     d_htsig1_rel = -1;
     d_data_start_rel = kDataStartRel;
+
+    d_cfo_phase_per_symbol = 0.0f;
+    d_cfo_ref_current_symbol = 0;
+    d_cfo_estimated = false;
+    std::memset(d_phase_diff_per_sc, 0, sizeof(d_phase_diff_per_sc));
+    d_phase_diff_valid = false;
 
     std::memset(d_early_bits, 0, sizeof(d_early_bits));
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
@@ -2123,6 +2173,82 @@ int frame_equalizer_impl::general_work(int noutput_items,
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
+            // CFO estimation from L-LTF0 / L-LTF1 phase difference
+            // Use 64-bin FFT correlation (saved_ltf0_fft vs sym64) for reliability.
+            // The 52-carrier extraction can introduce spurious phase offsets due to
+            // bin mapping and guard band edge effects.
+            if (d_internal_symbol_counter == kLltf1Rel &&
+                d_early_eqsym_valid[kLltf0Rel] && ltf0_ever_saved) {
+                // Compute phase_diff using the same method as LTF_CORR
+                double corr_real = 0.0, corr_imag = 0.0;
+                double energy0 = 0.0, energy1 = 0.0;
+                for (int i = 0; i < 64; i++) {
+                    corr_real += (saved_ltf0_fft[i].real() * sym64[i].real() +
+                                  saved_ltf0_fft[i].imag() * sym64[i].imag());
+                    corr_imag += (saved_ltf0_fft[i].real() * sym64[i].imag() -
+                                  saved_ltf0_fft[i].imag() * sym64[i].real());
+                    energy0 += std::norm(saved_ltf0_fft[i]);
+                    energy1 += std::norm(sym64[i]);
+                }
+                double denom = std::sqrt(energy0 * energy1);
+                if (denom > 1e-6) {
+                    d_cfo_phase_per_symbol = (float)std::atan2(corr_imag, corr_real);
+                } else {
+                    d_cfo_phase_per_symbol = 0.0f;
+                }
+                d_cfo_ref_current_symbol = d_current_symbol - 1; // L-LTF0's index
+                d_cfo_estimated = true;
+                USRP_LOG("[CFO_EST] phase_per_symbol=%.4f rad  ref_sym=%d (64-bin)\n",
+                         d_cfo_phase_per_symbol, d_cfo_ref_current_symbol);
+
+                // Estimate SFO using linear regression on all 52 subcarriers.
+                // phase_diff[i] = CFO + SFO * sc_index[i].
+                // Since 64-bin CFO ≈ 0, we fit phase_diff vs sc_index to get SFO.
+                static const int kScIndex52[52] = {
+                    -26,-25,-24,-23,-22,  // i=0..4
+                    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,  // i=5..17
+                    -6,-5,-4,-3,-2,-1,  // i=18..23
+                    1,2,3,4,5,6,  // i=24..29
+                    8,9,10,11,12,13,  // i=30..35
+                    14,15,16,17,18,19,  // i=36..41
+                    20,22,23,24,25,26,  // i=42..47
+                    -21,-7,7,21  // i=48..51 (pilots)
+                };
+                double sum_sc2 = 0.0, sum_sc_phase = 0.0;
+                double sum_phase = 0.0;
+                for (int i = 0; i < 52; i++) {
+                    gr_complex ratio = d_early_eqsym[kLltf1Rel][i] *
+                                       std::conj(d_early_eqsym[kLltf0Rel][i]);
+                    float pd = std::arg(ratio);
+                    d_phase_diff_per_sc[i] = pd;
+                    int sc = kScIndex52[i];
+                    sum_sc2 += (double)sc * sc;
+                    sum_sc_phase += (double)sc * pd;
+                    sum_phase += pd;
+                }
+                float sfo_est = (sum_sc2 > 1e-6) ? (float)(sum_sc_phase / sum_sc2) : 0.0f;
+                float cfo_est = (float)(sum_phase / 52.0); // mean phase = intercept
+                // Save full linear fit: CFO + SFO*SC for each subcarrier
+                for (int i = 0; i < 52; i++) {
+                    d_phase_diff_per_sc[i] = cfo_est + sfo_est * kScIndex52[i];
+                }
+                d_phase_diff_valid = true;
+                USRP_LOG("[SFO_EST] cfo=%.4f sfo=%.6f rad/SC\n", cfo_est, sfo_est);
+            }
+
+            // Apply per-subcarrier phase compensation to header symbols (L-SIG onwards)
+            if (d_phase_diff_valid && d_internal_symbol_counter > kLltf1Rel) {
+                int sym_offset = d_current_symbol - d_cfo_ref_current_symbol;
+                for (int i = 0; i < 52; i++) {
+                    float phase = d_phase_diff_per_sc[i] * sym_offset;
+                    gr_complex rot = std::exp(gr_complex(0.0f, -phase));
+                    d_early_eqsym[d_internal_symbol_counter][i] *= rot;
+                }
+                USRP_LOG("[PHASE_COMP] counter=%d sym_offset=%d avg_phase=%.4f rad\n",
+                         d_internal_symbol_counter, sym_offset,
+                         d_phase_diff_per_sc[0]);
+            }
+
             // Legacy vs HT-Mixed frame type detection via QBPSK rotation
             // HT-SIG0 uses 90 rotated BPSK: E_Q > E_I after equalization.
             // Using raw FFT is WRONG - channel phase smears I/Q energy equally.
@@ -2205,6 +2331,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // Normalize symbols to correct for kFftNormalize scaling in channel estimate
         for (int k = 0; k < 52; k++) {
             raw_eq52[k] /= kFftNormalize;
+        }
+
+        // CFO compensation for data symbols
+        if (d_cfo_estimated && d_sym_idx >= d_data_start_rel) {
+            int sym_offset = d_current_symbol - d_cfo_ref_current_symbol;
+            float cfo_phase = d_cfo_phase_per_symbol * sym_offset;
+            gr_complex rot = std::exp(gr_complex(0.0f, -cfo_phase));
+            for (int k = 0; k < 52; k++) {
+                raw_eq52[k] *= rot;
+            }
+            USRP_LOG("[CFO_COMP_DATA] sym_idx=%d sym_offset=%d phase=%.4f rad\n",
+                     d_sym_idx, sym_offset, cfo_phase);
         }
 
         int nonzero_cnt = 0;
