@@ -659,6 +659,7 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52[i], H52[i]);
+            eq /= kFftNormalize;
         }
         out_eq48[i] = eq;
         out_bits48[i] = hard_bit_from_complex(eq);
@@ -1156,6 +1157,7 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52[i], H52[i]);
+            eq /= kFftNormalize;
         }
         eqbits48[i] = hard_bit_from_complex(eq);
     }
@@ -2271,6 +2273,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 for (int i = 0; i < 52; i++) {
                     if (std::abs(H52[i]) > 0.01f) {
                         eq_htsig0[i] = d_early_eqsym[kHtSig0Rel][i] / H52[i];
+                        eq_htsig0[i] /= kFftNormalize;
                     } else {
                         eq_htsig0[i] = gr_complex(0.0f, 0.0f);
                     }
@@ -2296,6 +2299,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 for (int i = 0; i < 52; i++) {
                     if (std::abs(H52[i]) > 0.01f) {
                         eq_lsig[i] = d_early_eqsym[kLSigRel][i] / H52[i];
+                        eq_lsig[i] /= kFftNormalize;
                     } else {
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
                     }
