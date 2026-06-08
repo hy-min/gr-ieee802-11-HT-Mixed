@@ -247,16 +247,29 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         "[SPLITTER_FRAME_START] immediate seq=%d start_abs=%lld\n",
                         d_frame_seq_counter, (long long)d_frame_start_abs);
             } else {
-                // Active frame: defer transition until buffer is empty
-                d_pending_frame_transition = true;
-                d_pending_frame_start_abs = new_frame_start_abs;
-                d_pending_wifi_start_pos = tag_abs_pos;
+                // Active frame: force transition immediately.
+                // The old "deferred" approach waited for buffer to empty,
+                // but in USRP streaming mode the buffer may never empty
+                // (small chunks, stale data), causing the splitter to get
+                // permanently stuck with zero FFT output.
                 fprintf(stderr,
-                        "[SPLITTER_FRAME_START] deferred seq=%d -> pending "
-                        "start_abs=%lld wifi_pos=%llu\n",
-                        d_frame_seq_counter + 1,
+                        "[SPLITTER_FRAME_START] force-transition seq=%d -> %d "
+                        "start_abs=%lld wifi_pos=%llu (buf=%d)\n",
+                        d_frame_seq_counter, d_frame_seq_counter + 1,
                         (long long)new_frame_start_abs,
-                        (unsigned long long)tag_abs_pos);
+                        (unsigned long long)tag_abs_pos, d_buffer_count);
+                exit_frame_state();
+                d_frame_seq_counter++;
+                d_frame_start_abs = new_frame_start_abs;
+                d_frame_start_known = true;
+                d_in_frame = true;
+                d_wifi_start_accepted = true;
+                d_ignore_mode = false;
+                d_rx_reset_offset = -1;
+                d_wifi_start_next_fft = true;
+                d_wifi_start_value = d_frame_start_abs;
+                d_wifi_start_produced = produced;
+                d_force_buffer_reset = true;
             }
 
             break;
@@ -638,7 +651,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         total_energy += std::norm(d_buffer[zz]);
                     }
                     // Skip near-zero-energy FFTs (RESET gap between frames)
-                    if (total_energy < 10.0f) {
+                    // Energy threshold: filter noise-only FFTs while passing real signal.
+                    // Software loopback energy ~400, USRP energy ~4, noise ~0.
+                    // Threshold 2.0 passes USRP signal (energy ~4) while filtering noise.
+                    if (total_energy < 2.0f) {
                         d_buffer_count = 0;
                         d_buffer_filled = false;
                         fprintf(stderr, "[SPLITTER_ENERGY_DROP] rel=%llu energy=%.2f frame=%d in_frame=%d\n",

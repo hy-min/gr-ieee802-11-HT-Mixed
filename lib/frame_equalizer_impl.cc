@@ -290,10 +290,7 @@ extern bool ltf0_ever_saved;
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
                                               const gr_complex* H52_tx_order,
-                                              gr_complex* out52,
-                                              bool enable_cfo_comp,
-                                              const float* phase_diff_per_sc,
-                                              int sym_offset_from_ref)
+                                              gr_complex* out52)
 {
     const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx, H52_tx_order);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
@@ -311,25 +308,7 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
         } else {
             out52[i] = gr_complex(0.0f, 0.0f);
         }
-
-        // Apply CFO/SFO per-subcarrier phase compensation
-        if (enable_cfo_comp && phase_diff_per_sc) {
-            float phase = phase_diff_per_sc[i] * sym_offset_from_ref;
-            gr_complex cfo_rot = std::exp(gr_complex(0.0f, -phase));
-            out52[i] *= cfo_rot;
-        }
     }
-
-    if (enable_cfo_comp && phase_diff_per_sc) {
-        float avg_phase = 0.0f;
-        for (int i = 0; i < 52; i++) {
-            avg_phase += phase_diff_per_sc[i];
-        }
-        avg_phase /= 52.0f;
-        USRP_LOG("[CFO_COMP_HTDATA] sym=%d sym_offset=%d avg_phase_per_sc=%.6f rad total_avg_phase=%.4f rad\n",
-                 data_sym_idx, sym_offset_from_ref, avg_phase, avg_phase * sym_offset_from_ref);
-    }
-
     USRP_LOG( "[EQ_HTDATA] sym=%d eq[0]=%.4f%+.4fi eq[25]=%.4f%+.4fi eq[26]=%.4f%+.4fi eq[51]=%.4f%+.4fi\n",
             data_sym_idx, out52[0].real(), out52[0].imag(), out52[25].real(), out52[25].imag(), out52[26].real(), out52[26].imag(), out52[51].real(), out52[51].imag());
 }
@@ -1689,8 +1668,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_htsig0_rel(-1),
       d_htsig1_rel(-1),
       d_data_start_rel(kDataStartRel),
-      d_is_ht_frame(false),
-      d_enable_cfo_comp(true)
+      d_is_ht_frame(false)
 {
     d_bpsk = make_bpsk_constellation();
     d_qpsk = make_qpsk_constellation();
@@ -1777,7 +1755,6 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_cfo_estimated = false;
     std::memset(d_phase_diff_per_sc, 0, sizeof(d_phase_diff_per_sc));
     d_phase_diff_valid = false;
-    d_enable_cfo_comp = true;
 
     std::memset(d_early_bits, 0, sizeof(d_early_bits));
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
@@ -2251,6 +2228,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 float sfo_est = (sum_sc2 > 1e-6) ? (float)(sum_sc_phase / sum_sc2) : 0.0f;
                 float cfo_est = (float)(sum_phase / 52.0); // mean phase = intercept
+                // Clamp excessive SFO: USRP clock accuracy < 1 ppm, SFO should be < 0.001 rad/SC.
+                // Noisy L-LTF estimates at low SNR can produce spurious SFO values.
+                if (std::abs(sfo_est) > 0.001f) {
+                    USRP_LOG("[SFO_EST] clamping excessive SFO %.6f -> 0\n", sfo_est);
+                    sfo_est = 0.0f;
+                }
                 // Save full linear fit: CFO + SFO*SC for each subcarrier
                 for (int i = 0; i < 52; i++) {
                     d_phase_diff_per_sc[i] = cfo_est + sfo_est * kScIndex52[i];
@@ -2259,17 +2242,19 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 USRP_LOG("[SFO_EST] cfo=%.4f sfo=%.6f rad/SC\n", cfo_est, sfo_est);
             }
 
-            // Apply per-subcarrier phase compensation to header symbols (L-SIG onwards)
-            if (d_phase_diff_valid && d_internal_symbol_counter > kLltf1Rel) {
+            // Apply CFO phase compensation to header symbols (L-SIG onwards).
+            // Use the 64-bin correlation estimate (d_cfo_phase_per_symbol) which is
+            // reliable even at low SNR. The 52-subcarrier linear regression estimate
+            // (d_phase_diff_per_sc) includes spurious SFO and is NOT used here.
+            if (d_cfo_estimated && d_internal_symbol_counter > kLltf1Rel) {
                 int sym_offset = d_current_symbol - d_cfo_ref_current_symbol;
+                float cfo_phase = d_cfo_phase_per_symbol * sym_offset;
+                gr_complex rot = std::exp(gr_complex(0.0f, -cfo_phase));
                 for (int i = 0; i < 52; i++) {
-                    float phase = d_phase_diff_per_sc[i] * sym_offset;
-                    gr_complex rot = std::exp(gr_complex(0.0f, -phase));
                     d_early_eqsym[d_internal_symbol_counter][i] *= rot;
                 }
-                USRP_LOG("[PHASE_COMP] counter=%d sym_offset=%d avg_phase=%.4f rad\n",
-                         d_internal_symbol_counter, sym_offset,
-                         d_phase_diff_per_sc[0]);
+                USRP_LOG("[PHASE_COMP_HDR] counter=%d sym_offset=%d cfo_phase=%.4f rad\n",
+                         d_internal_symbol_counter, sym_offset, cfo_phase);
             }
 
             // Legacy vs HT-Mixed frame type detection via QBPSK rotation
@@ -2538,10 +2523,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
                     d_H52_tx_order_valid = true;
                 }
-                int sym_offset = d_current_symbol - d_cfo_ref_current_symbol;
-                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52,
-                                                   d_enable_cfo_comp && d_phase_diff_valid,
-                                                   d_phase_diff_per_sc, sym_offset);
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
             } else {
                 if (!reorder_eq_52_mode(raw_eq52, out52, d_hdr_reorder_mode)) {
                     std::memcpy(out52, raw_eq52, 52 * sizeof(gr_complex));
