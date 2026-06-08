@@ -515,6 +515,21 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         memcpy(saved_ltf0_fft, sym64, 64 * sizeof(gr_complex));
         ltf0_saved = true;
         ltf0_ever_saved = true;
+
+        // DIAGNOSTIC: Print actual RX FFT values at key bins vs kLltf64Binned
+        static int ltf0_diag = 0;
+        if (ltf0_diag < 3) {
+            USRP_LOG("[RX_FFT_DIAG] LTF0 bin 6: rx=(%.4f,%.4f) kLltf64Binned=(%.1f,%.1f)\n",
+                    sym64[6].real(), sym64[6].imag(),
+                    kLltf64Binned[6].real(), kLltf64Binned[6].imag());
+            USRP_LOG("[RX_FFT_DIAG] LTF0 bin 38: rx=(%.4f,%.4f) kLltf64Binned=(%.1f,%.1f)\n",
+                    sym64[38].real(), sym64[38].imag(),
+                    kLltf64Binned[38].real(), kLltf64Binned[38].imag());
+            USRP_LOG("[RX_FFT_DIAG] LTF0 bin 1: rx=(%.4f,%.4f) kLltf64Binned=(%.1f,%.1f)\n",
+                    sym64[1].real(), sym64[1].imag(),
+                    kLltf64Binned[1].real(), kLltf64Binned[1].imag());
+            ltf0_diag++;
+        }
     }
 
     if (extract_call_count == 1 && ltf0_saved) {
@@ -568,20 +583,80 @@ static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint
     }
 }
 
+// Correct TX reference at each FFT bin, derived from LEGACY_LTF.
+// TX_ref[bin] = LEGACY_LTF[(bin + 32) % 64] (accounts for ifftshift in TX, fftshift in RX).
+// This is used by the header path for channel estimation.
+static constexpr gr_complex kLltfTxRefByBin[64] = {
+    // bin 0: LEGACY_LTF[32] = 0 (DC)
+    gr_complex(0.0f, 0.0f),
+    // bin 1-5: LEGACY_LTF[33-37] = guard band zeros
+    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
+    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
+    // bin 6: LEGACY_LTF[38] = -1 (SC -26)
+    gr_complex(-1.0f, 0.0f),
+    // bin 7: LEGACY_LTF[39] = +1 (SC -25)
+    gr_complex(+1.0f, 0.0f),
+    // bin 8: LEGACY_LTF[40] = -1 (SC -24)
+    gr_complex(-1.0f, 0.0f),
+    // bin 9: LEGACY_LTF[41] = +1 (SC -23)
+    gr_complex(+1.0f, 0.0f),
+    // bin 10: LEGACY_LTF[42] = -1 (SC -22)
+    gr_complex(-1.0f, 0.0f),
+    // bin 11: LEGACY_LTF[43] = +1 (SC -21, pilot)
+    gr_complex(+1.0f, 0.0f),
+    // bin 12-21: SC -20 to -11
+    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f),
+    // bin 22-24: SC -10 to -8
+    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    // bin 25: LEGACY_LTF[57] = +1 (SC -7, pilot)
+    gr_complex(+1.0f, 0.0f),
+    // bin 26-31: SC -6 to -1
+    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    // bin 32: DC = 0
+    gr_complex(0.0f, 0.0f),
+    // bin 33-38: SC +1 to +6
+    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
+    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    // bin 39: SC +7 pilot = 0
+    gr_complex(0.0f, 0.0f),
+    // bin 40-52: SC +8 to +20
+    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(+1.0f, 0.0f),
+    // bin 53: SC +21 pilot = 0
+    gr_complex(0.0f, 0.0f),
+    // bin 54-58: SC +22 to +26
+    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
+    // bin 59-63: guard band
+    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
+    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
+};
+
 static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
 {
-    // Channel estimation using LTF0 (avoid averaging opposite signs)
-    // TX IFFT normalizes by 1/sqrt(52), RX FFT does not normalize
-    // Effective gain: 64/sqrt(52) ≈ 8.88, compensated by dividing rx/Tx
+    // Channel estimation using LTF0.
+    // Use kLltfTxRefByBin (correct TX reference at each FFT bin) * kFftNormalize
+    // as the TX reference, matching the LS equalizer's approach:
+    //   H = RX / (TX_ref * kFftNormalize)
+    // kLltfTxRefByBin is derived from LEGACY_LTF via ifftshift/fftshift compensation.
 
     // Compute H from LTF0 data subcarriers
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
-        const gr_complex tx = kLltf48TX[i];
-        if (std::abs(tx) > 0.001f) {
-            H52[i] = lltf0 / tx;
+        const int bin = kHeader48Bin[i];
+        const gr_complex tx_ref = kLltfTxRefByBin[bin];
+        const gr_complex tx_scaled = tx_ref * kFftNormalize;
+        if (std::abs(tx_scaled) > 0.001f) {
+            H52[i] = lltf0 / tx_scaled;
         } else {
             H52[i] = lltf0;
         }
@@ -589,9 +664,11 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     // Compute H from LTF0 pilot subcarriers
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
-        const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
-        if (std::abs(tx) > 0.001f) {
-            H52[48 + i] = lltf0 / tx;
+        const int bin = kPilot4Bin[i];
+        const gr_complex tx_ref = kLltfTxRefByBin[bin];
+        const gr_complex tx_scaled = tx_ref * kFftNormalize;
+        if (std::abs(tx_scaled) > 0.001f) {
+            H52[48 + i] = lltf0 / tx_scaled;
         } else {
             H52[48 + i] = lltf0;
         }
@@ -2279,6 +2356,36 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 estimate_header_channel_from_lltf52(lltf0_cpe_corrected,
                                                     d_early_eqsym[kLltf1Rel],
                                                     H52);
+
+                // DIAGNOSTIC: Compare header H with what LS equalizer would compute
+                // LS uses: H_ls = RX / (TX * kFftNormalize) where TX is ±1
+                // Header uses: H_hdr = RX / TX (no kFftNormalize)
+                // So H_hdr = H_ls * kFftNormalize
+                {
+                    static int diag_count = 0;
+                    if (diag_count < 5) {
+                        // Print first 6 subcarriers: extracted value, H, and LS-style H
+                        USRP_LOG("[H_DIAG] --- Frame %d ---\n", diag_count);
+                        for (int i = 0; i < 6; i++) {
+                            int bin = kHeader48Bin[i];
+                            float tx_i = kLltf48TX[i].real();  // ±1
+                            gr_complex rx_val = d_early_eqsym[kLltf0Rel][i];
+                            gr_complex h_hdr = H52[i];
+                            gr_complex h_ls = rx_val / (gr_complex(tx_i, 0.0f) * kFftNormalize);
+                            USRP_LOG("[H_DIAG] sc=%d bin=%d rx=(%.4f,%.4f) tx=%+.0f H_hdr=(%.4f,%.4f) H_ls=(%.4f,%.4f)\n",
+                                    i, bin, rx_val.real(), rx_val.imag(), tx_i,
+                                    h_hdr.real(), h_hdr.imag(), h_ls.real(), h_ls.imag());
+                        }
+                        // Also print what LS equalizer would give for bin 38 (SC -26)
+                        // The LS equalizer processes all 64 bins, but we only have the 52 extracted.
+                        // For comparison, check if kLltf64Binned[38] matches kLltf48TX[0]
+                        USRP_LOG("[H_DIAG] kLltf64Binned[38]=(%.1f,%.1f) kLltf48TX[0]=(%.1f,%.1f) match=%d\n",
+                                kLltf64Binned[38].real(), kLltf64Binned[38].imag(),
+                                kLltf48TX[0].real(), kLltf48TX[0].imag(),
+                                (std::abs(kLltf64Binned[38].real() - kLltf48TX[0].real()) < 0.01f) ? 1 : 0);
+                        diag_count++;
+                    }
+                }
 
                 // Apply CPE to HT-SIG0 raw before equalization
                 gr_complex htsig0_cpe[52];
