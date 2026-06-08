@@ -2264,15 +2264,32 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // Using raw FFT is WRONG - channel phase smears I/Q energy equally.
             if (d_internal_symbol_counter == kHtSig0Rel && d_early_eqsym_valid[kLSigRel] &&
                 d_early_eqsym_valid[kLltf0Rel] && d_early_eqsym_valid[kLltf1Rel]) {
-                // Equalize HT-SIG0 with L-LTF0 channel estimate
+                // Apply CPE to raw LTF0 before channel estimation
+                // This matches the data path approach (CPE before equalization)
+                float cpe_ltf0 = estimate_cpe_direct_from_rx_pilots(d_early_eqsym[kLltf0Rel]);
+                gr_complex cpe_rot_ltf0 = std::exp(gr_complex(0.0f, -cpe_ltf0));
+                gr_complex lltf0_cpe_corrected[52];
+                for (int i = 0; i < 52; i++) {
+                    lltf0_cpe_corrected[i] = d_early_eqsym[kLltf0Rel][i] * cpe_rot_ltf0;
+                }
+                USRP_LOG("[HEADER_CPE] cpe_ltf0=%.4f rad\n", cpe_ltf0);
+
+                // Use CPE-corrected LTF0 for channel estimation
                 gr_complex H52[52];
-                estimate_header_channel_from_lltf52(d_early_eqsym[kLltf0Rel],
+                estimate_header_channel_from_lltf52(lltf0_cpe_corrected,
                                                     d_early_eqsym[kLltf1Rel],
                                                     H52);
+
+                // Apply CPE to HT-SIG0 raw before equalization
+                gr_complex cpe_rot_lsig = std::exp(gr_complex(0.0f, -cpe_ltf0));
+                gr_complex htsig0_cpe[52];
+                for (int i = 0; i < 52; i++) {
+                    htsig0_cpe[i] = d_early_eqsym[kHtSig0Rel][i] * cpe_rot_lsig;
+                }
                 gr_complex eq_htsig0[52];
                 for (int i = 0; i < 52; i++) {
                     if (std::abs(H52[i]) > 0.01f) {
-                        eq_htsig0[i] = d_early_eqsym[kHtSig0Rel][i] / H52[i];
+                        eq_htsig0[i] = htsig0_cpe[i] / H52[i];
                         eq_htsig0[i] /= kFftNormalize;
                     } else {
                         eq_htsig0[i] = gr_complex(0.0f, 0.0f);
@@ -2294,11 +2311,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     d_is_ht_frame = false;
                 }
 
+                // Apply CPE to L-SIG raw before equalization
+                gr_complex lsig_cpe[52];
+                for (int i = 0; i < 52; i++) {
+                    lsig_cpe[i] = d_early_eqsym[kLSigRel][i] * cpe_rot_lsig;
+                }
                 // Also compute Legacy L-SIG ratio for comparison
                 gr_complex eq_lsig[52];
                 for (int i = 0; i < 52; i++) {
                     if (std::abs(H52[i]) > 0.01f) {
-                        eq_lsig[i] = d_early_eqsym[kLSigRel][i] / H52[i];
+                        eq_lsig[i] = lsig_cpe[i] / H52[i];
                         eq_lsig[i] /= kFftNormalize;
                     } else {
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
