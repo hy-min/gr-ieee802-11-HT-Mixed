@@ -1743,6 +1743,7 @@ void frame_equalizer_impl::reset_frame_state(void)
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
     d_H52_tx_order_valid = false;
+    d_frame_bytes_tag_emitted = false;
 
     g_extract_call_count = 0;
     htltf_edge_saved = false;
@@ -2138,6 +2139,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // Compensation = exp(-j * d_cfo_phase_per_symbol * counter)
             // because each symbol is offset by 'counter' symbol periods from L-LTF0.
             if (d_cfo_estimated && d_internal_symbol_counter >= kLSigRel) {
+                // Use d_internal_symbol_counter (frame-relative) as the offset.
+                // It is synchronized with d_current_symbol (both increment together
+                // at lines 2570-2572) and is reset to 0 at frame start, making it
+                // a reliable measure of symbol position within the preamble.
+                // d_current_symbol may include pre-frame discarded symbols.
                 float cfo_phase = d_cfo_phase_per_symbol * d_internal_symbol_counter;
                 gr_complex rot = std::exp(gr_complex(0.0f, -cfo_phase));
                 for (int i = 0; i < 52; i++) {
@@ -2511,7 +2517,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
             USRP_LOG( "[EQ_EMIT] sym=%d/%d produced=%d nout=%d\n", d_sym_idx, d_data_start_rel, produced, noutput_items);
 
-            if (tag_this_output_as_frame_start) {
+            if (tag_this_output_as_frame_start && !d_frame_bytes_tag_emitted) {
+                d_frame_bytes_tag_emitted = true;
                 const uint64_t out_off = this->nitems_written(0) + produced;
                 USRP_LOG( "[EQ_TAG] frame_bytes out_off=%llu nwritten=%llu produced=%d\n",
                         (unsigned long long)out_off, (unsigned long long)this->nitems_written(0), produced);

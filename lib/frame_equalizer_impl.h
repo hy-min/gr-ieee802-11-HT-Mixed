@@ -71,6 +71,7 @@ private:
     // Channel estimate for 52 HT-DATA subcarriers (tx_order)
     gr_complex d_H52_tx_order[52] = {gr_complex(0.0f, 0.0f)};
     bool d_H52_tx_order_valid = false;
+    bool d_frame_bytes_tag_emitted = false;  // guard: emit frame_bytes tag only once per frame
 
     // dynamic header detection state
     bool d_have_lsig;
