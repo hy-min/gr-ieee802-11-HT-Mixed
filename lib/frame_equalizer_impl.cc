@@ -574,17 +574,19 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 gr_complex* H52)
 {
     // Channel estimation using LTF0.
-    // Use kLltf64Binned (correct TX reference at each FFT bin) without kFftNormalize.
-    // H = RX / TX_ref (matching data path approach, not LS equalizer).
-    // kLltf64Binned is derived from LEGACY_LTF.
+    // Use kLltf48TX (matching data path approach, no kFftNormalize).
+    // The data path uses kLltf48TX for both H estimation and equalization.
+    // The double error cancellation makes it work on both software loopback
+    // and USRP. The header path previously used kLltf64Binned * kFftNormalize,
+    // which produced wrong equalized symbols on USRP due to different FFT
+    // normalization.
 
     // Compute H from LTF0 data subcarriers
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
-        const int bin = kHeader48Bin[i];
-        const gr_complex tx_ref = kLltf64Binned[bin];
-        if (std::abs(tx_ref) > 0.001f) {
-            H52[i] = lltf0 / tx_ref;
+        const gr_complex tx = kLltf48TX[i];
+        if (std::abs(tx) > 0.001f) {
+            H52[i] = lltf0 / tx;
         } else {
             H52[i] = lltf0;
         }
@@ -592,10 +594,9 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     // Compute H from LTF0 pilot subcarriers
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
-        const int bin = kPilot4Bin[i];
-        const gr_complex tx_ref = kLltf64Binned[bin];
-        if (std::abs(tx_ref) > 0.001f) {
-            H52[48 + i] = lltf0 / tx_ref;
+        const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
+        if (std::abs(tx) > 0.001f) {
+            H52[48 + i] = lltf0 / tx;
         } else {
             H52[48 + i] = lltf0;
         }
