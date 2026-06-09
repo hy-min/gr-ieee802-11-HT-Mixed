@@ -309,6 +309,12 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
             out52[i] = gr_complex(0.0f, 0.0f);
         }
     }
+    // Compensate for kFftNormalize in H estimate (H includes kFftNormalize
+    // in the denominator, so equalized symbols are scaled up by kFftNormalize).
+    // This matches the LS equalizer path (raw_eq52[k] /= kFftNormalize).
+    for (int i = 0; i < 52; i++) {
+        out52[i] /= kFftNormalize;
+    }
     USRP_LOG( "[EQ_HTDATA] sym=%d eq[0]=%.4f%+.4fi eq[25]=%.4f%+.4fi eq[26]=%.4f%+.4fi eq[51]=%.4f%+.4fi\n",
             data_sym_idx, out52[0].real(), out52[0].imag(), out52[25].real(), out52[25].imag(), out52[26].real(), out52[26].imag(), out52[51].real(), out52[51].imag());
 }
@@ -436,17 +442,28 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
 
     gr_complex H_sc[114] = {gr_complex(0.0f, 0.0f)};  // indexed by sc+56, covers -28..+28
 
-    // Fill H for 48 header data subcarriers
+    // Fill H for 48 header data subcarriers.
+    // Use kLltf64Binned (correct TX reference at each FFT bin) * kFftNormalize
+    // as the TX reference, matching the LS equalizer's approach:
+    //   H = RX / (TX_ref * kFftNormalize)
     for (int i = 0; i < 48; i++) {
         int sc = kHeader48Sc[i];
-        if (std::abs(kLltf48TX[i]) > 1e-9f) {
-            H_sc[sc + 56] = lltf0_52[i] / kLltf48TX[i];
+        const int bin = kHeader48Bin[i];
+        const gr_complex tx_ref = kLltf64Binned[bin];
+        const gr_complex tx_scaled = tx_ref * kFftNormalize;
+        if (std::abs(tx_scaled) > 1e-9f) {
+            H_sc[sc + 56] = lltf0_52[i] / tx_scaled;
         }
     }
     // Fill H for 4 pilots
     for (int i = 0; i < 4; i++) {
         int sc = kPilot4Sc[i];
-        H_sc[sc + 56] = lltf0_52[48 + i] / kPilot4TX[i];
+        const int bin = kPilot4Bin[i];
+        const gr_complex tx_ref = kLltf64Binned[bin];
+        const gr_complex tx_scaled = tx_ref * kFftNormalize;
+        if (std::abs(tx_scaled) > 1e-9f) {
+            H_sc[sc + 56] = lltf0_52[48 + i] / tx_scaled;
+        }
     }
 
     // Compute H for edge subcarriers from saved HT-LTF raw FFT values.
@@ -455,10 +472,12 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
     // Use the saved HT-LTF raw FFT values captured at extract_call==6.
     // HT-LTF TX reference is +1 for all 4 edge SCs.
     if (htltf_edge_saved) {
-        H_sc[-28 + 56] = saved_htltf_edge[0] / (+1.0f);  // SC -28, natural bin 36
-        H_sc[-27 + 56] = saved_htltf_edge[1] / (+1.0f);  // SC -27, natural bin 37
-        H_sc[27 + 56]  = saved_htltf_edge[2] / (+1.0f);  // SC +27, natural bin 27
-        H_sc[28 + 56]  = saved_htltf_edge[3] / (+1.0f);  // SC +28, natural bin 28
+        // Edge subcarriers use HT-LTF1 TX reference (+1.0f).
+        // Include kFftNormalize for consistency with data/pilot H estimates.
+        H_sc[-28 + 56] = saved_htltf_edge[0] / (+1.0f * kFftNormalize);  // SC -28, natural bin 36
+        H_sc[-27 + 56] = saved_htltf_edge[1] / (+1.0f * kFftNormalize);  // SC -27, natural bin 37
+        H_sc[27 + 56]  = saved_htltf_edge[2] / (+1.0f * kFftNormalize);  // SC +27, natural bin 27
+        H_sc[28 + 56]  = saved_htltf_edge[3] / (+1.0f * kFftNormalize);  // SC +28, natural bin 28
     }
 
     // Copy to tx_order output
