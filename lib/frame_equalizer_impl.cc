@@ -582,6 +582,7 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     // normalization.
 
     // Compute H from LTF0 data subcarriers
+    // Use kLltf48TX directly (matching data path approach).
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
         const gr_complex tx = kLltf48TX[i];
@@ -592,6 +593,7 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         }
     }
     // Compute H from LTF0 pilot subcarriers
+    // kPilot4Bin -> SC: -21, -7, +7, +21 -> kLltfPilotTX index: 0, 1, 2, 3
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
         const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
