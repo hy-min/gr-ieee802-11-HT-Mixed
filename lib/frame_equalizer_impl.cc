@@ -2132,26 +2132,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
-            // Apply CFO compensation to header symbols (L-SIG, HT-SIG).
-            // L-LTF0 (counter=0) is the H reference — do NOT compensate it.
-            // L-LTF1 (counter=1) is used for CFO estimation — do NOT compensate it.
-            // L-SIG (counter=2), HT-SIG0 (3), HT-SIG1 (4) need compensation.
-            // Compensation = exp(-j * d_cfo_phase_per_symbol * counter)
-            // because each symbol is offset by 'counter' symbol periods from L-LTF0.
-            if (d_cfo_estimated && d_internal_symbol_counter >= kLSigRel) {
-                // Use d_internal_symbol_counter (frame-relative) as the offset.
-                // It is synchronized with d_current_symbol (both increment together
-                // at lines 2570-2572) and is reset to 0 at frame start, making it
-                // a reliable measure of symbol position within the preamble.
-                // d_current_symbol may include pre-frame discarded symbols.
-                float cfo_phase = d_cfo_phase_per_symbol * d_internal_symbol_counter;
-                gr_complex rot = std::exp(gr_complex(0.0f, -cfo_phase));
-                for (int i = 0; i < 52; i++) {
-                    d_early_eqsym[d_internal_symbol_counter][i] *= rot;
-                }
-                USRP_LOG("[CFO_COMP_HDR] counter=%d phase=%.4f rad rot=%.4f%+.4fi\n",
-                         d_internal_symbol_counter, cfo_phase, rot.real(), rot.imag());
-            }
+            // Header symbols are NOT CFO-compensated.
+            // H is estimated from L-LTF0 (counter=0) which contains the CFO phase.
+            // L-SIG/HT-SIG (counter=2,3,4) also contain approximately the same CFO
+            // phase because they are only 2-4 symbol periods away.
+            // When dividing RX/H, the CFO cancels naturally:
+            //   eq = (sig * e^(j*phi_sig)) / (ltf0 * e^(j*phi_ltf0))
+            // Since phi_sig ≈ phi_ltf0 (small time delta), CFO approximately cancels.
+            // Compensating only the RX symbols but not H creates a domain mismatch
+            // that corrupts the equalized constellation.
 
             // CFO estimation from L-LTF0 / L-LTF1 phase difference
             // Use 64-bin FFT correlation (saved_ltf0_fft vs sym64) for reliability.
@@ -2222,14 +2211,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 USRP_LOG("[SFO_EST] cfo=%.4f sfo=%.6f rad/SC\n", cfo_est, sfo_est);
             }
 
-            // DISABLED: Header CFO compensation.
-            // The data path works without CFO compensation because both H and
-            // equalization use kLltf48TX, and the CFO cancels in the division.
-            // The header path should work the same way: H from LTF0 and
-            // equalization of LSIG/HT-SIG0 both have the same CFO rotation,
-            // so it cancels when dividing RX/H.
-            // Applying CFO compensation to some symbols but not LTF0 creates
-            // a domain mismatch that corrupts the equalized symbols.
+            // Header CFO compensation is intentionally DISABLED.
+            // Rationale: H is estimated from un-compensated L-LTF0, so H carries
+            // the CFO phase of the reference symbol. L-SIG and HT-SIG are only
+            // 2-4 OFDM symbol periods away from L-LTF0, so their CFO phase is
+            // approximately equal to L-LTF0's. When we divide RX/H, the common
+            // CFO phase cancels: eq = (sig * e^(j*phi)) / (ltf0 * e^(j*phi)) ≈ sig/ltf0.
+            // If we were to compensate L-SIG/HT-SIG but not L-LTF0, the residual
+            // e^(-j*phi_ltf0) would rotate BPSK/QBPSK constellations, causing
+            // hard-decision errors and HT-SIG CRC failures.
 
             // Legacy vs HT-Mixed frame type detection via QBPSK rotation
             // HT-SIG0 uses 90 rotated BPSK: E_Q > E_I after equalization.
