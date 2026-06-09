@@ -404,6 +404,19 @@ public:
                 if (pmt::eq(t.key, k_frame_bytes_sp) || pmt::eq(t.key, k_frame_bytes_us)) {
 
                     if (d_in_frame && d_items_copied < d_items_expected) {
+                        // Safety net: if we're already >50% into a frame, ignore
+                        // spurious duplicate tags rather than restarting.
+                        // This protects against upstream false detections.
+                        const bool well_into_frame =
+                            (d_items_expected > 0) &&
+                            (d_items_copied > d_items_expected / 2);
+                        if (well_into_frame) {
+                            USRP_LOG("[DECODE_TAG] IGNORE duplicate frame_bytes tag "
+                                     "at copied=%llu/%llu (already >50%%)\n",
+                                     (unsigned long long)d_items_copied,
+                                     (unsigned long long)d_items_expected);
+                            break;  // Skip this tag, keep capturing current frame
+                        }
                         log_incomplete("new_frame_tag_before_complete");
                     }
 
