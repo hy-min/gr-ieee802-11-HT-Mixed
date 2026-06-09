@@ -583,77 +583,21 @@ static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint
     }
 }
 
-// Correct TX reference at each FFT bin, derived from LEGACY_LTF.
-// TX_ref[bin] = LEGACY_LTF[(bin + 32) % 64] (accounts for ifftshift in TX, fftshift in RX).
-// This is used by the header path for channel estimation.
-static constexpr gr_complex kLltfTxRefByBin[64] = {
-    // bin 0: LEGACY_LTF[32] = 0 (DC)
-    gr_complex(0.0f, 0.0f),
-    // bin 1-5: LEGACY_LTF[33-37] = guard band zeros
-    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
-    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
-    // bin 6: LEGACY_LTF[38] = -1 (SC -26)
-    gr_complex(-1.0f, 0.0f),
-    // bin 7: LEGACY_LTF[39] = +1 (SC -25)
-    gr_complex(+1.0f, 0.0f),
-    // bin 8: LEGACY_LTF[40] = -1 (SC -24)
-    gr_complex(-1.0f, 0.0f),
-    // bin 9: LEGACY_LTF[41] = +1 (SC -23)
-    gr_complex(+1.0f, 0.0f),
-    // bin 10: LEGACY_LTF[42] = -1 (SC -22)
-    gr_complex(-1.0f, 0.0f),
-    // bin 11: LEGACY_LTF[43] = +1 (SC -21, pilot)
-    gr_complex(+1.0f, 0.0f),
-    // bin 12-21: SC -20 to -11
-    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f),
-    // bin 22-24: SC -10 to -8
-    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    // bin 25: LEGACY_LTF[57] = +1 (SC -7, pilot)
-    gr_complex(+1.0f, 0.0f),
-    // bin 26-31: SC -6 to -1
-    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    // bin 32: DC = 0
-    gr_complex(0.0f, 0.0f),
-    // bin 33-38: SC +1 to +6
-    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
-    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    // bin 39: SC +7 pilot = 0
-    gr_complex(0.0f, 0.0f),
-    // bin 40-52: SC +8 to +20
-    gr_complex(-1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f), gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(+1.0f, 0.0f),
-    // bin 53: SC +21 pilot = 0
-    gr_complex(0.0f, 0.0f),
-    // bin 54-58: SC +22 to +26
-    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    gr_complex(-1.0f, 0.0f), gr_complex(+1.0f, 0.0f),
-    // bin 59-63: guard band
-    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
-    gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f), gr_complex(0.0f, 0.0f),
-};
-
 static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
 {
     // Channel estimation using LTF0.
-    // Use kLltfTxRefByBin (correct TX reference at each FFT bin) * kFftNormalize
+    // Use kLltf64Binned (correct TX reference at each FFT bin) * kFftNormalize
     // as the TX reference, matching the LS equalizer's approach:
     //   H = RX / (TX_ref * kFftNormalize)
-    // kLltfTxRefByBin is derived from LEGACY_LTF via ifftshift/fftshift compensation.
+    // kLltf64Binned is derived from LEGACY_LTF.
 
     // Compute H from LTF0 data subcarriers
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
         const int bin = kHeader48Bin[i];
-        const gr_complex tx_ref = kLltfTxRefByBin[bin];
+        const gr_complex tx_ref = kLltf64Binned[bin];
         const gr_complex tx_scaled = tx_ref * kFftNormalize;
         if (std::abs(tx_scaled) > 0.001f) {
             H52[i] = lltf0 / tx_scaled;
@@ -665,7 +609,7 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     for (int i = 0; i < 4; i++) {
         const gr_complex lltf0 = lltf0_52[48 + i];
         const int bin = kPilot4Bin[i];
-        const gr_complex tx_ref = kLltfTxRefByBin[bin];
+        const gr_complex tx_ref = kLltf64Binned[bin];
         const gr_complex tx_scaled = tx_ref * kFftNormalize;
         if (std::abs(tx_scaled) > 0.001f) {
             H52[48 + i] = lltf0 / tx_scaled;
