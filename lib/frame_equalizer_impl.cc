@@ -2132,15 +2132,23 @@ int frame_equalizer_impl::general_work(int noutput_items,
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
-            // Header symbols are NOT CFO-compensated.
-            // H is estimated from L-LTF0 (counter=0) which contains the CFO phase.
-            // L-SIG/HT-SIG (counter=2,3,4) also contain approximately the same CFO
-            // phase because they are only 2-4 symbol periods away.
-            // When dividing RX/H, the CFO cancels naturally:
-            //   eq = (sig * e^(j*phi_sig)) / (ltf0 * e^(j*phi_ltf0))
-            // Since phi_sig ≈ phi_ltf0 (small time delta), CFO approximately cancels.
-            // Compensating only the RX symbols but not H creates a domain mismatch
-            // that corrupts the equalized constellation.
+            // Apply CFO+SFO compensation to header symbols (L-SIG, HT-SIG0, HT-SIG1).
+            // L-LTF0 (counter=0) is the H reference — do NOT compensate it.
+            // L-LTF1 (counter=1) is used for CFO/SFO estimation — do NOT compensate it.
+            // L-SIG (counter=2), HT-SIG0 (3), HT-SIG1 (4) need compensation.
+            // Use d_phase_diff_per_sc[i] which contains CFO + SFO*sc for each subcarrier.
+            // This is more accurate than d_cfo_phase_per_symbol alone (which lacks SFO).
+            if (d_phase_diff_valid && d_internal_symbol_counter >= kLSigRel) {
+                for (int i = 0; i < 52; i++) {
+                    float total_phase = d_phase_diff_per_sc[i] * d_internal_symbol_counter;
+                    gr_complex rot = std::exp(gr_complex(0.0f, -total_phase));
+                    d_early_eqsym[d_internal_symbol_counter][i] *= rot;
+                }
+                USRP_LOG("[HDR_COMP] counter=%d phase[0]=%.4f phase[26]=%.4f\n",
+                         d_internal_symbol_counter,
+                         d_phase_diff_per_sc[0] * d_internal_symbol_counter,
+                         d_phase_diff_per_sc[26] * d_internal_symbol_counter);
+            }
 
             // CFO estimation from L-LTF0 / L-LTF1 phase difference
             // Use 64-bin FFT correlation (saved_ltf0_fft vs sym64) for reliability.
@@ -2148,27 +2156,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // bin mapping and guard band edge effects.
             if (d_internal_symbol_counter == kLltf1Rel &&
                 d_early_eqsym_valid[kLltf0Rel] && ltf0_ever_saved) {
-                // Compute phase_diff using the same method as LTF_CORR
-                double corr_real = 0.0, corr_imag = 0.0;
-                double energy0 = 0.0, energy1 = 0.0;
-                for (int i = 0; i < 64; i++) {
-                    corr_real += (saved_ltf0_fft[i].real() * sym64[i].real() +
-                                  saved_ltf0_fft[i].imag() * sym64[i].imag());
-                    corr_imag += (saved_ltf0_fft[i].real() * sym64[i].imag() -
-                                  saved_ltf0_fft[i].imag() * sym64[i].real());
-                    energy0 += std::norm(saved_ltf0_fft[i]);
-                    energy1 += std::norm(sym64[i]);
-                }
-                double denom = std::sqrt(energy0 * energy1);
-                if (denom > 1e-6) {
-                    d_cfo_phase_per_symbol = (float)std::atan2(corr_imag, corr_real);
-                } else {
-                    d_cfo_phase_per_symbol = 0.0f;
-                }
+                // CFO estimation is deferred to the 52-subcarrier method below
+                // (after SFO estimation), which is more accurate than 64-bin FFT
+                // correlation because it excludes noise bins (DC, guard bands).
+                // We still need d_cfo_estimated=true for the data path check.
                 d_cfo_ref_current_symbol = d_current_symbol - 1; // L-LTF0's index
                 d_cfo_estimated = true;
-                USRP_LOG("[CFO_EST] phase_per_symbol=%.4f rad  ref_sym=%d (64-bin)\n",
-                         d_cfo_phase_per_symbol, d_cfo_ref_current_symbol);
 
                 // Estimate SFO using linear regression on all 52 subcarriers.
                 // phase_diff[i] = CFO + SFO * sc_index[i].
@@ -2197,6 +2190,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 float sfo_est = (sum_sc2 > 1e-6) ? (float)(sum_sc_phase / sum_sc2) : 0.0f;
                 float cfo_est = (float)(sum_phase / 52.0); // mean phase = intercept
+
+                // Use the more accurate 52-subcarrier mean instead of 64-bin correlation
+                d_cfo_phase_per_symbol = cfo_est;
+                USRP_LOG("[CFO_EST] phase_per_symbol=%.4f rad (52-sc mean, was 64-bin)\n",
+                         d_cfo_phase_per_symbol);
+
                 // Clamp excessive SFO: USRP clock accuracy < 1 ppm, SFO should be < 0.001 rad/SC.
                 // Noisy L-LTF estimates at low SNR can produce spurious SFO values.
                 if (std::abs(sfo_est) > 0.001f) {
@@ -2208,18 +2207,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     d_phase_diff_per_sc[i] = cfo_est + sfo_est * kScIndex52[i];
                 }
                 d_phase_diff_valid = true;
-                USRP_LOG("[SFO_EST] cfo=%.4f sfo=%.6f rad/SC\n", cfo_est, sfo_est);
+                USRP_LOG("[SFO_EST] cfo=%.4f sfo=%.6f rad/SC d_cfo=%.4f\n",
+                         cfo_est, sfo_est, d_cfo_phase_per_symbol);
             }
 
-            // Header CFO compensation is intentionally DISABLED.
-            // Rationale: H is estimated from un-compensated L-LTF0, so H carries
-            // the CFO phase of the reference symbol. L-SIG and HT-SIG are only
-            // 2-4 OFDM symbol periods away from L-LTF0, so their CFO phase is
-            // approximately equal to L-LTF0's. When we divide RX/H, the common
-            // CFO phase cancels: eq = (sig * e^(j*phi)) / (ltf0 * e^(j*phi)) ≈ sig/ltf0.
-            // If we were to compensate L-SIG/HT-SIG but not L-LTF0, the residual
-            // e^(-j*phi_ltf0) would rotate BPSK/QBPSK constellations, causing
-            // hard-decision errors and HT-SIG CRC failures.
+            // Header CFO+SFO compensation is applied above using d_phase_diff_per_sc.
+            // This compensates both common CFO and per-subcarrier SFO (more complete
+            // than the data path which only compensates common CFO). The 52-subcarrier
+            // estimation (below) is
+            // more accurate than the old 64-bin FFT correlation because it
+            // excludes noise bins (DC, Nyquist, guard bands).
 
             // Legacy vs HT-Mixed frame type detection via QBPSK rotation
             // HT-SIG0 uses 90 rotated BPSK: E_Q > E_I after equalization.
