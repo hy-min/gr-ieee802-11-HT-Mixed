@@ -97,7 +97,7 @@ class MinimalUSRPTest(gr.top_block):
         self.uhd_usrp_sink.set_antenna("TX/RX", 0)
         self.uhd_usrp_sink.set_subdev_spec("A:0", 0)
         
-        # USRP RX (Radio 1, RX2 port)
+        # USRP RX (Radio 0, RX2 port - same board TDD)
         self.uhd_usrp_source = uhd.usrp_source(
             device_addr="addr=192.168.10.2",
             stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
@@ -106,7 +106,7 @@ class MinimalUSRPTest(gr.top_block):
         self.uhd_usrp_source.set_center_freq(args.freq * 1e6, 0)
         self.uhd_usrp_source.set_gain(args.rx_gain, 0)
         self.uhd_usrp_source.set_antenna("RX2", 0)
-        self.uhd_usrp_source.set_subdev_spec("B:0", 0)
+        self.uhd_usrp_source.set_subdev_spec("A:0", 0)
         self.uhd_usrp_source.set_bandwidth(args.rate * 1e6, 0)
         
         # RX Buffer
