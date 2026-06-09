@@ -2230,6 +2230,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                     d_early_eqsym[kLltf1Rel],
                                                     H52);
 
+                USRP_LOG("[H_DIAG] lltf0[0]=(%.3f%+.3fi) lltf0[25]=(%.3f%+.3fi) "
+                         "lsig[0]=(%.3f%+.3fi) lsig[25]=(%.3f%+.3fi) "
+                         "H[0]=(%.3f%+.3fi) H[25]=(%.3f%+.3fi) d_phase_diff_valid=%d\n",
+                         d_early_eqsym[kLltf0Rel][0].real(), d_early_eqsym[kLltf0Rel][0].imag(),
+                         d_early_eqsym[kLltf0Rel][25].real(), d_early_eqsym[kLltf0Rel][25].imag(),
+                         d_early_eqsym[kLSigRel][0].real(), d_early_eqsym[kLSigRel][0].imag(),
+                         d_early_eqsym[kLSigRel][25].real(), d_early_eqsym[kLSigRel][25].imag(),
+                         H52[0].real(), H52[0].imag(), H52[25].real(), H52[25].imag(),
+                         d_phase_diff_valid ? 1 : 0);
+
                 // Equalize HT-SIG0 raw with H
                 gr_complex eq_htsig0[52];
                 for (int i = 0; i < 52; i++) {
