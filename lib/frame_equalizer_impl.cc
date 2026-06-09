@@ -1,7 +1,7 @@
 #include "frame_equalizer_impl.h"
 
 // USRP debug log control - uncomment to enable verbose logs
-// #define USRP_DEBUG_LOGS
+#define USRP_DEBUG_LOGS
 #ifdef USRP_DEBUG_LOGS
 #define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
 #define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
@@ -574,9 +574,8 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 gr_complex* H52)
 {
     // Channel estimation using LTF0.
-    // Use kLltf64Binned (correct TX reference at each FFT bin) * kFftNormalize
-    // as the TX reference, matching the LS equalizer's approach:
-    //   H = RX / (TX_ref * kFftNormalize)
+    // Use kLltf64Binned (correct TX reference at each FFT bin) without kFftNormalize.
+    // H = RX / TX_ref (matching data path approach, not LS equalizer).
     // kLltf64Binned is derived from LEGACY_LTF.
 
     // Compute H from LTF0 data subcarriers
@@ -584,9 +583,8 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex lltf0 = lltf0_52[i];
         const int bin = kHeader48Bin[i];
         const gr_complex tx_ref = kLltf64Binned[bin];
-        const gr_complex tx_scaled = tx_ref * kFftNormalize;
-        if (std::abs(tx_scaled) > 0.001f) {
-            H52[i] = lltf0 / tx_scaled;
+        if (std::abs(tx_ref) > 0.001f) {
+            H52[i] = lltf0 / tx_ref;
         } else {
             H52[i] = lltf0;
         }
@@ -596,9 +594,8 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex lltf0 = lltf0_52[48 + i];
         const int bin = kPilot4Bin[i];
         const gr_complex tx_ref = kLltf64Binned[bin];
-        const gr_complex tx_scaled = tx_ref * kFftNormalize;
-        if (std::abs(tx_scaled) > 0.001f) {
-            H52[48 + i] = lltf0 / tx_scaled;
+        if (std::abs(tx_ref) > 0.001f) {
+            H52[48 + i] = lltf0 / tx_ref;
         } else {
             H52[48 + i] = lltf0;
         }
@@ -666,7 +663,6 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52[i], H52[i]);
-            eq /= kFftNormalize;
         }
         out_eq48[i] = eq;
         out_bits48[i] = hard_bit_from_complex(eq);
@@ -1164,7 +1160,6 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
             eq = gr_complex(0.0f, 0.0f);
         } else {
             eq = safe_div(rx52[i], H52[i]);
-            eq /= kFftNormalize;
         }
         eqbits48[i] = hard_bit_from_complex(eq);
     }
@@ -2247,7 +2242,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 for (int i = 0; i < 52; i++) {
                     if (std::abs(H52[i]) > 0.01f) {
                         eq_htsig0[i] = htsig0_cpe[i] / H52[i];
-                        eq_htsig0[i] /= kFftNormalize;
                     } else {
                         eq_htsig0[i] = gr_complex(0.0f, 0.0f);
                     }
@@ -2278,7 +2272,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 for (int i = 0; i < 52; i++) {
                     if (std::abs(H52[i]) > 0.01f) {
                         eq_lsig[i] = lsig_cpe[i] / H52[i];
-                        eq_lsig[i] /= kFftNormalize;
                     } else {
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
                     }
