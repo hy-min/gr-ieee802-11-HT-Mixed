@@ -1,7 +1,7 @@
 #include "frame_equalizer_impl.h"
 
 // USRP debug log control - uncomment to enable verbose logs
-#define USRP_DEBUG_LOGS
+// #define USRP_DEBUG_LOGS
 #ifdef USRP_DEBUG_LOGS
 #define USRP_LOG(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
 #define USRP_LOG_STD(...) do { std::fprintf(stderr, __VA_ARGS__); } while(0)
@@ -535,43 +535,10 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         ltf0_saved = true;
         ltf0_ever_saved = true;
 
-        // DIAGNOSTIC: Print actual RX FFT values at key bins vs kLltf64Binned
-        static int ltf0_diag = 0;
-        if (ltf0_diag < 3) {
-            USRP_LOG("[RX_FFT_DIAG] LTF0 bin 6: rx=(%.4f,%.4f) kLltf64Binned=(%.1f,%.1f)\n",
-                    sym64[6].real(), sym64[6].imag(),
-                    kLltf64Binned[6].real(), kLltf64Binned[6].imag());
-            USRP_LOG("[RX_FFT_DIAG] LTF0 bin 38: rx=(%.4f,%.4f) kLltf64Binned=(%.1f,%.1f)\n",
-                    sym64[38].real(), sym64[38].imag(),
-                    kLltf64Binned[38].real(), kLltf64Binned[38].imag());
-            USRP_LOG("[RX_FFT_DIAG] LTF0 bin 1: rx=(%.4f,%.4f) kLltf64Binned=(%.1f,%.1f)\n",
-                    sym64[1].real(), sym64[1].imag(),
-                    kLltf64Binned[1].real(), kLltf64Binned[1].imag());
-            ltf0_diag++;
-        }
     }
 
     if (extract_call_count == 1 && ltf0_saved) {
         ltf0_saved = false;
-    }
-
-    // L-LTF0/L-LTF1 correlation diagnostic
-    if (extract_call_count == 1 && ltf0_ever_saved) {
-        double corr_real = 0.0, corr_imag = 0.0;
-        double energy0 = 0.0, energy1 = 0.0;
-        for (int i = 0; i < 64; i++) {
-            corr_real += (saved_ltf0_fft[i].real() * sym64[i].real() +
-                          saved_ltf0_fft[i].imag() * sym64[i].imag());
-            corr_imag += (saved_ltf0_fft[i].real() * sym64[i].imag() -
-                          saved_ltf0_fft[i].imag() * sym64[i].real());
-            energy0 += std::norm(saved_ltf0_fft[i]);
-            energy1 += std::norm(sym64[i]);
-        }
-        double denom = std::sqrt(energy0 * energy1);
-        double similarity = (denom > 1e-6) ? (corr_real / denom) : 0.0;
-        double phase_diff = (denom > 1e-6) ? std::atan2(corr_imag, corr_real) : 0.0;
-        USRP_LOG( "[LTF_CORR] similarity=%.4f phase_diff=%.4f(%.1fdeg) energy0=%.2f energy1=%.2f\n",
-                similarity, phase_diff, phase_diff * 180.0 / M_PI, energy0, energy1);
     }
 
     if (extract_call_count == 6 && ltf0_ever_saved) {
@@ -1551,31 +1518,6 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     const uint8_t crc_calc = ht_sig_crc8_calc(decoded_bits);
 
-    // ---- HT-SIG decode diagnostic probe ----
-    {
-        static int decode_call_count = 0;
-        bool crc_pass = (crc_rx == crc_calc);
-        USRP_LOG( "[HTSIG_DECODE] #%d rot=%d inv_a=%d inv_b=%d crc=%s (rx=0x%02x calc=0x%02x) adv_coding=%d mcs=%d len=%d\n",
-                decode_call_count, rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
-                crc_pass ? "PASS" : "FAIL",
-                crc_rx, crc_calc, adv_coding, mcs, psdu_length);
-        if (decode_call_count == 0) {
-            // Print equalized bits for HT-SIG0
-            USRP_LOG( "[HTSIG_BITS] eq48=");
-            for (int i = 0; i < 48; i++) USRP_LOG( "%d", eqbits48_a[i]);
-            USRP_LOG( "\n");
-            // Print deinterleaved bits for HT-SIG0
-            USRP_LOG( "[HTSIG_BITS] deint48=");
-            for (int i = 0; i < 48; i++) USRP_LOG( "%d", deintl48_a[i]);
-            USRP_LOG( "\n");
-            // Print decoded (viterbi) bits
-            USRP_LOG( "[HTSIG_BITS] viterbi=");
-            for (int i = 0; i < 48; i++) USRP_LOG( "%d", decoded_bits[i] & 1);
-            USRP_LOG( "\n");
-        }
-        decode_call_count++;
-    }
-
     for (int i = 42; i < 48; i++) {
         if (decoded_bits[i] != 0) {
             return false;
@@ -2103,16 +2045,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
     std::set<uint64_t> wifi_offsets;
     std::map<uint64_t, double> wifi_freq_offsets;
-    static int eq_tag_probe_count = 0;
-    if (!wifi_tags.empty() && eq_tag_probe_count < 20) {
-        USRP_LOG( "[EQ_TAGS] abs_in=%llu n_in=%d n_tags=%zu",
-                (unsigned long long)abs_in_start, n_in, wifi_tags.size());
-        for (const auto& t : wifi_tags) {
-            USRP_LOG( " offset=%llu", (unsigned long long)t.offset);
-        }
-        USRP_LOG( "\n");
-        eq_tag_probe_count++;
-    }
     for (const auto& t : wifi_tags) {
         wifi_offsets.insert((uint64_t)t.offset);
         if (pmt::is_real(t.value)) {
@@ -2132,11 +2064,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
         const bool wifi_start = (wifi_offsets.count(abs_in_off) != 0);
 
-        // PROBE: Track frame detection
-        static int eq_frame_seq = 0;
-        static int eq_skip_count = 0;
-        static bool eq_last_in_frame = false;
-
         if (!d_in_frame) {
             if (d_discard_until_wifi_start) {
                 if (wifi_start) {
@@ -2149,16 +2076,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             if (!wifi_start) {
-                eq_skip_count++;
                 consumed++;
                 d_current_symbol++;
                 continue;
             }
 
-            eq_frame_seq++;
-            USRP_LOG( "[EQ_FRAME_START] frame_seq=%d abs_in_off=%llu skip_count=%d\n",
-                    eq_frame_seq, (unsigned long long)abs_in_off, eq_skip_count);
-            eq_skip_count = 0;
             d_in_frame = true;
             reset_frame_state();
 
@@ -2187,10 +2109,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             if (allow_takeover) {
-                USRP_LOG( "[EQ_FRAME_TAKEOVER] frame_seq=%d abs_in_off=%llu d_have_ht=%d d_sym_idx=%d\n",
-                        eq_frame_seq + 1, (unsigned long long)abs_in_off, d_have_ht_header, d_sym_idx);
-                eq_frame_seq++;
-                eq_skip_count = 0;
                 reset_frame_state();
                 d_in_frame = true;
             } else {
@@ -2319,36 +2237,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 estimate_header_channel_from_lltf52(lltf0_cpe_corrected,
                                                     d_early_eqsym[kLltf1Rel],
                                                     H52);
-
-                // DIAGNOSTIC: Compare header H with what LS equalizer would compute
-                // LS uses: H_ls = RX / (TX * kFftNormalize) where TX is ±1
-                // Header uses: H_hdr = RX / TX (no kFftNormalize)
-                // So H_hdr = H_ls * kFftNormalize
-                {
-                    static int diag_count = 0;
-                    if (diag_count < 5) {
-                        // Print first 6 subcarriers: extracted value, H, and LS-style H
-                        USRP_LOG("[H_DIAG] --- Frame %d ---\n", diag_count);
-                        for (int i = 0; i < 6; i++) {
-                            int bin = kHeader48Bin[i];
-                            float tx_i = kLltf48TX[i].real();  // ±1
-                            gr_complex rx_val = d_early_eqsym[kLltf0Rel][i];
-                            gr_complex h_hdr = H52[i];
-                            gr_complex h_ls = rx_val / (gr_complex(tx_i, 0.0f) * kFftNormalize);
-                            USRP_LOG("[H_DIAG] sc=%d bin=%d rx=(%.4f,%.4f) tx=%+.0f H_hdr=(%.4f,%.4f) H_ls=(%.4f,%.4f)\n",
-                                    i, bin, rx_val.real(), rx_val.imag(), tx_i,
-                                    h_hdr.real(), h_hdr.imag(), h_ls.real(), h_ls.imag());
-                        }
-                        // Also print what LS equalizer would give for bin 38 (SC -26)
-                        // The LS equalizer processes all 64 bins, but we only have the 52 extracted.
-                        // For comparison, check if kLltf64Binned[38] matches kLltf48TX[0]
-                        USRP_LOG("[H_DIAG] kLltf64Binned[38]=(%.1f,%.1f) kLltf48TX[0]=(%.1f,%.1f) match=%d\n",
-                                kLltf64Binned[38].real(), kLltf64Binned[38].imag(),
-                                kLltf48TX[0].real(), kLltf48TX[0].imag(),
-                                (std::abs(kLltf64Binned[38].real() - kLltf48TX[0].real()) < 0.01f) ? 1 : 0);
-                        diag_count++;
-                    }
-                }
 
                 // Apply CPE to HT-SIG0 raw before equalization
                 gr_complex htsig0_cpe[52];
@@ -2610,7 +2498,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             if (use_direct_tx_order) {
                 if (!d_H52_tx_order_valid) {
                     // Always use L-LTF0 for H estimation.
-                    // compute_H52_tx_order is designed for L-LTF0 data (uses kLltf48TX).
+                    // compute_H52_tx_order is designed for L-LTF0 data (uses kLltf64Binned).
                     // Using it with HT-LTF1 data is a category error - HT-LTF has
                     // different TX reference sequence (PHT_LTF vs legacy LTF).
                     // Edge subcarriers (-28,-27,+27,+28) already come from HT-LTF1
