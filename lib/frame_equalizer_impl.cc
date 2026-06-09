@@ -2131,6 +2131,22 @@ int frame_equalizer_impl::general_work(int noutput_items,
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
+            // Apply CFO compensation to header symbols (L-SIG, HT-SIG).
+            // L-LTF0 (counter=0) is the H reference — do NOT compensate it.
+            // L-LTF1 (counter=1) is used for CFO estimation — do NOT compensate it.
+            // L-SIG (counter=2), HT-SIG0 (3), HT-SIG1 (4) need compensation.
+            // Compensation = exp(-j * d_cfo_phase_per_symbol * counter)
+            // because each symbol is offset by 'counter' symbol periods from L-LTF0.
+            if (d_cfo_estimated && d_internal_symbol_counter >= kLSigRel) {
+                float cfo_phase = d_cfo_phase_per_symbol * d_internal_symbol_counter;
+                gr_complex rot = std::exp(gr_complex(0.0f, -cfo_phase));
+                for (int i = 0; i < 52; i++) {
+                    d_early_eqsym[d_internal_symbol_counter][i] *= rot;
+                }
+                USRP_LOG("[CFO_COMP_HDR] counter=%d phase=%.4f rad rot=%.4f%+.4fi\n",
+                         d_internal_symbol_counter, cfo_phase, rot.real(), rot.imag());
+            }
+
             // CFO estimation from L-LTF0 / L-LTF1 phase difference
             // Use 64-bin FFT correlation (saved_ltf0_fft vs sym64) for reliability.
             // The 52-carrier extraction can introduce spurious phase offsets due to
