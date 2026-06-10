@@ -52,9 +52,7 @@ def classify_frame(eq, H_mag, rx):
     """Return (verdict, stats_dict)."""
     mag = np.abs(eq)
     margin = np.abs(eq.real) - np.abs(eq.imag)
-    phase_deg = np.angle(eq, deg=True)
-    # Wrap phases to [-180, 180]
-    phase_deg = (phase_deg + 180.0) % 360.0 - 180.0
+    phase_deg = np.angle(eq, deg=True)  # already in [-180, 180]
 
     mean_mag = float(np.mean(mag))
     std_mag = float(np.std(mag))
@@ -81,19 +79,27 @@ def classify_frame(eq, H_mag, rx):
         "is_bimodal": is_bimodal,
     }
 
-    # Classification heuristics
+    # Classification heuristics (order matters)
     if mean_mag < 0.3 or mean_mag > 3.0:
         return "MAGNITUDE_ERROR", stats
     if std_mag > 1.5 * mean_mag:
         return "MAGNITUDE_ERROR", stats
     if mean_margin < 0.2 and phase_spread > 70:
         return "NOISE_LIKE", stats
-    if mean_margin > 0.5 and phase_spread < 30 and is_bimodal:
+    # OK: BPSK-like constellation (bimodal Re, good margin, not noisy)
+    # Require: bimodal Re AND mean margin > 0.5.
+    # phase_spread can be large (BPSK phases are bimodal 0/180, std ~90)
+    # but NOT 0 (pure 90° rotation has phase_spread ~0 with pos_re_frac=0.5).
+    # Use the OFF-AXIS test: is_bimodal AND mean_margin > 0.5 means Re-axis
+    # is dominant, so this is genuine BPSK (or close to it).
+    if is_bimodal and mean_margin > 0.5:
         return "OK", stats
-    if mean_margin > 0.3 and phase_spread < 60 and not is_bimodal:
+    # PHASE_ROTATION: low phase spread (single cluster) but NOT bimodal
+    if phase_spread < 30 and not is_bimodal:
         return "PHASE_ROTATION", stats
+    # PHASE_ROTATION: bimodal but mean margin < 0.5 (off-axis BPSK)
     if is_bimodal and mean_margin > 0.3:
-        return "OK", stats
+        return "PHASE_ROTATION", stats
     return "MIXED", stats
 
 
