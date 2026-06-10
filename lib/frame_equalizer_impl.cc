@@ -2395,23 +2395,57 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // 2026-06-10-eqlsig-constellation-diagnosis.md). Atomic
                 // snprintf+USRP_LOG so sync_short stdout writes cannot
                 // interleave mid-line (lessons learned from e90e3f5).
-                // Format: [LSIG_EQ_FULL] is_ht=N H_mag=...,...,... rx=...,...,... eq=r,i,r,i,...,r,i
+                //
+                // Format:
+                //   [LSIG_EQ_FULL] is_ht=N H_mag=H0,H1,...,H51
+                //                   rx=R0,R1,...,R51
+                //                   eq=Er0,Ei0,Er1,Ei1,...,Er51,Ei51
+                // Subcarrier order: 802.11n standard 52-SC index.
+                //
+                // Relies on stderr being unbuffered (glibc default).
+                // Do NOT setvbuf(stderr, ...) — atomicity depends on it.
+                //
+                // On buffer overflow, append " TRUNC" so the offline
+                // classifier can detect and skip the line.
                 char dump[2560];
+                bool truncated = false;
                 int n = snprintf(dump, sizeof(dump),
                                  "[LSIG_EQ_FULL] is_ht=%d H_mag=",
                                  d_is_ht_frame ? 1 : 0);
-                for (int i = 0; i < 52 && n < (int)sizeof(dump); i++)
-                    n += snprintf(dump+n, sizeof(dump)-n, "%.3f,", std::abs(H52[i]));
-                n += snprintf(dump+n, sizeof(dump)-n, " rx=");
-                for (int i = 0; i < 52 && n < (int)sizeof(dump); i++)
-                    n += snprintf(dump+n, sizeof(dump)-n, "%.3f,",
-                                  std::abs(d_early_eqsym[kLSigRel][i]));
-                n += snprintf(dump+n, sizeof(dump)-n, " eq=");
-                for (int i = 0; i < 52 && n < (int)sizeof(dump); i++) {
-                    n += snprintf(dump+n, sizeof(dump)-n, "%.3f,%.3f,",
-                                  eq_lsig[i].real(), eq_lsig[i].imag());
+                if (n < 0 || n >= (int)sizeof(dump)) { truncated = true; n = (int)sizeof(dump) - 8; }
+                for (int i = 0; i < 52; i++) {
+                    if (n >= (int)sizeof(dump) - 16) { truncated = true; break; }
+                    int w = snprintf(dump+n, sizeof(dump)-n, "%.3f,",
+                                     std::abs(H52[i]));
+                    if (w < 0) { truncated = true; break; }
+                    n += w;
                 }
-                snprintf(dump+n, sizeof(dump)-n, "\n");
+                if (n < (int)sizeof(dump) - 8)
+                    n += snprintf(dump+n, sizeof(dump)-n, " rx=");
+                for (int i = 0; i < 52; i++) {
+                    if (n >= (int)sizeof(dump) - 16) { truncated = true; break; }
+                    int w = snprintf(dump+n, sizeof(dump)-n, "%.3f,",
+                                     std::abs(d_early_eqsym[kLSigRel][i]));
+                    if (w < 0) { truncated = true; break; }
+                    n += w;
+                }
+                if (n < (int)sizeof(dump) - 8)
+                    n += snprintf(dump+n, sizeof(dump)-n, " eq=");
+                for (int i = 0; i < 52; i++) {
+                    if (n >= (int)sizeof(dump) - 24) { truncated = true; break; }
+                    int w = snprintf(dump+n, sizeof(dump)-n, "%.3f,%.3f,",
+                                     eq_lsig[i].real(), eq_lsig[i].imag());
+                    if (w < 0) { truncated = true; break; }
+                    n += w;
+                }
+                if (truncated) {
+                    // Make sure we have room for " TRUNC\n"
+                    if (n > (int)sizeof(dump) - 8)
+                        n = (int)sizeof(dump) - 8;
+                    n += snprintf(dump+n, sizeof(dump)-n, " TRUNC\n");
+                } else {
+                    snprintf(dump+n, sizeof(dump)-n, "\n");
+                }
                 USRP_LOG("%s", dump);
                 double E_I_lsig, E_Q_lsig;
                 compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
