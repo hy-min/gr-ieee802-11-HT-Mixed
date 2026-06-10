@@ -56,7 +56,7 @@ def make_header52_with_cfo_sfo(bpsk_symbols, sym_counter, cfo_per_sym, sfo_per_s
     return full * np.exp(1j * phases)
 
 
-def estimate_h_with_compensation(lltf0_52, lltf1_52, sym_counter,
+def estimate_h_with_compensation(lltf0_52, sym_counter,
                                  cfo_per_sym, sfo_per_sc):
     """Apply CFO+SFO compensation to L-LTF0 (mirroring the new frame_equalizer path)
     then compute H = lltf0 / tx_reference (mirroring estimate_header_channel_from_lltf52).
@@ -78,7 +78,7 @@ def test_no_cfo_no_sfo():
                                        cfo_per_sym=0.0, sfo_per_sc=0.0)
     lltf1 = make_header52_with_cfo_sfo(KL_LTF_48_TX, sym_counter=1,
                                        cfo_per_sym=0.0, sfo_per_sc=0.0)
-    H = estimate_h_with_compensation(lltf0, lltf1, sym_counter=0,
+    H = estimate_h_with_compensation(lltf0, sym_counter=0,
                                      cfo_per_sym=0.0, sfo_per_sc=0.0)
     eq = bpsk / H[:48]
     imag_max = np.max(np.abs(eq.imag))
@@ -87,9 +87,10 @@ def test_no_cfo_no_sfo():
 
 
 def test_cfo_only():
-    """With CFO=0.3 rad/sym (typical USRP), the L-SIG relative to L-LTF0 has
-    2*counter=4 rad of extra rotation if we don't compensate L-LTF0 first.
-    After compensation, eq should still be ~real +/-1."""
+    """With CFO=0.3 rad/sym (typical USRP) and L-LTF0 counter=1, L-SIG counter=3,
+    the L-SIG relative to L-LTF0 has a 2*cfo = 0.6 rad rotation. After
+    compensating L-LTF0 with the same per-SC phase and compensating L-SIG
+    (line 2141 of frame_equalizer_impl.cc), eq should be ~real +/-1."""
     cfo = 0.3  # rad per OFDM symbol (typical USRP)
     sfo = 0.0
     np.random.seed(42)
@@ -101,7 +102,7 @@ def test_cfo_only():
     # L-SIG is at counter=3: 3*counter=6 = 3*cfo rad of extra rotation vs L-LTF0.
     lsig = make_header52_with_cfo_sfo(bpsk, sym_counter=3,
                                       cfo_per_sym=cfo, sfo_per_sc=sfo)
-    H = estimate_h_with_compensation(lltf0, lltf1, sym_counter=1,
+    H = estimate_h_with_compensation(lltf0, sym_counter=1,
                                      cfo_per_sym=cfo, sfo_per_sc=sfo)
     # L-SIG compensation (mirrors line 2141 of frame_equalizer_impl.cc):
     phases_lsig = (cfo + sfo * K_SC_INDEX_52.astype(np.float32)) * 3
@@ -124,7 +125,7 @@ def test_cfo_and_sfo():
                                        cfo_per_sym=cfo, sfo_per_sc=sfo)
     lsig = make_header52_with_cfo_sfo(bpsk, sym_counter=3,
                                       cfo_per_sym=cfo, sfo_per_sc=sfo)
-    H = estimate_h_with_compensation(lltf0, lltf1, sym_counter=1,
+    H = estimate_h_with_compensation(lltf0, sym_counter=1,
                                      cfo_per_sym=cfo, sfo_per_sc=sfo)
     # L-SIG compensation (mirrors line 2141 of frame_equalizer_impl.cc):
     phases_lsig = (cfo + sfo * K_SC_INDEX_52.astype(np.float32)) * 3
@@ -154,9 +155,12 @@ def test_uncompensated_baseline_fails():
     H_uncomp = np.zeros(52, dtype=np.complex64)
     H_uncomp[:48] = lltf0[:48] / KL_LTF_48_TX
     H_uncomp[48:] = lltf0[48:] / K_PILOT_TX
-    # We DO compensate L-SIG (line 2141), so the residual is the 2*cfo
-    # rotation that L-LTF0 has but L-SIG-compensated does not.
-    # Simulate the line 2141 compensation on L-SIG:
+    # L-LTF0 at counter=1 has a 1*cfo rotation that L-LTF0 H (uncompensated)
+    # carries through. L-SIG at counter=2 is compensated by 2*cfo, so after
+    # HDR_COMP it has no rotation. The uncompensated H therefore contributes
+    # a 1*cfo residual that the L-SIG compensation does not cancel.
+    # This is the domain-mismatch bug: H and the L-SIG-compensated symbols
+    # are in different phase domains.
     lsig_comp = lsig * np.exp(-1j * cfo * 2)
     eq = lsig_comp[:48] / H_uncomp[:48]
     imag_max = np.max(np.abs(eq.imag))
