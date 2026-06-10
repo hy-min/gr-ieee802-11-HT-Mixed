@@ -2454,6 +2454,41 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     snprintf(dump+n, sizeof(dump)-n, "\n");
                 }
                 USRP_LOG("%s", dump);
+
+                // Phase residual diagnostic (Task 5.1 of spec):
+                // Dump arg(eq_lsig[i]) for all 48 data subcarriers per frame.
+                // Goal: quantify how far the equalized L-SIG constellation is
+                // from the I-axis (BPSK). mean_phase ≈ 0 means no common
+                // rotation; std_phase ≈ 0 means no per-subcarrier phase noise.
+                // See spec: docs/superpowers/specs/2026-06-10-phase-noise-lsig-design.md
+                if (d_log_phase_residual) {
+                    double sum_arg = 0.0, sum_arg2 = 0.0;
+                    int cnt = 0;
+                    for (int i = 0; i < 48; i++) {
+                        float a = std::arg(eq_lsig[i]);
+                        sum_arg += a;
+                        sum_arg2 += (double)a * a;
+                        cnt++;
+                    }
+                    double mean_phase = (cnt > 0) ? sum_arg / cnt : 0.0;
+                    double var_phase = (cnt > 0) ? (sum_arg2 / cnt - mean_phase * mean_phase) : 0.0;
+                    double std_phase = (var_phase > 0) ? std::sqrt(var_phase) : 0.0;
+
+                    char phase_dump[1024];
+                    int pn = snprintf(phase_dump, sizeof(phase_dump),
+                                      "[PHASE_RESIDUAL] counter=%d eq_phase=",
+                                      d_internal_symbol_counter);
+                    for (int i = 0; i < 48 && pn < (int)sizeof(phase_dump) - 16; i++) {
+                        int w = snprintf(phase_dump + pn, sizeof(phase_dump) - pn, "%.3f,",
+                                         std::arg(eq_lsig[i]));
+                        if (w < 0) break;
+                        pn += w;
+                    }
+                    pn += snprintf(phase_dump + pn, sizeof(phase_dump) - pn,
+                                   " mean=%.3f std=%.3f\n", mean_phase, std_phase);
+                    USRP_LOG("%s", phase_dump);
+                }
+
                 double E_I_lsig, E_Q_lsig;
                 compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
                 double ratio_lsig = (E_I_lsig > 1e-10) ? E_Q_lsig / E_I_lsig : 0.0;
