@@ -2192,6 +2192,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 float sfo_est = (sum_sc2 > 1e-6) ? (float)(sum_sc_phase / sum_sc2) : 0.0f;
                 float cfo_est = (float)(sum_phase / 52.0); // mean phase = intercept
+                d_sfo_per_sc_est = sfo_est;
 
                 // Use the more accurate 52-subcarrier mean instead of 64-bin correlation
                 d_cfo_phase_per_symbol = cfo_est;
@@ -2214,27 +2215,34 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             // Store compensated L-LTF0 and L-LTF1 for later H estimation.
-            // Counter for L-LTF0 is 0, for L-LTF1 is 1.
-            if (d_early_eqsym_valid[kLltf0Rel]) {
+            // Counter for L-LTF0 is 0, for L-LTF1 is 1. We populate and log
+            // only once per frame (at kHtSig0Rel), since d_early_eqsym and
+            // d_phase_diff_per_sc do not change after counter=1.
+            if (d_internal_symbol_counter == kHtSig0Rel &&
+                d_phase_diff_valid &&
+                d_early_eqsym_valid[kLltf0Rel]) {
                 for (int i = 0; i < 52; i++) {
-                    float ph = d_phase_diff_per_sc[i] * 0;  // counter=0
+                    // counter=0 -> ph=0; this is a copy, not a real
+                    // compensation, but kept symmetric with slot 1 for clarity.
+                    float ph = d_phase_diff_per_sc[i] * 0;
                     d_ltf_compensated[0][i] = d_early_eqsym[kLltf0Rel][i] *
                         std::exp(gr_complex(0.0f, -ph));
                 }
                 d_ltf_compensated_valid[0] = true;
-            }
-            if (d_early_eqsym_valid[kLltf1Rel]) {
-                for (int i = 0; i < 52; i++) {
-                    float ph = d_phase_diff_per_sc[i] * 1;  // counter=1
-                    d_ltf_compensated[1][i] = d_early_eqsym[kLltf1Rel][i] *
-                        std::exp(gr_complex(0.0f, -ph));
+                if (d_early_eqsym_valid[kLltf1Rel]) {
+                    for (int i = 0; i < 52; i++) {
+                        float ph = d_phase_diff_per_sc[i] * 1;
+                        d_ltf_compensated[1][i] = d_early_eqsym[kLltf1Rel][i] *
+                            std::exp(gr_complex(0.0f, -ph));
+                    }
+                    d_ltf_compensated_valid[1] = true;
                 }
-                d_ltf_compensated_valid[1] = true;
+                USRP_LOG("[LTF_COMP] cfo=%.4f sfo=%.6f stored compensated L-LTF0/L-LTF1 (valid0=%d valid1=%d)\n",
+                         d_cfo_phase_per_symbol,
+                         d_sfo_per_sc_est,
+                         d_ltf_compensated_valid[0] ? 1 : 0,
+                         d_ltf_compensated_valid[1] ? 1 : 0);
             }
-            USRP_LOG("[LTF_COMP] cfo=%.4f stored compensated L-LTF0/L-LTF1 (valid0=%d valid1=%d)\n",
-                     d_cfo_phase_per_symbol,
-                     d_ltf_compensated_valid[0] ? 1 : 0,
-                     d_ltf_compensated_valid[1] ? 1 : 0);
 
             // Header CFO+SFO compensation is applied above using d_phase_diff_per_sc.
             // This compensates both common CFO and per-subcarrier SFO (more complete

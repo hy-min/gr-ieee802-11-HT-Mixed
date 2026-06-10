@@ -88,6 +88,7 @@ private:
     bool  d_cfo_estimated;          // true after L-LTF1 arrives
     float d_phase_diff_per_sc[52];  // per-subcarrier phase diff L-LTF1 vs L-LTF0 (rad)
     bool  d_phase_diff_valid;       // true after L-LTF1 arrives
+    float d_sfo_per_sc_est = 0.0f;  // raw SFO estimate (rad/subcarrier) for logging
     bool  d_enable_cfo_comp;        // enable CFO/SFO compensation on HT-DATA
 
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
@@ -95,6 +96,11 @@ private:
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
     // domain, eliminating the residual rotation that otherwise leaks into
     // the equalized header symbols.
+    //
+    // Note: slot 0 (L-LTF0) has counter=0 so phase = 0, making this
+    // element a byte-identical copy of d_early_eqsym[kLltf0Rel]. We keep
+    // the symmetric structure for code clarity — only slot 1 actually
+    // applies a meaningful rotation.
     gr_complex d_ltf_compensated[2][52];
     bool d_ltf_compensated_valid[2] = {false, false};
 
