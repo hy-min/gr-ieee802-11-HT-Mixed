@@ -2391,6 +2391,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
                     }
                 }
+                // Compensate for kFftNormalize in H estimate (H includes
+                // kFftNormalize in the denominator at line 446-463, so
+                // equalized symbols are scaled up by kFftNormalize).
+                // This matches the data-path normalization at line 2488
+                // (raw_eq52[k] /= kFftNormalize) and the LS equalizer
+                // normalization at line 312-316.
+                for (int i = 0; i < 52; i++) {
+                    eq_lsig[i] /= kFftNormalize;
+                }
                 // Full 52-subcarrier L-SIG constellation dump (Task 1 of
                 // 2026-06-10-eqlsig-constellation-diagnosis.md). Atomic
                 // snprintf+USRP_LOG so sync_short stdout writes cannot
