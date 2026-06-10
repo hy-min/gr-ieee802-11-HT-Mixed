@@ -2208,21 +2208,26 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 USRP_LOG("[CFO_EST] phase_per_symbol=%.4f rad (52-sc mean, was 64-bin)\n",
                          d_cfo_phase_per_symbol);
 
-                USRP_LOG("[SFO_RAW] cfo=%.6f sfo_raw=%.6f abs=%.6f threshold=0.001\n",
+                USRP_LOG("[SFO_RAW] cfo=%.6f sfo_raw=%.6f abs=%.6f soft_clamp_knee=1e-2\n",
                          cfo_est, sfo_est, std::abs(sfo_est));
-                // Clamp excessive SFO: USRP X310 clock accuracy < 1 ppm means
-                // SFO should be < 6.28e-6 rad/SC. USRP runs on 2026-06-10
-                // showed sfo_raw values with mean=-0.00139, range -0.00793..+0.00847
-                // across 5 frames; 3/5 (60%) exceeded 0.001 threshold. The large
-                // spread (factor of ~33x) suggests L-LTF estimate is too noisy to
-                // extract clean SFO. The 0.001 threshold is a conservative bound
-                // that catches the noisy outliers; raising it would let wild values
-                // leak through. Future work: weighted regression down-weighting
-                // pilots at SC -21, -7, 7, 21 (most noise-sensitive).
-                // See /tmp/usrp_sfo_raw.log for raw distribution.
-                if (std::abs(sfo_est) > 0.001f) {
-                    USRP_LOG("[SFO_EST] clamping excessive SFO %.6f -> 0\n", sfo_est);
-                    sfo_est = 0.0f;
+                // Soft-clamp SFO: clip the magnitude at 1e-2 rad/SC instead of
+                // hard-zeroing. The hard-zero at 1e-3 (60% of USRP frames) discarded
+                // legitimate SFO estimates, leaving ~0.013 rad residual on L-SIG
+                // (per Task C synthetic test in
+                // docs/superpowers/plans/2026-06-10-fix-lsig-viterbi-equalization.md).
+                // That residual is enough to flip BPSK soft decisions and breaks
+                // the L-SIG viterbi decoder. With soft-clamp at 1e-2:
+                //   - |sfo_est| < 1e-2: pass through (most frames)
+                //   - |sfo_est| > 1e-2: clip at +/-1e-2 (rare outliers)
+                // The clip discontinuity at 1e-2 affects <10% of frames but keeps
+                // the magnitude in a physically reasonable range. The original
+                // 0.001 threshold fired on noisy L-LTF linear-fit estimates
+                // (mean=-0.00139, range -0.00793..+0.00847 across 5 frames on
+                // 2026-06-10) and threw away the SFO correction entirely.
+                if (std::abs(sfo_est) > 1e-2f) {
+                    float clipped = sfo_est > 0 ? 1e-2f : -1e-2f;
+                    USRP_LOG("[SFO_SOFT] clipped %.6f -> %.6f\n", sfo_est, clipped);
+                    sfo_est = clipped;
                 }
                 // Save full linear fit: CFO + SFO*SC for each subcarrier
                 for (int i = 0; i < 52; i++) {
