@@ -49,6 +49,12 @@ private:
     // shows no improvement over L-LTF0. See plan:
     // docs/superpowers/plans/2026-06-10-lltf1-h-estimation-experiment.md
 
+    // Phase residual diagnostic: when true, dumps arg(eq_lsig[i]) for all
+    // 48 data subcarriers per frame to help diagnose L-SIG viterbi failure
+    // on USRP. Default OFF. Enable via env var IEEE80211_PHASE_RESIDUAL=1.
+    // See spec: docs/superpowers/specs/2026-06-10-phase-noise-lsig-design.md
+    bool d_log_phase_residual;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta
