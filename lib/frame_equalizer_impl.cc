@@ -569,6 +569,10 @@ static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint
     }
 }
 
+// NOTE: lltf1_52 is reserved for future use. The current implementation
+// builds H52 from lltf0_52 only. Call sites may pass the same pointer
+// for both args. Do not remove the parameter without updating both
+// call sites in general_work.
 static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
@@ -1635,6 +1639,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_bw((int)bw),
       d_chan_est_mode(0),
       d_enable_soft_output(false),
+      d_use_lltf1_for_h(false),  // OFF by default; flip to true via env
       d_frame_bytes(0),
       d_frame_encoding(0),
       d_frame_mcs(0),
@@ -1672,6 +1677,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
+
+    // Allow opt-in via env var for the L-LTF1 experiment
+    const char* env_lltf1 = std::getenv("IEEE80211_H_LLTF1");
+    if (env_lltf1 && env_lltf1[0] == '1') {
+        d_use_lltf1_for_h = true;
+        std::cout << "[FRAME_EQ] H-estimation: L-LTF1 (counter=1) ENABLED via env\n";
+    }
 
     set_algorithm(algo);
     reset_frame_state();
@@ -2208,21 +2220,26 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 USRP_LOG("[CFO_EST] phase_per_symbol=%.4f rad (52-sc mean, was 64-bin)\n",
                          d_cfo_phase_per_symbol);
 
-                USRP_LOG("[SFO_RAW] cfo=%.6f sfo_raw=%.6f abs=%.6f threshold=0.001\n",
+                USRP_LOG("[SFO_RAW] cfo=%.6f sfo_raw=%.6f abs=%.6f soft_clamp_knee=1e-2\n",
                          cfo_est, sfo_est, std::abs(sfo_est));
-                // Clamp excessive SFO: USRP X310 clock accuracy < 1 ppm means
-                // SFO should be < 6.28e-6 rad/SC. USRP runs on 2026-06-10
-                // showed sfo_raw values with mean=-0.00139, range -0.00793..+0.00847
-                // across 5 frames; 3/5 (60%) exceeded 0.001 threshold. The large
-                // spread (factor of ~33x) suggests L-LTF estimate is too noisy to
-                // extract clean SFO. The 0.001 threshold is a conservative bound
-                // that catches the noisy outliers; raising it would let wild values
-                // leak through. Future work: weighted regression down-weighting
-                // pilots at SC -21, -7, 7, 21 (most noise-sensitive).
-                // See /tmp/usrp_sfo_raw.log for raw distribution.
-                if (std::abs(sfo_est) > 0.001f) {
-                    USRP_LOG("[SFO_EST] clamping excessive SFO %.6f -> 0\n", sfo_est);
-                    sfo_est = 0.0f;
+                // Soft-clamp SFO: clip the magnitude at 1e-2 rad/SC instead of
+                // hard-zeroing. The hard-zero at 1e-3 (60% of USRP frames) discarded
+                // legitimate SFO estimates, leaving ~0.013 rad residual on L-SIG
+                // (per Task C synthetic test in
+                // docs/superpowers/plans/2026-06-10-fix-lsig-viterbi-equalization.md).
+                // That residual is enough to flip BPSK soft decisions and breaks
+                // the L-SIG viterbi decoder. With soft-clamp at 1e-2:
+                //   - |sfo_est| < 1e-2: pass through (most frames)
+                //   - |sfo_est| > 1e-2: clip at +/-1e-2 (rare outliers)
+                // The clip discontinuity at 1e-2 affects <10% of frames but keeps
+                // the magnitude in a physically reasonable range. The original
+                // 0.001 threshold fired on noisy L-LTF linear-fit estimates
+                // (mean=-0.00139, range -0.00793..+0.00847 across 5 frames on
+                // 2026-06-10) and threw away the SFO correction entirely.
+                if (std::abs(sfo_est) > 1e-2f) {
+                    float clipped = sfo_est > 0 ? 1e-2f : -1e-2f;
+                    USRP_LOG("[SFO_SOFT] clipped %.6f -> %.6f\n", sfo_est, clipped);
+                    sfo_est = clipped;
                 }
                 // Save full linear fit: CFO + SFO*SC for each subcarrier
                 for (int i = 0; i < 52; i++) {
@@ -2278,14 +2295,21 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Use raw LTF0 for channel estimation (no CFO, no CPE).
                 // CFO cancels when dividing RX/H because both have the same CFO rotation.
                 gr_complex H52[52];
-                const gr_complex* lltf0_for_H = d_ltf_compensated_valid[0]
-                    ? d_ltf_compensated[0]
-                    : d_early_eqsym[kLltf0Rel];
-                const gr_complex* lltf1_for_H = d_ltf_compensated_valid[1]
-                    ? d_ltf_compensated[1]
-                    : d_early_eqsym[kLltf1Rel];
-                estimate_header_channel_from_lltf52(lltf0_for_H,
-                                                    lltf1_for_H,
+                const gr_complex* lltf_for_H = nullptr;
+                if (d_use_lltf1_for_h) {
+                    // Experiment: use L-LTF1 (counter=1) for H estimation. Halves the
+                    // time gap to L-SIG (counter=2) from 8us to 4us.
+                    lltf_for_H = d_ltf_compensated_valid[1]
+                        ? d_ltf_compensated[1]
+                        : d_early_eqsym[kLltf1Rel];
+                    USRP_LOG("[H_SRC] using L-LTF1 (counter=1) for H estimation\n");
+                } else {
+                    lltf_for_H = d_ltf_compensated_valid[0]
+                        ? d_ltf_compensated[0]
+                        : d_early_eqsym[kLltf0Rel];
+                }
+                estimate_header_channel_from_lltf52(lltf_for_H,
+                                                    lltf_for_H,  // arg2 is unused, pass same ptr
                                                     H52);
                 USRP_LOG("[H_FROM_COMP] used_comp=ltf0:%d ltf1:%d\n",
                          d_ltf_compensated_valid[0] ? 1 : 0,
@@ -2335,6 +2359,25 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
                     }
                 }
+                // Per-SC L-SIG constellation diagnostic (Task A, 2026-06-10 plan)
+                // Disambiguates three failure modes for [LSIG_PARSE_FAIL] viterbi:
+                //   1. Constant phase rotation (CFO/SFO residual)
+                //   2. H_mag near zero (broken H estimate from L-LTF0 domain mismatch)
+                //   3. Variable noise (would show large frame-to-frame spread)
+                USRP_LOG("[LSIG_EQ_PER_SC] is_ht=%d inv0_re_im=", d_is_ht_frame ? 1 : 0);
+                for (int i = 0; i < 12; i++) {
+                    USRP_LOG("(%.2f,%.2f)", eq_lsig[i].real(), eq_lsig[i].imag());
+                }
+                USRP_LOG("\n");
+                USRP_LOG("[LSIG_EQ_PER_SC] H_mag[0,12,25,40,49]=");
+                for (int i : {0, 12, 25, 40, 49}) {
+                    USRP_LOG("%.2f", std::abs(H52[i]));
+                }
+                USRP_LOG(" | rx_lsig_mag[0,12,25,40,49]=");
+                for (int i : {0, 12, 25, 40, 49}) {
+                    USRP_LOG("%.2f", std::abs(d_early_eqsym[kLSigRel][i]));
+                }
+                USRP_LOG("\n");
                 double E_I_lsig, E_Q_lsig;
                 compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
                 double ratio_lsig = (E_I_lsig > 1e-10) ? E_Q_lsig / E_I_lsig : 0.0;
@@ -2441,14 +2484,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[kHtSig1Rel];
         if (ht_parse_condition) {
             gr_complex Hhdr52[52];
-            const gr_complex* lltf0_for_H2 = d_ltf_compensated_valid[0]
-                ? d_ltf_compensated[0]
-                : d_early_eqsym[kLltf0Rel];
-            const gr_complex* lltf1_for_H2 = d_ltf_compensated_valid[1]
-                ? d_ltf_compensated[1]
-                : d_early_eqsym[kLltf1Rel];
-            estimate_header_channel_from_lltf52(lltf0_for_H2,
-                                                lltf1_for_H2,
+            const gr_complex* lltf_for_H2 = nullptr;
+            if (d_use_lltf1_for_h) {
+                lltf_for_H2 = d_ltf_compensated_valid[1]
+                    ? d_ltf_compensated[1]
+                    : d_early_eqsym[kLltf1Rel];
+            } else {
+                lltf_for_H2 = d_ltf_compensated_valid[0]
+                    ? d_ltf_compensated[0]
+                    : d_early_eqsym[kLltf0Rel];
+            }
+            estimate_header_channel_from_lltf52(lltf_for_H2,
+                                                lltf_for_H2,
                                                 Hhdr52);
 
             bool found = false;

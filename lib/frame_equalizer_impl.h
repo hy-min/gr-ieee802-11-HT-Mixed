@@ -39,6 +39,15 @@ private:
     int d_bw;
     int d_chan_est_mode;
     bool d_enable_soft_output;
+    // Use L-LTF1 (counter=1) instead of L-LTF0 (counter=0) for H estimation.
+    // 4us time gap to L-SIG instead of 8us. Hypothesis: reduces residual phase
+    // when the channel rotates between the two LTF symbols.
+    // Default OFF (use L-LTF0, current behavior). Set to true via env var
+    // IEEE80211_H_LLTF1=1.
+    bool d_use_lltf1_for_h;
+    // TODO(2026-06-10 lltf1-experiment): remove this flag if USRP Task 4
+    // shows no improvement over L-LTF0. See plan:
+    // docs/superpowers/plans/2026-06-10-lltf1-h-estimation-experiment.md
 
     int d_frame_bytes;
     int d_frame_encoding;
