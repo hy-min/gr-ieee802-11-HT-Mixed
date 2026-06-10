@@ -2335,6 +2335,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
                     }
                 }
+                // Per-SC L-SIG constellation diagnostic (Task A, 2026-06-10 plan)
+                // Disambiguates three failure modes for [LSIG_PARSE_FAIL] viterbi:
+                //   1. Constant phase rotation (CFO/SFO residual)
+                //   2. H_mag near zero (broken H estimate from L-LTF0 domain mismatch)
+                //   3. Variable noise (would show large frame-to-frame spread)
+                USRP_LOG("[LSIG_EQ_PER_SC] is_ht=%d inv0_re_im=", d_is_ht_frame ? 1 : 0);
+                for (int i = 0; i < 12; i++) {
+                    gr_complex e = d_early_eqsym[kLSigRel][i] /
+                                   (std::abs(H52[i]) > 0.01f ? H52[i] : gr_complex(1.0f, 0.0f));
+                    USRP_LOG("(%.2f,%.2f)", e.real(), e.imag());
+                }
+                USRP_LOG("\n");
+                USRP_LOG("[LSIG_EQ_PER_SC] H_mag[0,12,25,40,49]=");
+                for (int i : {0, 12, 25, 40, 49}) {
+                    USRP_LOG("%.2f", std::abs(H52[i]));
+                }
+                USRP_LOG(" | rx_lsig_mag[0,12,25,40,49]=");
+                for (int i : {0, 12, 25, 40, 49}) {
+                    USRP_LOG("%.2f", std::abs(d_early_eqsym[kLSigRel][i]));
+                }
+                USRP_LOG("\n");
                 double E_I_lsig, E_Q_lsig;
                 compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
                 double ratio_lsig = (E_I_lsig > 1e-10) ? E_Q_lsig / E_I_lsig : 0.0;
