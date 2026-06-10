@@ -1148,6 +1148,9 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
                                              bool invert_bits,
                                              int& out_encoding,
                                              int& out_len_bytes,
+                                             int* out_rate_field = nullptr,
+                                             int* out_psdu_length = nullptr,
+                                             int* out_parity_ok = nullptr,
                                              uint8_t* dbg_eqbits48 = nullptr,
                                              uint8_t* dbg_deintl48 = nullptr)
 {
@@ -1221,6 +1224,12 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     for (int i = 0; i < 18; i++) {
         parity_sum ^= (decoded_bits[i] & 1);
     }
+    const int parity_ok = (parity_sum == 0) ? 1 : 0;
+
+    if (out_rate_field)   *out_rate_field   = rate_field;
+    if (out_psdu_length)  *out_psdu_length  = psdu_length;
+    if (out_parity_ok)    *out_parity_ok    = parity_ok;
+
     if (parity_sum != 0) {
         return false;
     }
@@ -2444,24 +2453,99 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
             bool found = false;
 
+            // ----- Diagnostic state (Task 5: capture L-SIG/HT-SIG parse-failure details) -----
+            // We log once per parse attempt on the failure path with the most informative
+            // stats so we can see *why* USRP frames are failing.
+            int  lsig_last_rate        = -1;
+            int  lsig_last_len         = -1;
+            int  lsig_last_parity_ok   = -1;
+            int  lsig_last_inv         = -1;
+            bool lsig_saw_viterbi_fail = false;  // viterbi decode failed (rate/length not extractable)
+            int  lsig_viterbi_fail_inv = -1;
+            int  lsig_decode_calls     = 0;      // # of inv_lsig calls that ran viterbi
+            int  htsig_candidates_tried = 0;     // 4 rot * 2 inv_a * 2 inv_b max = 16
+            int  htsig_lsig_enc        = -1;     // L-SIG enc passed to HT-SIG path
+            int  htsig_last_rot        = -1;
+            int  htsig_last_inv_a      = -1;
+            int  htsig_last_inv_b      = -1;
+
+            // Average SNR of equalized L-SIG/HT-SIG symbols (BPSK/QBPSK). Computed once
+            // for diagnostic use from the equalized L-SIG (no CPE) and HT-SIG0.
+            double avg_snr_lsig = 0.0;
+            double avg_snr_htsig = 0.0;
+            {
+                // L-SIG: 48 data subcarriers
+                double sum_mag2 = 0.0;
+                int    cnt      = 0;
+                for (int i = 0; i < 48; i++) {
+                    if (std::abs(Hhdr52[i]) > 0.001f) {
+                        gr_complex eq = safe_div(d_early_eqsym[kLSigRel][i], Hhdr52[i]);
+                        sum_mag2 += (double)eq.real() * eq.real() + (double)eq.imag() * eq.imag();
+                        cnt++;
+                    }
+                }
+                if (cnt > 0) {
+                    // For ideal BPSK at unit amplitude, E[|eq|^2] = 1.0.
+                    // avg_snr = avg_mag2 / 1.0 (signal power ~ 1).
+                    avg_snr_lsig = (sum_mag2 / (double)cnt);
+                }
+            }
+            {
+                // HT-SIG0: 48 data subcarriers (BPSK with QBPSK 90° rotation)
+                double sum_mag2 = 0.0;
+                int    cnt      = 0;
+                for (int i = 0; i < 48; i++) {
+                    if (std::abs(Hhdr52[i]) > 0.001f) {
+                        gr_complex eq = safe_div(d_early_eqsym[kHtSig0Rel][i], Hhdr52[i]);
+                        sum_mag2 += (double)eq.real() * eq.real() + (double)eq.imag() * eq.imag();
+                        cnt++;
+                    }
+                }
+                if (cnt > 0) {
+                    avg_snr_htsig = (sum_mag2 / (double)cnt);
+                }
+            }
+
             // L-SIG invert brute-force
             for (int inv_lsig = 0; inv_lsig <= 1 && !found; inv_lsig++) {
                 int lsig_enc = -1;
                 int lsig_len = 0;
+                int lsig_rate_field = -1;
+                int lsig_parity_ok_int = -1;
 
-                if (!decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
-                                                      Hhdr52,
-                                                      inv_lsig != 0,
-                                                      lsig_enc,
-                                                      lsig_len,
-                                                      nullptr,
-                                                      nullptr)) {
+                bool lsig_ok = decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
+                                                                 Hhdr52,
+                                                                 inv_lsig != 0,
+                                                                 lsig_enc,
+                                                                 lsig_len,
+                                                                 &lsig_rate_field,
+                                                                 nullptr,         // out_psdu_length: not needed (already in lsig_len)
+                                                                 &lsig_parity_ok_int,
+                                                                 nullptr,
+                                                                 nullptr);
+                if (lsig_ok) {
+                    lsig_decode_calls++;
+                    lsig_last_inv       = inv_lsig;
+                    lsig_last_rate      = lsig_rate_field;
+                    lsig_last_len       = lsig_len;
+                    lsig_last_parity_ok = lsig_parity_ok_int;
+                } else {
+                    // viterbi-decode failure means we never extracted rate/len/parity
+                    // (we still want to distinguish viterbi fail from "rate/length wrong")
+                    lsig_viterbi_fail_inv = inv_lsig;
+                    lsig_saw_viterbi_fail = true;
+                }
+
+                if (!lsig_ok) {
                     continue;
                 }
 
                 if (lsig_enc != 0) {
+                    // L-SIG succeeded with non-BPSK 1/2 rate - skip and try other inv
                     continue;
                 }
+
+                htsig_lsig_enc = lsig_enc;
 
                 // Detect HT-SIG QBPSK rotation
                 int detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);
@@ -2487,6 +2571,11 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             bool parsed_sgi = false;
                             bool parsed_agg = false;
                             bool parsed_use_ldpc = false;
+
+                            htsig_candidates_tried++;
+                            htsig_last_rot   = rot;
+                            htsig_last_inv_a = inv_a;
+                            htsig_last_inv_b = inv_b;
 
                             bool decode_ok = decode_htsig_from_rotated(rot_htsig0,
                                                            rot_htsig1,
@@ -2521,7 +2610,52 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             if (!found) {
-                // HT-SIG parse failed
+                // ----------------------------------------------------------------
+                // Task 5 diagnostic: log L-SIG/HT-SIG parse failure with details.
+                // Distinguish two failure modes:
+                //   (a) L-SIG never produced a valid BPSK-1/2 frame (so we never
+                //       even tried HT-SIG).
+                //   (b) L-SIG succeeded but HT-SIG brute-force exhausted all 16
+                //       candidates (4 rot * 2 inv_a * 2 inv_b).
+                // ----------------------------------------------------------------
+                const int lsig_calls_ran = lsig_decode_calls;
+                if (lsig_calls_ran == 0) {
+                    // L-SIG never even got past viterbi decode.
+                    // Distinguish: viterbi failed vs rate/length invalid.
+                    const char* reason = lsig_saw_viterbi_fail
+                        ? "viterbi_fail"
+                        : "rate_or_length_invalid";
+                    USRP_LOG("[LSIG_PARSE_FAIL] sym=%d reason='%s' rate=%d length=%d "
+                             "parity_ok=%d avg_snr=%.2f avg_snr_ht=%.2f inv_tried=0,1 "
+                             "is_ht_frame=%d\n",
+                             d_internal_symbol_counter,
+                             reason,
+                             lsig_last_rate,
+                             lsig_last_len,
+                             lsig_last_parity_ok,
+                             avg_snr_lsig,
+                             avg_snr_htsig,
+                             d_is_ht_frame ? 1 : 0);
+                } else {
+                    // L-SIG succeeded (enc=0 BPSK 1/2) but HT-SIG decode failed across
+                    // all 16 candidates.
+                    USRP_LOG("[HT_SIG_PARSE_FAIL] timeout_sym=%d n_candidates=%d "
+                             "best_metric=N/A threshold=N/A avg_snr_lsig=%.2f "
+                             "avg_snr_htsig=%.2f lsig_rate=0x%X lsig_len=%d "
+                             "lsig_inv=%d last_rot=%d last_inv_a=%d last_inv_b=%d "
+                             "is_ht_frame=%d\n",
+                             d_internal_symbol_counter,
+                             htsig_candidates_tried,
+                             avg_snr_lsig,
+                             avg_snr_htsig,
+                             lsig_last_rate,
+                             lsig_last_len,
+                             lsig_last_inv,
+                             htsig_last_rot,
+                             htsig_last_inv_a,
+                             htsig_last_inv_b,
+                             d_is_ht_frame ? 1 : 0);
+                }
             }
         }
 
