@@ -2342,9 +2342,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 //   3. Variable noise (would show large frame-to-frame spread)
                 USRP_LOG("[LSIG_EQ_PER_SC] is_ht=%d inv0_re_im=", d_is_ht_frame ? 1 : 0);
                 for (int i = 0; i < 12; i++) {
-                    gr_complex e = d_early_eqsym[kLSigRel][i] /
-                                   (std::abs(H52[i]) > 0.01f ? H52[i] : gr_complex(1.0f, 0.0f));
-                    USRP_LOG("(%.2f,%.2f)", e.real(), e.imag());
+                    USRP_LOG("(%.2f,%.2f)", eq_lsig[i].real(), eq_lsig[i].imag());
                 }
                 USRP_LOG("\n");
                 USRP_LOG("[LSIG_EQ_PER_SC] H_mag[0,12,25,40,49]=");
