@@ -569,6 +569,10 @@ static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint
     }
 }
 
+// NOTE: lltf1_52 is reserved for future use. The current implementation
+// builds H52 from lltf0_52 only. Call sites may pass the same pointer
+// for both args. Do not remove the parameter without updating both
+// call sites in general_work.
 static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
@@ -1635,6 +1639,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_bw((int)bw),
       d_chan_est_mode(0),
       d_enable_soft_output(false),
+      d_use_lltf1_for_h(false),  // OFF by default; flip to true via env
       d_frame_bytes(0),
       d_frame_encoding(0),
       d_frame_mcs(0),
@@ -1672,6 +1677,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
+
+    // Allow opt-in via env var for the L-LTF1 experiment
+    const char* env_lltf1 = std::getenv("IEEE80211_H_LLTF1");
+    if (env_lltf1 && env_lltf1[0] == '1') {
+        d_use_lltf1_for_h = true;
+        std::cout << "[FRAME_EQ] H-estimation: L-LTF1 (counter=1) ENABLED via env\n";
+    }
 
     set_algorithm(algo);
     reset_frame_state();
@@ -2283,14 +2295,21 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Use raw LTF0 for channel estimation (no CFO, no CPE).
                 // CFO cancels when dividing RX/H because both have the same CFO rotation.
                 gr_complex H52[52];
-                const gr_complex* lltf0_for_H = d_ltf_compensated_valid[0]
-                    ? d_ltf_compensated[0]
-                    : d_early_eqsym[kLltf0Rel];
-                const gr_complex* lltf1_for_H = d_ltf_compensated_valid[1]
-                    ? d_ltf_compensated[1]
-                    : d_early_eqsym[kLltf1Rel];
-                estimate_header_channel_from_lltf52(lltf0_for_H,
-                                                    lltf1_for_H,
+                const gr_complex* lltf_for_H = nullptr;
+                if (d_use_lltf1_for_h) {
+                    // Experiment: use L-LTF1 (counter=1) for H estimation. Halves the
+                    // time gap to L-SIG (counter=2) from 8us to 4us.
+                    lltf_for_H = d_ltf_compensated_valid[1]
+                        ? d_ltf_compensated[1]
+                        : d_early_eqsym[kLltf1Rel];
+                    USRP_LOG("[H_SRC] using L-LTF1 (counter=1) for H estimation\n");
+                } else {
+                    lltf_for_H = d_ltf_compensated_valid[0]
+                        ? d_ltf_compensated[0]
+                        : d_early_eqsym[kLltf0Rel];
+                }
+                estimate_header_channel_from_lltf52(lltf_for_H,
+                                                    lltf_for_H,  // arg2 is unused, pass same ptr
                                                     H52);
                 USRP_LOG("[H_FROM_COMP] used_comp=ltf0:%d ltf1:%d\n",
                          d_ltf_compensated_valid[0] ? 1 : 0,
@@ -2465,14 +2484,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[kHtSig1Rel];
         if (ht_parse_condition) {
             gr_complex Hhdr52[52];
-            const gr_complex* lltf0_for_H2 = d_ltf_compensated_valid[0]
-                ? d_ltf_compensated[0]
-                : d_early_eqsym[kLltf0Rel];
-            const gr_complex* lltf1_for_H2 = d_ltf_compensated_valid[1]
-                ? d_ltf_compensated[1]
-                : d_early_eqsym[kLltf1Rel];
-            estimate_header_channel_from_lltf52(lltf0_for_H2,
-                                                lltf1_for_H2,
+            const gr_complex* lltf_for_H2 = nullptr;
+            if (d_use_lltf1_for_h) {
+                lltf_for_H2 = d_ltf_compensated_valid[1]
+                    ? d_ltf_compensated[1]
+                    : d_early_eqsym[kLltf1Rel];
+            } else {
+                lltf_for_H2 = d_ltf_compensated_valid[0]
+                    ? d_ltf_compensated[0]
+                    : d_early_eqsym[kLltf0Rel];
+            }
+            estimate_header_channel_from_lltf52(lltf_for_H2,
+                                                lltf_for_H2,
                                                 Hhdr52);
 
             bool found = false;
