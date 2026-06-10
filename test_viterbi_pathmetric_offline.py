@@ -28,6 +28,9 @@ def parse_audit_line(line):
 def analyze_log(log_path):
     """Walk a log file, parse audit lines, and print a summary."""
     raw_text = open(log_path).read()
+    # Count raw tag occurrences vs well-formed matches so we can warn when
+    # the bulk of audit lines were shredded by concurrent stdout writes.
+    raw_tag_count = raw_text.count("[LSIG_VITERBI_AUDIT]")
     # Use regex over the full text to extract ONLY well-formed audit lines
     # (those with exactly 48 bits in deintl48 and not truncated by
     # interleaved log writes from other threads).
@@ -40,10 +43,16 @@ def analyze_log(log_path):
         raw_text,
     )
 
-    raw_tag_count = raw_text.count("[LSIG_VITERBI_AUDIT]")
     print(f"Total [LSIG_VITERBI_AUDIT] tags in log: {raw_tag_count}")
     print(f"  well-formed OK-path lines (with decoded24): {len(well_formed_ok)}")
     print(f"  well-formed FAIL-path lines (48 bits, no decoded24): {len(well_formed_fail)}")
+    # Warn if more than half of audit tags were shredded by concurrent stdout
+    # writes (i.e. the audit line is incomplete and matches no strict regex).
+    well_formed_total = len(well_formed_ok) + len(well_formed_fail)
+    shredded = raw_tag_count - well_formed_total
+    if raw_tag_count > 0 and shredded > 0 and shredded * 2 > raw_tag_count:
+        print(f"WARNING: {shredded}/{raw_tag_count} audit lines were shredded by concurrent stdout writes.")
+        print(f"  Fix: see USRP_LOG macro — must be atomic or buffered.")
 
     # Build a unified list of (inv, bits) using the strict regex on each tag
     audit_records = []
