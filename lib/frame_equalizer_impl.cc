@@ -1205,6 +1205,10 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     std::vector<uint8_t> dec24;
     if (!viterbi_decode_133_171(deintl48, 48, dec24)) {
         USRP_LOG("[LSIG_DECODE] FAIL: viterbi decode failed\n");
+        // Audit log even on failure: capture the inputs to analyze why
+        USRP_LOG("[LSIG_VITERBI_AUDIT] inv=%d deintl48=", invert_bits?1:0);
+        for (int i = 0; i < 48; i++) USRP_LOG("%d", deintl48[i]);
+        USRP_LOG("\n");
         return false;
     }
     if ((int)dec24.size() != 24) {
@@ -1260,6 +1264,13 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     out_encoding = encoding;
     out_len_bytes = psdu_length;
     USRP_LOG("[LSIG_DECODE] OK enc=%d len=%d\n", encoding, psdu_length);
+    // Path-metric audit (Task 5, 2026-06-10 plan): dump deintl bits and
+    // decoded bits for offline analysis of viterbi input quality.
+    USRP_LOG("[LSIG_VITERBI_AUDIT] inv=%d deintl48=", invert_bits?1:0);
+    for (int i = 0; i < 48; i++) USRP_LOG("%d", deintl48[i]);
+    USRP_LOG(" decoded24=");
+    for (int i = 0; i < 24; i++) USRP_LOG("%d", decoded_bits[i]);
+    USRP_LOG("\n");
     return true;
 }
 
