@@ -2391,25 +2391,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         eq_lsig[i] = gr_complex(0.0f, 0.0f);
                     }
                 }
-                // Per-SC L-SIG constellation diagnostic (Task A, 2026-06-10 plan)
-                // Disambiguates three failure modes for [LSIG_PARSE_FAIL] viterbi:
-                //   1. Constant phase rotation (CFO/SFO residual)
-                //   2. H_mag near zero (broken H estimate from L-LTF0 domain mismatch)
-                //   3. Variable noise (would show large frame-to-frame spread)
-                USRP_LOG("[LSIG_EQ_PER_SC] is_ht=%d inv0_re_im=", d_is_ht_frame ? 1 : 0);
-                for (int i = 0; i < 12; i++) {
-                    USRP_LOG("(%.2f,%.2f)", eq_lsig[i].real(), eq_lsig[i].imag());
+                // Full 52-subcarrier L-SIG constellation dump (Task 1 of
+                // 2026-06-10-eqlsig-constellation-diagnosis.md). Atomic
+                // snprintf+USRP_LOG so sync_short stdout writes cannot
+                // interleave mid-line (lessons learned from e90e3f5).
+                // Format: [LSIG_EQ_FULL] is_ht=N H_mag=...,...,... rx=...,...,... eq=r,i,r,i,...,r,i
+                char dump[2560];
+                int n = snprintf(dump, sizeof(dump),
+                                 "[LSIG_EQ_FULL] is_ht=%d H_mag=",
+                                 d_is_ht_frame ? 1 : 0);
+                for (int i = 0; i < 52 && n < (int)sizeof(dump); i++)
+                    n += snprintf(dump+n, sizeof(dump)-n, "%.3f,", std::abs(H52[i]));
+                n += snprintf(dump+n, sizeof(dump)-n, " rx=");
+                for (int i = 0; i < 52 && n < (int)sizeof(dump); i++)
+                    n += snprintf(dump+n, sizeof(dump)-n, "%.3f,",
+                                  std::abs(d_early_eqsym[kLSigRel][i]));
+                n += snprintf(dump+n, sizeof(dump)-n, " eq=");
+                for (int i = 0; i < 52 && n < (int)sizeof(dump); i++) {
+                    n += snprintf(dump+n, sizeof(dump)-n, "%.3f,%.3f,",
+                                  eq_lsig[i].real(), eq_lsig[i].imag());
                 }
-                USRP_LOG("\n");
-                USRP_LOG("[LSIG_EQ_PER_SC] H_mag[0,12,25,40,49]=");
-                for (int i : {0, 12, 25, 40, 49}) {
-                    USRP_LOG("%.2f", std::abs(H52[i]));
-                }
-                USRP_LOG(" | rx_lsig_mag[0,12,25,40,49]=");
-                for (int i : {0, 12, 25, 40, 49}) {
-                    USRP_LOG("%.2f", std::abs(d_early_eqsym[kLSigRel][i]));
-                }
-                USRP_LOG("\n");
+                snprintf(dump+n, sizeof(dump)-n, "\n");
+                USRP_LOG("%s", dump);
                 double E_I_lsig, E_Q_lsig;
                 compute_subcarrier_energy(eq_lsig, E_I_lsig, E_Q_lsig);
                 double ratio_lsig = (E_I_lsig > 1e-10) ? E_Q_lsig / E_I_lsig : 0.0;
