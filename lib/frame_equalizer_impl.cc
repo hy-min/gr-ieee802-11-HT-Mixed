@@ -1717,6 +1717,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] H-estimation: L-LTF1 (counter=1) ENABLED via env\n";
     }
 
+    // Allow opt-in via env var for phase residual diagnostic
+    const char* env_phase_residual = std::getenv("IEEE80211_PHASE_RESIDUAL");
+    d_log_phase_residual = (env_phase_residual && env_phase_residual[0] == '1');
+    if (d_log_phase_residual) {
+        std::cout << "[FRAME_EQ] Phase residual dump ENABLED via env\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
