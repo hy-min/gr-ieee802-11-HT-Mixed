@@ -1742,6 +1742,8 @@ void frame_equalizer_impl::reset_frame_state(void)
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
     std::memset(d_early_eqsym, 0, sizeof(d_early_eqsym));
     std::memset(d_early_eqsym_valid, 0, sizeof(d_early_eqsym_valid));
+    d_ltf_compensated_valid[0] = false;
+    d_ltf_compensated_valid[1] = false;
     d_H52_tx_order_valid = false;
     d_frame_bytes_tag_emitted = false;
 
@@ -2211,6 +2213,29 @@ int frame_equalizer_impl::general_work(int noutput_items,
                          cfo_est, sfo_est, d_cfo_phase_per_symbol);
             }
 
+            // Store compensated L-LTF0 and L-LTF1 for later H estimation.
+            // Counter for L-LTF0 is 0, for L-LTF1 is 1.
+            if (d_early_eqsym_valid[kLltf0Rel]) {
+                for (int i = 0; i < 52; i++) {
+                    float ph = d_phase_diff_per_sc[i] * 0;  // counter=0
+                    d_ltf_compensated[0][i] = d_early_eqsym[kLltf0Rel][i] *
+                        std::exp(gr_complex(0.0f, -ph));
+                }
+                d_ltf_compensated_valid[0] = true;
+            }
+            if (d_early_eqsym_valid[kLltf1Rel]) {
+                for (int i = 0; i < 52; i++) {
+                    float ph = d_phase_diff_per_sc[i] * 1;  // counter=1
+                    d_ltf_compensated[1][i] = d_early_eqsym[kLltf1Rel][i] *
+                        std::exp(gr_complex(0.0f, -ph));
+                }
+                d_ltf_compensated_valid[1] = true;
+            }
+            USRP_LOG("[LTF_COMP] cfo=%.4f stored compensated L-LTF0/L-LTF1 (valid0=%d valid1=%d)\n",
+                     d_cfo_phase_per_symbol,
+                     d_ltf_compensated_valid[0] ? 1 : 0,
+                     d_ltf_compensated_valid[1] ? 1 : 0);
+
             // Header CFO+SFO compensation is applied above using d_phase_diff_per_sc.
             // This compensates both common CFO and per-subcarrier SFO (more complete
             // than the data path which only compensates common CFO). The 52-subcarrier
@@ -2226,9 +2251,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Use raw LTF0 for channel estimation (no CFO, no CPE).
                 // CFO cancels when dividing RX/H because both have the same CFO rotation.
                 gr_complex H52[52];
-                estimate_header_channel_from_lltf52(d_early_eqsym[kLltf0Rel],
-                                                    d_early_eqsym[kLltf1Rel],
+                const gr_complex* lltf0_for_H = d_ltf_compensated_valid[0]
+                    ? d_ltf_compensated[0]
+                    : d_early_eqsym[kLltf0Rel];
+                const gr_complex* lltf1_for_H = d_ltf_compensated_valid[1]
+                    ? d_ltf_compensated[1]
+                    : d_early_eqsym[kLltf1Rel];
+                estimate_header_channel_from_lltf52(lltf0_for_H,
+                                                    lltf1_for_H,
                                                     H52);
+                USRP_LOG("[H_FROM_COMP] used_comp=ltf0:%d ltf1:%d\n",
+                         d_ltf_compensated_valid[0] ? 1 : 0,
+                         d_ltf_compensated_valid[1] ? 1 : 0);
 
                 USRP_LOG("[H_DIAG] lltf0[0]=(%.3f%+.3fi) lltf0[25]=(%.3f%+.3fi) "
                          "lsig[0]=(%.3f%+.3fi) lsig[25]=(%.3f%+.3fi) "
@@ -2380,8 +2414,14 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[kHtSig1Rel];
         if (ht_parse_condition) {
             gr_complex Hhdr52[52];
-            estimate_header_channel_from_lltf52(d_early_eqsym[kLltf0Rel],
-                                                d_early_eqsym[kLltf1Rel],
+            const gr_complex* lltf0_for_H2 = d_ltf_compensated_valid[0]
+                ? d_ltf_compensated[0]
+                : d_early_eqsym[kLltf0Rel];
+            const gr_complex* lltf1_for_H2 = d_ltf_compensated_valid[1]
+                ? d_ltf_compensated[1]
+                : d_early_eqsym[kLltf1Rel];
+            estimate_header_channel_from_lltf52(lltf0_for_H2,
+                                                lltf1_for_H2,
                                                 Hhdr52);
 
             bool found = false;

@@ -90,6 +90,14 @@ private:
     bool  d_phase_diff_valid;       // true after L-LTF1 arrives
     bool  d_enable_cfo_comp;        // enable CFO/SFO compensation on HT-DATA
 
+    // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
+    // Populated in general_work() AFTER CFO/SFO estimation so that H and
+    // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
+    // domain, eliminating the residual rotation that otherwise leaks into
+    // the equalized header symbols.
+    gr_complex d_ltf_compensated[2][52];
+    bool d_ltf_compensated_valid[2] = {false, false};
+
     void reset_frame_state(void);
 
     bool parse_signal(const uint8_t* decoded_bits,
