@@ -1731,6 +1731,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] H52 dump ENABLED via env\n";
     }
 
+    // Allow opt-in via env var for LTF0 FFT diagnostic (Phase 3 Stage 1, reorganized)
+    const char* env_ltf0_fft_dump = std::getenv("IEEE80211_LTF0_FFT_DUMP");
+    d_log_ltf0_fft = (env_ltf0_fft_dump && env_ltf0_fft_dump[0] == '1');
+    if (d_log_ltf0_fft) {
+        std::cout << "[FRAME_EQ] LTF0 FFT dump ENABLED via env\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
