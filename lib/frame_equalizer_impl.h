@@ -55,6 +55,13 @@ private:
     // See spec: docs/superpowers/specs/2026-06-10-phase-noise-lsig-design.md
     bool d_log_phase_residual;
 
+    // H52 diagnostic: when true, dumps |H52[i]| and arg(H52[i]) for all 52
+    // subcarriers per frame to help diagnose whether H estimation is the
+    // root cause of L-SIG viterbi failure on USRP. Default OFF. Enable via
+    // env var IEEE80211_H52_DUMP=1.
+    // See spec: docs/superpowers/specs/2026-06-10-h52-diagnosis-design.md
+    bool d_log_h52;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta
