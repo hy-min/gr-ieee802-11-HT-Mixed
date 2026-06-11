@@ -582,13 +582,6 @@ private:
     std::vector<gr::tag_t> d_tags;
     gr::filter::kernel::fir_filter_ccc d_fir;
 
-    // LTF0 RX diagnostic: when true, dumps |LLTF[i]| and arg(LLTF[i]) for all
-    // 52 subcarriers at sync_long output. Used in H chain traceback (Phase 3)
-    // to determine if L-LTF0 RX is corrupted at the FFT output. Default OFF.
-    // Enable via env var IEEE80211_LTF0_RX_DUMP=1.
-    // See spec: docs/superpowers/specs/2026-06-11-h-chain-traceback-design.md
-    bool d_log_ltf0_rx;
-
     const bool d_log;
     const bool d_debug;
     const int SYNC_LENGTH;
