@@ -22,8 +22,6 @@
 #include <volk/volk.h>
 
 #include <cmath>
-#include <cstdlib>
-#include <iostream>
 #include <list>
 #include <tuple>
 
@@ -61,13 +59,6 @@ public:
 
         // Ensure adequate output buffer for HT-mixed preamble (448+ samples)
         set_output_multiple(512);
-
-        // Allow opt-in via env var for L-LTF0 RX diagnostic (Phase 3 Stage 1)
-        const char* env_ltf0_rx_dump = std::getenv("IEEE80211_LTF0_RX_DUMP");
-        d_log_ltf0_rx = (env_ltf0_rx_dump && env_ltf0_rx_dump[0] == '1');
-        if (d_log_ltf0_rx) {
-            std::cout << "[SYNC_LONG] LTF0 RX dump ENABLED via env\n";
-        }
     }
 
     ~sync_long_impl() {
