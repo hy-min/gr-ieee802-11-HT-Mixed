@@ -62,6 +62,14 @@ private:
     // See spec: docs/superpowers/specs/2026-06-10-h52-diagnosis-design.md
     bool d_log_h52;
 
+    // LTF0 FFT diagnostic: when true, dumps saved_ltf0_fft[64] per frame at
+    // frame_equalizer entry (extracted from sym64 at L-LTF0 RX). Used in H
+    // chain traceback (Phase 3 Stage 1, REORGANIZED) to determine if L-LTF0
+    // FFT is corrupted at the equalizer input. Default OFF. Enable via
+    // env var IEEE80211_LTF0_FFT_DUMP=1.
+    // See spec: docs/superpowers/specs/2026-06-11-h-chain-traceback-design.md
+    bool d_log_ltf0_fft;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta
