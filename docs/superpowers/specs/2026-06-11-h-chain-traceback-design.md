@@ -90,16 +90,16 @@
 | `examples/test_splitter_timing.py` | 2 | Compare L-LTF0 (counter=0) and L-SIG (counter=2) magnitude/phase, check timing_offset |
 | `examples/test_cfo_domain.py` | 3 | Compare L-LTF0 before/after CFO compensation, check domain match with L-SIG |
 | `examples/test_h_inout.py` | 4 | Verify H = LLTF / TX_ref relationship, check ratio_mag uniformity |
-| `examples/test_phase3_verdict.py` | (aggregator) | Read all 4 stage logs, output root cause candidate ranking |
+| `examples/test_phase3_verdict.py` | (after each stage) | Read current stage's dump log + prior stage logs, output running root cause candidate ranking |
 
 ### 2.4 Fix task (post-diagnosis, conditionally added)
 
 When Stage N returns `STAGE_BROKEN_*`, an additional task is added to:
-- Implement the targeted fix
-- Add regression test
+- Implement the targeted fix for the identified root cause
+- Verify software loopback regression intact (no new test required; existing `test_direct_loopback.py` is the gate)
 - Verify USRP ≥1 frame decoded (success criterion B)
 
-The fix is **not** part of the diagnosis plan; it is appended after the root cause is known.
+The fix is **not** part of the diagnosis plan; it is appended after the root cause is known. If the fix is incorrect (USRP still 0/30), iterate on parameters within the same fix (e.g., adjust threshold, change selector logic). If 3 iterations fail, revert and try the next stage's fix in a new spec.
 
 ---
 
