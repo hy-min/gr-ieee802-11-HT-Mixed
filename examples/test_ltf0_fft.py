@@ -71,7 +71,10 @@ def classify(per_sc_stats, per_frame_std_avg, threshold):
     mag_max = max(means)
     mag_min = min(means)
     mag_range = mag_max - mag_min
-    gain_ok = 0.5 <= mag_mean <= 2.0
+    # kFftNormalize = 64/sqrt(52) ≈ 8.875. Loopback gives |LLTF|≈8.875 uniformly.
+    # Gain range must accommodate this scale; check is "off-scale" (signal lost),
+    # not "should be 1.0 normalized".
+    gain_ok = 0.5 <= mag_mean <= 12.0
     n_uniform = sum(1 for m, _ in per_sc_stats if abs(m - mag_mean) < 0.2)
 
     stable_pct = n_stable / n_sc
