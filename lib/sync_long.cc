@@ -22,11 +22,36 @@
 #include <volk/volk.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <list>
 #include <tuple>
 
 using namespace gr::ieee802_11;
 using namespace std;
+
+// FFT window timing experiment (Phase 3, 2026-06-11):
+// d_frame_start is hardcoded to 160 in two paths (see below). To test whether
+// sub-sample timing is the source of L-LTF0 FFT corruption (per-frame std
+// 12.7x loopback), allow opt-in adjustment via env var.
+// Default offset=0 preserves the current behavior (160).
+// Usage: IEEE80211_FRAME_START_OFFSET=N (N can be negative, e.g., -2, +1).
+// See: docs/superpowers/notes/2026-06-11-stage1-reorganized-verdict.md
+static const int FRAME_START_BASE = 160;
+static int g_frame_start_offset = 0;
+static bool g_frame_start_offset_inited = false;
+
+static int get_frame_start_offset() {
+    if (!g_frame_start_offset_inited) {
+        const char* env = std::getenv("IEEE80211_FRAME_START_OFFSET");
+        if (env && env[0] != '\0') {
+            g_frame_start_offset = std::atoi(env);
+            fprintf(stderr, "[SYNC_LONG] IEEE80211_FRAME_START_OFFSET=%d (frame_start=%d)\n",
+                    g_frame_start_offset, FRAME_START_BASE + g_frame_start_offset);
+        }
+        g_frame_start_offset_inited = true;
+    }
+    return g_frame_start_offset;
+}
 
 
 bool compare_abs(const std::pair<gr_complex, int>& first,
@@ -121,7 +146,7 @@ public:
                     // just like the correlation-search path does during SYNC state.
                     d_tag_skip_count = SYNC_LENGTH;
                     d_sync_samples = SYNC_LENGTH;  // Virtually consumed via skip
-                    d_frame_start = 160;  // Same as correlation-search path
+                    d_frame_start = FRAME_START_BASE + get_frame_start_offset();  // Same as correlation-search path (with opt-in offset)
                     d_state = COPY;
                     d_offset = 0;
                     d_count = 0;
@@ -448,9 +473,12 @@ public:
             // L-LTF0 DATA should always start at the same relative offset within
             // the SYNC window. With SPLITTER using tag_abs_pos+16, d_frame_start
             // must be constant for correct alignment.
-            if (d_frame_start != 160) {
-                fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to 160\n", d_frame_start);
-                d_frame_start = 160;
+            int fs_offset = get_frame_start_offset();
+            if (d_frame_start != 160 || fs_offset != 0) {
+                int target = FRAME_START_BASE + fs_offset;
+                fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to %d (offset=%d)\n",
+                        d_frame_start, target, fs_offset);
+                d_frame_start = target;
             }
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
