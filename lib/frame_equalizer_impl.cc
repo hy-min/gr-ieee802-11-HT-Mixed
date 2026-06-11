@@ -286,6 +286,7 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
 extern bool ltf0_ever_saved;
+extern bool g_log_ltf0_fft;
 
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
@@ -522,6 +523,7 @@ static constexpr int kLltfPilotTX[4] = {
 gr_complex saved_ltf0_fft[64] = {gr_complex(0,0)};
 bool ltf0_saved = false;
 bool ltf0_ever_saved = false;
+bool g_log_ltf0_fft = false;  // Bridge from d_log_ltf0_fft to static extract_header52_from_sym64
 
 static int g_extract_call_count = 0;
 
@@ -535,6 +537,60 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         ltf0_saved = true;
         ltf0_ever_saved = true;
 
+        // [LTF0_FFT_DUMP] Diagnostic: dump |saved_ltf0_fft[i]| and arg() for all
+        // 64 FFT bins (then 52 active SCs) per frame. Opt-in via
+        // IEEE80211_LTF0_FFT_DUMP=1. Atomic snprintf+USRP_LOG prevents
+        // sync_short stdout shredding. Used in Phase 3 Stage 1 (reorganized)
+        // to determine if L-LTF0 FFT is corrupted at the equalizer input.
+        // Note: g_extract_call_count is static and may be 0 here, so we use
+        // a separate file-static counter for per-frame uniqueness.
+        if (g_log_ltf0_fft) {
+            static const int sc_idx[52] = {
+                -26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1,
+                1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26
+            };
+            int n_bins = 64;
+            static int ltf0_fft_dump_counter = 0;
+            double sum_mag = 0.0, sum_mag2 = 0.0;
+            int cnt = 0;
+            for (int s = 0; s < 52; s++) {
+                int k = sc_idx[s];
+                if (k < 0) k += n_bins;
+                float m = std::abs(saved_ltf0_fft[k]);
+                sum_mag += m;
+                sum_mag2 += (double)m * m;
+                cnt++;
+            }
+            double mean_mag = (cnt > 0) ? sum_mag / cnt : 0.0;
+            double var_mag = (cnt > 0) ? (sum_mag2 / cnt - mean_mag * mean_mag) : 0.0;
+            double std_mag = (var_mag > 0) ? std::sqrt(var_mag) : 0.0;
+
+            char dump[2048];
+            int pn = snprintf(dump, sizeof(dump),
+                              "[LTF0_FFT_DUMP] counter=%d |LLTF|=",
+                              ltf0_fft_dump_counter++);
+            for (int s = 0; s < 52 && pn < (int)sizeof(dump) - 32; s++) {
+                int k = sc_idx[s];
+                if (k < 0) k += n_bins;
+                int w = snprintf(dump + pn, sizeof(dump) - pn, "%.3f,",
+                                 std::abs(saved_ltf0_fft[k]));
+                if (w < 0) break;
+                pn += w;
+            }
+            pn += snprintf(dump + pn, sizeof(dump) - pn, " arg(LLTF)=");
+            for (int s = 0; s < 52 && pn < (int)sizeof(dump) - 16; s++) {
+                int k = sc_idx[s];
+                if (k < 0) k += n_bins;
+                int w = snprintf(dump + pn, sizeof(dump) - pn, "%.3f,",
+                                 std::arg(saved_ltf0_fft[k]));
+                if (w < 0) break;
+                pn += w;
+            }
+            pn += snprintf(dump + pn, sizeof(dump) - pn,
+                           " mean|LLTF|=%.3f std|LLTF|=%.3f\n",
+                           mean_mag, std_mag);
+            USRP_LOG("%s", dump);
+        }
     }
 
     if (extract_call_count == 1 && ltf0_saved) {
@@ -1734,6 +1790,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     // Allow opt-in via env var for LTF0 FFT diagnostic (Phase 3 Stage 1, reorganized)
     const char* env_ltf0_fft_dump = std::getenv("IEEE80211_LTF0_FFT_DUMP");
     d_log_ltf0_fft = (env_ltf0_fft_dump && env_ltf0_fft_dump[0] == '1');
+    g_log_ltf0_fft = d_log_ltf0_fft;  // Propagate to file-global for static extract_header52_from_sym64
     if (d_log_ltf0_fft) {
         std::cout << "[FRAME_EQ] LTF0 FFT dump ENABLED via env\n";
     }
