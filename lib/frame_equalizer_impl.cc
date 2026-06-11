@@ -1724,6 +1724,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] Phase residual dump ENABLED via env\n";
     }
 
+    // Allow opt-in via env var for H52 diagnostic
+    const char* env_h52_dump = std::getenv("IEEE80211_H52_DUMP");
+    d_log_h52 = (env_h52_dump && env_h52_dump[0] == '1');
+    if (d_log_h52) {
+        std::cout << "[FRAME_EQ] H52 dump ENABLED via env\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
