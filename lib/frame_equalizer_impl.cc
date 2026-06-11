@@ -2357,6 +2357,55 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 estimate_header_channel_from_lltf52(lltf_for_H,
                                                     lltf_for_H,  // arg2 is unused, pass same ptr
                                                     H52);
+                // [H52_DUMP] Diagnostic: dump |H52[i]| and arg(H52[i]) for all
+                // 52 subcarriers per frame. Opt-in via IEEE80211_H52_DUMP=1.
+                // Atomic snprintf+USRP_LOG prevents sync_short stdout shredding
+                // (see commit 9ebd74f pattern). Used to compare USRP H52 vs
+                // software loopback H52 — see spec
+                // docs/superpowers/specs/2026-06-10-h52-diagnosis-design.md
+                if (d_log_h52) {
+                    double sum_mag = 0.0, sum_mag2 = 0.0;
+                    double sum_arg = 0.0, sum_arg2 = 0.0;
+                    int cnt = 0;
+                    for (int i = 0; i < 52; i++) {
+                        float m = std::abs(H52[i]);
+                        float a = std::arg(H52[i]);
+                        sum_mag += m;
+                        sum_mag2 += (double)m * m;
+                        sum_arg += a;
+                        sum_arg2 += (double)a * a;
+                        cnt++;
+                    }
+                    double mean_mag = (cnt > 0) ? sum_mag / cnt : 0.0;
+                    double var_mag = (cnt > 0) ? (sum_mag2 / cnt - mean_mag * mean_mag) : 0.0;
+                    double std_mag = (var_mag > 0) ? std::sqrt(var_mag) : 0.0;
+                    double mean_arg = (cnt > 0) ? sum_arg / cnt : 0.0;
+                    double var_arg = (cnt > 0) ? (sum_arg2 / cnt - mean_arg * mean_arg) : 0.0;
+                    double std_arg = (var_arg > 0) ? std::sqrt(var_arg) : 0.0;
+
+                    char h52_dump[2048];
+                    int pn = snprintf(h52_dump, sizeof(h52_dump),
+                                      "[H52_DUMP] counter=%d |H|=",
+                                      d_internal_symbol_counter);
+                    for (int i = 0; i < 52 && pn < (int)sizeof(h52_dump) - 32; i++) {
+                        int w = snprintf(h52_dump + pn, sizeof(h52_dump) - pn, "%.3f,",
+                                         std::abs(H52[i]));
+                        if (w < 0) break;
+                        pn += w;
+                    }
+                    pn += snprintf(h52_dump + pn, sizeof(h52_dump) - pn,
+                                   " arg(H)=");
+                    for (int i = 0; i < 52 && pn < (int)sizeof(h52_dump) - 16; i++) {
+                        int w = snprintf(h52_dump + pn, sizeof(h52_dump) - pn, "%.3f,",
+                                         std::arg(H52[i]));
+                        if (w < 0) break;
+                        pn += w;
+                    }
+                    pn += snprintf(h52_dump + pn, sizeof(h52_dump) - pn,
+                                   " mean|H|=%.3f std|H|=%.3f mean(argH)=%.3f std(argH)=%.3f\n",
+                                   mean_mag, std_mag, mean_arg, std_arg);
+                    USRP_LOG("%s", h52_dump);
+                }
                 USRP_LOG("[H_FROM_COMP] used_comp=ltf0:%d ltf1:%d\n",
                          d_ltf_compensated_valid[0] ? 1 : 0,
                          d_ltf_compensated_valid[1] ? 1 : 0);
