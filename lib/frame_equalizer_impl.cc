@@ -631,8 +631,9 @@ static void extract_header_raw48_bits_from_cache52(const gr_complex* hdr52, uint
 // Boundary handling: window=2 at i=0 and i=n-1.
 //
 // MUST match examples/test_h_median_filter_synthetic.py::apply_h_median_filter.
-// On equal magnitudes, the LOWER INDEX WINS (stable sort semantics, matching Python's
-// sorted() stability).
+// Uses std::stable_sort on indices for the interior median, which guarantees
+// stable tie-breaking (lower index wins on equal magnitudes) matching Python's
+// sorted() stability.
 //
 // Opt-in via IEEE80211_H_MEDIAN_FILTER=1 (g_h_median_filter file-static, set in ctor).
 // Caller is responsible for guarding on the flag.
@@ -655,28 +656,14 @@ static void apply_h_median_filter(const gr_complex* in, gr_complex* out, int n)
     // i = 0: window {0, 1}; lower |H| wins (use <= for stable tie-break)
     out[0] = (mags[0] <= mags[1]) ? in[0] : in[1];
 
-    // i = 1..n-2: window {i-1, i, i+1}; median |H| wins
-    // Inline 3-element median with stable tie-breaking (lower index wins on ties).
+    // i = 1..n-2: window {i-1, i, i+1}; pick complex with median |H|
+    // On equal magnitudes, stable_sort preserves original-index order,
+    // which matches Python's sorted() stability.
     for (int i = 1; i < n - 1; i++) {
-        const float a = mags[i - 1];
-        const float b = mags[i];
-        const float c = mags[i + 1];
-        // Determine the index with the middle magnitude.
-        // Stable: on equal magnitudes, the lowest window index wins.
-        if (a <= b && b <= c) {
-            out[i] = in[i];      // b is median
-        } else if (c <= b && b <= a) {
-            out[i] = in[i];      // b is median
-        } else if (b <= a && a <= c) {
-            out[i] = in[i - 1];  // a is median
-        } else if (c <= a && a <= b) {
-            out[i] = in[i - 1];  // a is median
-        } else if (a <= c && c <= b) {
-            out[i] = in[i + 1];  // c is median
-        } else {
-            // b <= c && c <= a
-            out[i] = in[i + 1];  // c is median
-        }
+        std::array<int, 3> idx = {i - 1, i, i + 1};
+        std::stable_sort(idx.begin(), idx.end(),
+                         [&mags](int a, int b) { return mags[a] < mags[b]; });
+        out[i] = in[idx[1]];  // median position
     }
 
     // i = n-1: window {n-2, n-1}; lower |H| wins (use <= for stable tie-break)

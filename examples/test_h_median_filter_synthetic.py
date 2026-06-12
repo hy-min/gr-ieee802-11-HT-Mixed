@@ -32,8 +32,9 @@ def apply_h_median_filter(h_in):
     Sort key is |H[k]|. Returns the complex value at the median position.
 
     Tie-breaking: on equal magnitudes, the lower index wins (stable sort semantics).
-    This is locked in by test_filter_tie_breaking and must match the C++ implementation
-    in lib/frame_equalizer_impl.cc::apply_h_median_filter.
+    This is locked in by test_filter_tie_breaking and test_filter_two_equal_tie_break
+    and must match the C++ implementation in
+    lib/frame_equalizer_impl.cc::apply_h_median_filter.
     """
     n = len(h_in)
     if n == 0:
@@ -46,10 +47,10 @@ def apply_h_median_filter(h_in):
 
     for i in range(n):
         if i == 0:
-            # Window {0, 1}: pick the one with smaller |H|
+            # Window {0, 1}: pick the one with smaller |H| (stable tie-break)
             out[i] = h_in[0] if mags[0] <= mags[1] else h_in[1]
         elif i == n - 1:
-            # Window {n-2, n-1}: pick the one with smaller |H|
+            # Window {n-2, n-1}: pick the one with smaller |H| (stable tie-break)
             out[i] = h_in[n - 2] if mags[n - 2] <= mags[n - 1] else h_in[n - 1]
         else:
             # Window {i-1, i, i+1}: pick the one with median |H|
@@ -217,6 +218,79 @@ def test_filter_tie_breaking():
     print("PASS: 3-element all-equal -> lower index wins at interior position")
 
 
+def test_filter_two_equal_tie_break():
+    """Lock the 2-equal magnitude contract: a manual 6-way ladder can pick the
+    wrong complex value here. std::stable_sort on indices is the reference.
+
+    For each test, use 5-element arrays with the 3-element window at i=1 having
+    the 2-equal magnitude pattern, and assert that the filtered value at i=1
+    matches Python's stable-sort tie-breaking (lower index wins on ties).
+
+    To get EXACT equal magnitudes (avoiding FP noise from cos/sin), we use
+    the 4th roots of unity scaled to the desired magnitudes:
+      magnitude 1: 1+0j, 0+1j, -1+0j, 0-1j  (all |z|=1 exactly)
+      magnitude 2: 2+0j, 0+2j, -2+0j, 0-2j  (all |z|=2 exactly)
+
+    Cases (mags of window {h[0], h[1], h[2]}, then expected filter output at i=1):
+      mags=[1,1,2]: sort indices [0,1,2] (stable), median=1 -> h[1]
+      mags=[2,1,1]: sort indices [1,2,0] (stable), median=2 -> h[2]
+      mags=[1,2,1]: sort indices [0,2,1] (stable), median=2 -> h[2]
+      mags=[1,2,2]: sort indices [0,1,2] (stable), median=1 -> h[1]
+      mags=[2,2,1]: sort indices [2,0,1] (stable), median=0 -> h[0]
+      mags=[2,1,2]: sort indices [1,0,2] (stable), median=0 -> h[0]
+    """
+    # Each test uses a 5-element array; only the first 3 elements matter for
+    # the i=1 interior window. Trailing zeros never participate.
+
+    # Case [1,1,2]: window mags [1,1,2]. Stable sort indices [0,1,2],
+    # median=1 -> h[1] (the second 1+0j).
+    h = np.array([1+0j, 1+0j, 2+0j, 0+0j, 0+0j], dtype=complex)
+    h_filt = apply_h_median_filter(h)
+    assert h_filt[1] == 1+0j, \
+        f"[1,1,2]: expected h[1]=1+0j, got {h_filt[1]}"
+    print("PASS: [1,1,2] tie-break -> h[1]=1+0j (stable-sort median index 1)")
+
+    # Case [2,1,1]: window mags [2,1,1]. Stable sort indices [1,2,0],
+    # median=2 -> h[2] (the second 0+1j). C++ ladder would pick h[1]=1+0j (WRONG).
+    h = np.array([2+0j, 1+0j, 0+1j, 0+0j, 0+0j], dtype=complex)
+    h_filt = apply_h_median_filter(h)
+    assert h_filt[1] == 0+1j, \
+        f"[2,1,1]: expected h[2]=0+1j, got {h_filt[1]}"
+    print("PASS: [2,1,1] tie-break -> h[2]=0+1j (stable-sort median index 2)")
+
+    # Case [1,2,1]: window mags [1,2,1]. Stable sort indices [0,2,1],
+    # median=2 -> h[2] (the second 0+1j). C++ ladder would pick h[0]=1+0j (WRONG).
+    h = np.array([1+0j, 2+0j, 0+1j, 0+0j, 0+0j], dtype=complex)
+    h_filt = apply_h_median_filter(h)
+    assert h_filt[1] == 0+1j, \
+        f"[1,2,1]: expected h[2]=0+1j, got {h_filt[1]}"
+    print("PASS: [1,2,1] tie-break -> h[2]=0+1j (stable-sort median index 2)")
+
+    # Case [1,2,2]: window mags [1,2,2]. Stable sort indices [0,1,2],
+    # median=1 -> h[1] (the first 2+0j).
+    h = np.array([1+0j, 2+0j, 0+2j, 0+0j, 0+0j], dtype=complex)
+    h_filt = apply_h_median_filter(h)
+    assert h_filt[1] == 2+0j, \
+        f"[1,2,2]: expected h[1]=2+0j, got {h_filt[1]}"
+    print("PASS: [1,2,2] tie-break -> h[1]=2+0j (stable-sort median index 1)")
+
+    # Case [2,2,1]: window mags [2,2,1]. Stable sort indices [2,0,1],
+    # median=0 -> h[0] (the first 2+0j). C++ ladder would pick h[1]=0+2j (WRONG).
+    h = np.array([2+0j, 0+2j, 1+0j, 0+0j, 0+0j], dtype=complex)
+    h_filt = apply_h_median_filter(h)
+    assert h_filt[1] == 2+0j, \
+        f"[2,2,1]: expected h[0]=2+0j, got {h_filt[1]}"
+    print("PASS: [2,2,1] tie-break -> h[0]=2+0j (stable-sort median index 0)")
+
+    # Case [2,1,2]: window mags [2,1,2]. Stable sort indices [1,0,2],
+    # median=0 -> h[0] (the first 2+0j).
+    h = np.array([2+0j, 1+0j, 0+2j, 0+0j, 0+0j], dtype=complex)
+    h_filt = apply_h_median_filter(h)
+    assert h_filt[1] == 2+0j, \
+        f"[2,1,2]: expected h[0]=2+0j, got {h_filt[1]}"
+    print("PASS: [2,1,2] tie-break -> h[0]=2+0j (stable-sort median index 0)")
+
+
 def main():
     print("Running 3-tap median filter synthetic tests...")
     print()
@@ -225,6 +299,7 @@ def main():
         test_filter_boundary_indices,
         test_filter_handles_complex_values,
         test_filter_tie_breaking,
+        test_filter_two_equal_tie_break,
         test_filter_no_regression_on_clean_h,
         test_filter_reduces_per_sc_error,
     ]
