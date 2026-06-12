@@ -66,9 +66,9 @@ class wifi_phy_hier(gr.hier_block2):
         # Blocks
         ##################################################
 
-        self.sync_short = ieee802_11.sync_short(sensitivity, 2, False, False)
+        self.sync_short = ieee802_11.sync_short(sensitivity, 2, True, True)
         self.sync_short.set_min_output_buffer(500000)
-        self.sync_long = ieee802_11.sync_long(sync_length, False, False)
+        self.sync_long = ieee802_11.sync_long(sync_length, True, True)
         self.sync_long.set_min_output_buffer(500000)
         self.ieee802_11_mapper_0 = ieee802_11.mapper(encoding, False)
         self.ieee802_11_mapper_0.set_use_ldpc(use_ldpc)
