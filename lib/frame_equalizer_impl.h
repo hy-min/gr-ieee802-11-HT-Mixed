@@ -70,6 +70,13 @@ private:
     // See spec: docs/superpowers/specs/2026-06-11-h-chain-traceback-design.md
     bool d_log_ltf0_fft;
 
+    // H estimation robustness (Phase 4): when true, applies a 3-tap
+    // median filter to single-frame H estimates to suppress impulse
+    // outliers while preserving tracking response. Default OFF. Enable
+    // via env var IEEE80211_H_MEDIAN_FILTER=1.
+    // See spec: docs/superpowers/specs/2026-06-12-phase4-robust-h-estimation-design.md
+    bool d_h_median_filter;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta

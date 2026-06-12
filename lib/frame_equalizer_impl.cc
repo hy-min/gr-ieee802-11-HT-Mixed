@@ -524,6 +524,7 @@ gr_complex saved_ltf0_fft[64] = {gr_complex(0,0)};
 bool ltf0_saved = false;
 bool ltf0_ever_saved = false;
 bool g_log_ltf0_fft = false;  // Bridge from d_log_ltf0_fft to static extract_header52_from_sym64
+bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static estimate_header_channel_from_lltf52
 
 static int g_extract_call_count = 0;
 
@@ -1793,6 +1794,14 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     g_log_ltf0_fft = d_log_ltf0_fft;  // Propagate to file-global for static extract_header52_from_sym64
     if (d_log_ltf0_fft) {
         std::cout << "[FRAME_EQ] LTF0 FFT dump ENABLED via env\n";
+    }
+
+    // Allow opt-in via env var for H estimation robustness (Phase 4)
+    const char* env_h_median_filter = std::getenv("IEEE80211_H_MEDIAN_FILTER");
+    d_h_median_filter = (env_h_median_filter && env_h_median_filter[0] == '1');
+    g_h_median_filter = d_h_median_filter;  // Propagate to file-global for static estimate_header_channel_from_lltf52
+    if (d_h_median_filter) {
+        std::cout << "[FRAME_EQ] H median filter ENABLED via env\n";
     }
 
     set_algorithm(algo);
