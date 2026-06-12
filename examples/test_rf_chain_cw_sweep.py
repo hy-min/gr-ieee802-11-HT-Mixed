@@ -137,8 +137,11 @@ def real_usrp_sweep(freqs_hz, freqs_ghz, args, device_addr):
     class cw_capture(gr.top_block):
         def __init__(self, freq_hz, samp_rate, rx_gain, rx_subdev, n_samples):
             gr.top_block.__init__(self)
+            # If the user passed a bare IP/hostname, prefix with 'addr=' so UHD
+            # interprets it as the network address (not a key name).
+            addr_str = device_addr if "=" in device_addr else f"addr={device_addr}"
             self.usrp = uhd.usrp_source(
-                device_addr=device_addr,
+                device_addr=uhd.device_addr(addr_str),
                 stream_args=uhd.stream_args(
                     cpu_format="fc32", otw_format="sc16", channels=range(1)
                 ),
@@ -220,6 +223,9 @@ def main():
                         help='Capture duration per frequency in seconds (default: 0.5)')
     parser.add_argument('--rx-subdev', type=str, default='B:0',
                         help='RX subdev spec (default: B:0)')
+    parser.add_argument('--device-addr', type=str, default=None,
+                        help='USRP device address (e.g. 192.168.10.2). '
+                             'If omitted, tries uhd.find_devices() first.')
     parser.add_argument('--dry-run', action='store_true',
                         help='Use synthetic amplitude data; do not access USRP hardware')
     args = parser.parse_args()
@@ -238,7 +244,9 @@ def main():
     if args.dry_run:
         amps_db = dry_run_sweep(freqs_ghz, args)
     else:
-        device_addr = try_find_usrp()
+        device_addr = args.device_addr
+        if device_addr is None:
+            device_addr = try_find_usrp()
         if device_addr is None:
             print("[ERROR] No USRP device found by UHD.", file=sys.stderr)
             print("        Check: power, Ethernet, UHD driver, "

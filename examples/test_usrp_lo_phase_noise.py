@@ -347,8 +347,11 @@ def real_usrp_capture(args, device_addr):
     class lo_phase_capture(gr.top_block):
         def __init__(self, freq_hz, samp_rate, rx_gain, rx_subdev, n_samples):
             gr.top_block.__init__(self)
+            # If the user passed a bare IP/hostname, prefix with 'addr=' so UHD
+            # interprets it as the network address (not a key name).
+            addr_str = device_addr if "=" in device_addr else f"addr={device_addr}"
             self.usrp = uhd.usrp_source(
-                device_addr=device_addr,
+                device_addr=uhd.device_addr(addr_str),
                 stream_args=uhd.stream_args(
                     cpu_format="fc32", otw_format="sc16", channels=range(1)
                 ),
