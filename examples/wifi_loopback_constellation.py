@@ -94,20 +94,18 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
         self.control_layout = Qt.QHBoxLayout()
         self.top_layout.addLayout(self.control_layout)
 
-        # MCS mapping
+        # MCS mapping per IEEE 802.11n Table 20-30 (HT-SIG MCS field 0-7)
         self.mcs_names = [
-            'BPSK 1/2 (MCS0)', 'BPSK 3/4',
-            'QPSK 1/2 (MCS1)', 'QPSK 3/4 (MCS2)',
-            '16QAM 1/2 (MCS3)', '16QAM 3/4 (MCS4)',
-            '64QAM 2/3 (MCS5)', '64QAM 3/4 (MCS6)',
-            '64QAM 5/6 (MCS7)',
+            'BPSK 1/2 (MCS0)', 'QPSK 1/2 (MCS1)',
+            'QPSK 3/4 (MCS2)', '16QAM 1/2 (MCS3)',
+            '16QAM 3/4 (MCS4)', '64QAM 2/3 (MCS5)',
+            '64QAM 3/4 (MCS6)', '64QAM 5/6 (MCS7)',
         ]
         self.mcs_values = [
-            ieee802_11.BPSK_1_2, ieee802_11.BPSK_3_4,
-            ieee802_11.QPSK_1_2, ieee802_11.QPSK_3_4,
-            ieee802_11.QAM16_1_2, ieee802_11.QAM16_3_4,
-            ieee802_11.QAM64_2_3, ieee802_11.QAM64_3_4,
-            ieee802_11.QAM64_5_6,
+            ieee802_11.BPSK_1_2, ieee802_11.QPSK_1_2,
+            ieee802_11.QPSK_3_4, ieee802_11.QAM16_1_2,
+            ieee802_11.QAM16_3_4, ieee802_11.QAM64_2_3,
+            ieee802_11.QAM64_3_4, ieee802_11.QAM64_5_6,
         ]
 
         # MCS chooser
@@ -258,9 +256,8 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
             3: (-1.5, 1.5),   # QPSK 3/4
             4: (-3.0, 3.0),   # 16QAM
             5: (-3.0, 3.0),   # 16QAM 3/4
-            6: (-7.0, 7.0),   # 64QAM
-            7: (-7.0, 7.0),   # 64QAM 3/4
-            8: (-7.0, 7.0),   # 64QAM 5/6
+            6: (-7.0, 7.0),   # 64QAM 3/4
+            7: (-7.0, 7.0),   # 64QAM 5/6
         }
         xmin, xmax = ranges.get(mcs, (-2, 2))
         self.constellation_sink.set_x_axis(xmin, xmax)
@@ -275,10 +272,30 @@ class wifi_loopback_constellation(gr.top_block, Qt.QWidget):
 
 
 def main():
+    import argparse
+    from PyQt5 import QtCore
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--ldpc', action='store_true', help='Enable LDPC encoding')
+    parser.add_argument('--duration', type=int, default=0, help='Run duration in seconds (0=forever)')
+    parser.add_argument('--mcs', type=int, default=0, choices=range(0, 8), help='IEEE 802.11n MCS index 0-7')
+    parser.add_argument('--snr', type=int, default=30, help='SNR in dB (default 30)')
+    args = parser.parse_args()
     qapp = Qt.QApplication(sys.argv)
     tb = wifi_loopback_constellation()
+    if args.ldpc:
+        tb.ldpc_check.setChecked(True)  # triggers set_use_ldpc via stateChanged
+    if args.mcs != 0:
+        tb.mcs_combo.setCurrentIndex(args.mcs)  # triggers set_mcs via currentIndexChanged
+    if args.snr != 30:
+        tb.snr_slider.setValue(args.snr)  # triggers set_snr via valueChanged
     tb.start()
     tb.show()
+    if args.duration > 0:
+        def shutdown():
+            tb.stop()
+            tb.wait()
+            qapp.quit()
+        QtCore.QTimer.singleShot(args.duration * 1000, shutdown)
     qapp.exec_()
 
 
