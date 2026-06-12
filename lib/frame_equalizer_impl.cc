@@ -525,6 +525,7 @@ bool ltf0_saved = false;
 bool ltf0_ever_saved = false;
 bool g_log_ltf0_fft = false;  // Bridge from d_log_ltf0_fft to static extract_header52_from_sym64
 bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static estimate_header_channel_from_lltf52
+bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site dump (post-filter)
 
 static int g_extract_call_count = 0;
 
@@ -1848,6 +1849,14 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] H median filter ENABLED via env\n";
     }
 
+    // Allow opt-in via env var for post-filter H52 diagnostic (Phase 4)
+    const char* env_h52_dump_filtered = std::getenv("IEEE80211_H52_DUMP_FILTERED");
+    d_log_h52_filtered = (env_h52_dump_filtered && env_h52_dump_filtered[0] == '1');
+    g_log_h52_filtered = d_log_h52_filtered;  // Propagate to file-global for call-site dump
+    if (d_log_h52_filtered) {
+        std::cout << "[FRAME_EQ] H52 post-filter dump ENABLED via env\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -2523,6 +2532,61 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                    mean_mag, std_mag, mean_arg, std_arg);
                     USRP_LOG("%s", h52_dump);
                 }
+                // [Phase 4] Apply 3-tap median filter at the call site (not
+                // inside estimate_header_channel_from_lltf52) to keep the
+                // function pure and enable clean pre/post dumps. Opt-in via
+                // IEEE80211_H_MEDIAN_FILTER=1. Spec §6.1, plan Task 4+5.
+                if (g_h_median_filter) {
+                    apply_h_median_filter(H52, H52, 52);
+                }
+                // [H52_DUMP_FILTERED] Post-filter dump. Same format as
+                // [H52_DUMP] but with H52_DUMP_FILTERED prefix. Uses a
+                // separate counter so pre/post counters don't share state.
+                if (g_log_h52_filtered) {
+                    static int h52_filtered_counter = 0;
+                    h52_filtered_counter++;
+                    double sum_mag = 0.0, sum_mag2 = 0.0;
+                    double sum_arg = 0.0, sum_arg2 = 0.0;
+                    int cnt = 0;
+                    for (int i = 0; i < 52; i++) {
+                        float m = std::abs(H52[i]);
+                        float a = std::arg(H52[i]);
+                        sum_mag += m;
+                        sum_mag2 += (double)m * m;
+                        sum_arg += a;
+                        sum_arg2 += (double)a * a;
+                        cnt++;
+                    }
+                    double mean_mag = (cnt > 0) ? sum_mag / cnt : 0.0;
+                    double var_mag = (cnt > 0) ? (sum_mag2 / cnt - mean_mag * mean_mag) : 0.0;
+                    double std_mag = (var_mag > 0) ? std::sqrt(var_mag) : 0.0;
+                    double mean_arg = (cnt > 0) ? sum_arg / cnt : 0.0;
+                    double var_arg = (cnt > 0) ? (sum_arg2 / cnt - mean_arg * mean_arg) : 0.0;
+                    double std_arg = (var_arg > 0) ? std::sqrt(var_arg) : 0.0;
+
+                    char h52_dump[2048];
+                    int pn = snprintf(h52_dump, sizeof(h52_dump),
+                                      "[H52_DUMP_FILTERED] counter=%d |H|=",
+                                      h52_filtered_counter);
+                    for (int i = 0; i < 52 && pn < (int)sizeof(h52_dump) - 32; i++) {
+                        int w = snprintf(h52_dump + pn, sizeof(h52_dump) - pn, "%.3f,",
+                                         std::abs(H52[i]));
+                        if (w < 0) break;
+                        pn += w;
+                    }
+                    pn += snprintf(h52_dump + pn, sizeof(h52_dump) - pn,
+                                   " arg(H)=");
+                    for (int i = 0; i < 52 && pn < (int)sizeof(h52_dump) - 16; i++) {
+                        int w = snprintf(h52_dump + pn, sizeof(h52_dump) - pn, "%.3f,",
+                                         std::arg(H52[i]));
+                        if (w < 0) break;
+                        pn += w;
+                    }
+                    pn += snprintf(h52_dump + pn, sizeof(h52_dump) - pn,
+                                   " mean|H|=%.3f std|H|=%.3f mean(argH)=%.3f std(argH)=%.3f\n",
+                                   mean_mag, std_mag, mean_arg, std_arg);
+                    USRP_LOG("%s", h52_dump);
+                }
                 USRP_LOG("[H_FROM_COMP] used_comp=ltf0:%d ltf1:%d\n",
                          d_ltf_compensated_valid[0] ? 1 : 0,
                          d_ltf_compensated_valid[1] ? 1 : 0);
@@ -2781,6 +2845,62 @@ int frame_equalizer_impl::general_work(int noutput_items,
             estimate_header_channel_from_lltf52(lltf_for_H2,
                                                 lltf_for_H2,
                                                 Hhdr52);
+            // [Phase 4] Apply 3-tap median filter at the call site (not
+            // inside estimate_header_channel_from_lltf52) to keep the
+            // function pure and enable clean pre/post dumps. Opt-in via
+            // IEEE80211_H_MEDIAN_FILTER=1. Spec §6.1, plan Task 4+5.
+            if (g_h_median_filter) {
+                apply_h_median_filter(Hhdr52, Hhdr52, 52);
+            }
+            // [H52_DUMP_FILTERED] Post-filter dump for Hhdr52. Same format
+            // as the H52 [H52_DUMP_FILTERED] block but reads from Hhdr52.
+            // Separate counter (h52_filtered_counter_hdr) so the two call
+            // sites' dumps don't share state.
+            if (g_log_h52_filtered) {
+                static int h52_filtered_counter_hdr = 0;
+                h52_filtered_counter_hdr++;
+                double sum_mag = 0.0, sum_mag2 = 0.0;
+                double sum_arg = 0.0, sum_arg2 = 0.0;
+                int cnt = 0;
+                for (int i = 0; i < 52; i++) {
+                    float m = std::abs(Hhdr52[i]);
+                    float a = std::arg(Hhdr52[i]);
+                    sum_mag += m;
+                    sum_mag2 += (double)m * m;
+                    sum_arg += a;
+                    sum_arg2 += (double)a * a;
+                    cnt++;
+                }
+                double mean_mag = (cnt > 0) ? sum_mag / cnt : 0.0;
+                double var_mag = (cnt > 0) ? (sum_mag2 / cnt - mean_mag * mean_mag) : 0.0;
+                double std_mag = (var_mag > 0) ? std::sqrt(var_mag) : 0.0;
+                double mean_arg = (cnt > 0) ? sum_arg / cnt : 0.0;
+                double var_arg = (cnt > 0) ? (sum_arg2 / cnt - mean_arg * mean_arg) : 0.0;
+                double std_arg = (var_arg > 0) ? std::sqrt(var_arg) : 0.0;
+
+                char h52_dump[2048];
+                int pn = snprintf(h52_dump, sizeof(h52_dump),
+                                  "[H52_DUMP_FILTERED] counter=%d |H|=",
+                                  h52_filtered_counter_hdr);
+                for (int i = 0; i < 52 && pn < (int)sizeof(h52_dump) - 32; i++) {
+                    int w = snprintf(h52_dump + pn, sizeof(h52_dump) - pn, "%.3f,",
+                                     std::abs(Hhdr52[i]));
+                    if (w < 0) break;
+                    pn += w;
+                }
+                pn += snprintf(h52_dump + pn, sizeof(h52_dump) - pn,
+                               " arg(H)=");
+                for (int i = 0; i < 52 && pn < (int)sizeof(h52_dump) - 16; i++) {
+                    int w = snprintf(h52_dump + pn, sizeof(h52_dump) - pn, "%.3f,",
+                                     std::arg(Hhdr52[i]));
+                    if (w < 0) break;
+                    pn += w;
+                }
+                pn += snprintf(h52_dump + pn, sizeof(h52_dump) - pn,
+                               " mean|H|=%.3f std|H|=%.3f mean(argH)=%.3f std(argH)=%.3f\n",
+                               mean_mag, std_mag, mean_arg, std_arg);
+                USRP_LOG("%s", h52_dump);
+            }
 
             bool found = false;
 

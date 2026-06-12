@@ -77,6 +77,14 @@ private:
     // See spec: docs/superpowers/specs/2026-06-12-phase4-robust-h-estimation-design.md
     bool d_h_median_filter;
 
+    // H52 post-filter diagnostic: when true, dumps |H52[i]| and arg(H52[i])
+    // for all 52 subcarriers per frame AFTER the 3-tap median filter is
+    // applied (at the call sites of estimate_header_channel_from_lltf52).
+    // Companion to d_log_h52 which dumps the pre-filter H52. Default OFF.
+    // Enable via env var IEEE80211_H52_DUMP_FILTERED=1.
+    // See spec: docs/superpowers/specs/2026-06-12-phase4-robust-h-estimation-design.md
+    bool d_log_h52_filtered;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta
