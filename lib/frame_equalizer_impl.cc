@@ -3157,9 +3157,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     continue;
                 }
 
-                if (lsig_enc != 0) {
+                if (lsig_enc != 0 && !getenv("IEEE80211_FORCE_HTSIG")) {
                     // L-SIG succeeded with non-BPSK 1/2 rate - skip and try other inv
                     continue;
+                }
+                if (lsig_enc != 0) {
+                    USRP_LOG("[FORCE_HTSIG] sym=%d lsig_enc=%d, attempting HT-SIG despite non-zero enc\n",
+                             d_internal_symbol_counter, lsig_enc);
                 }
 
                 htsig_lsig_enc = lsig_enc;

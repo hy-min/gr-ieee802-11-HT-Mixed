@@ -166,3 +166,38 @@ indistinguishable from baseline (33% vs 36%). The huge delta variance
 root cause — it cannot provide a "fine" reference. The original 52-SC
 mean is the best estimate we can get from L-LTF0/L-LTF1; refinement
 only adds noise. Reverting the change.
+
+## FORCE_HTSIG experiment (2026-06-14)
+
+Added `IEEE80211_FORCE_HTSIG=1` env var to bypass
+`if (lsig_enc != 0) continue;` at line ~3160 of `lib/frame_equalizer_impl.cc`.
+When set, the candidate loop runs for every inversion, regardless of L-SIG
+enc. The check stays on by default; FORCE_HTSIG is opt-in. New log line
+`[FORCE_HTSIG] sym=N lsig_enc=K, attempting HT-SIG despite non-zero enc`
+fires once per frame the bypass is taken.
+
+USRP result (12s, IEEE80211_FORCE_HTSIG=1):
+- HT_SIG_CAND fires: 384 lines (24 frames × 16 candidates) — gating
+  bypassed successfully; the candidate loop now runs for enc=2/4/6/7
+  frames too.
+- FORCE_HTSIG fires: 24 lines (one per frame; L-SIG decodes as enc=2
+  on USRP, never enc=0).
+- HT-SIG decode outcome: **384/384 crc_fail** — zero successful decodes.
+- HT-SIG metrics 14-16, all uniformly crc_fail across 4 rotations × 4
+  inv combinations, consistent with the Phase 10 finding that the
+  upstream L-LTF0 FFT is corrupted on USRP. Forcing the loop to run
+  does not produce valid HT-SIG because the equalizer input is the
+  same broken H52 — the gating was never the bottleneck.
+
+Loopback result (8s, IEEE80211_FORCE_HTSIG=1):
+- 1 frame captured, 1 FCS OK — identical to baseline. The FORCE_HTSIG
+  path is not exercised (loopback L-SIG correctly decodes as enc=0).
+- No regression.
+
+Conclusion: **The soft fix does NOT unlock HT-SIG on USRP.** It
+mechanically removes the gating, but the upstream L-LTF0 FFT corruption
+(Phase 10 root cause) means equalized HT-SIG symbols are random →
+crc_fail on every candidate. The gating was a red herring; the real
+fix must address L-LTF0 FFT quality or H52 estimation upstream.
+
+Commit: `fix(frame_eq): bypass lsig_enc!=0 gating behind IEEE80211_FORCE_HTSIG env var`.
