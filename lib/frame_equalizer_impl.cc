@@ -824,7 +824,8 @@ static void deinterleave_bpsk_48(const uint8_t* in48, uint8_t* out48)
 
 static bool viterbi_decode_133_171(const uint8_t* rx_bits,
                                    int n_encoded_bits,
-                                   std::vector<uint8_t>& decoded_bits)
+                                   std::vector<uint8_t>& decoded_bits,
+                                   int* out_best_metric = nullptr)
 {
     if (n_encoded_bits <= 0 || (n_encoded_bits & 0x1)) {
         return false;
@@ -879,8 +880,9 @@ static bool viterbi_decode_133_171(const uint8_t* rx_bits,
     }
 
     int best_state = 0;
-    if (metric_prev[best_state] >= INF) {
-        int best_metric = INF;
+    int best_metric = metric_prev[best_state];
+    if (best_metric >= INF) {
+        best_metric = INF;
         for (int s = 0; s < 64; s++) {
             if (metric_prev[s] < best_metric) {
                 best_metric = metric_prev[s];
@@ -888,9 +890,11 @@ static bool viterbi_decode_133_171(const uint8_t* rx_bits,
             }
         }
         if (best_metric >= INF) {
+            if (out_best_metric) *out_best_metric = INF;
             return false;
         }
     }
+    if (out_best_metric) *out_best_metric = best_metric;
 
     decoded_bits.assign(n_steps, 0);
 
@@ -1059,8 +1063,12 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
                                    int& out_mcs,
                                    bool& out_sgi,
                                    bool& out_agg,
-                                   bool& out_use_ldpc)
+                                   bool& out_use_ldpc,
+                                   int* out_vit_metric = nullptr,
+                                   const char** out_fail_reason = nullptr)
 {
+    if (out_vit_metric) *out_vit_metric = -1;
+    if (out_fail_reason) *out_fail_reason = "init";
     uint8_t bits52_a[52];
     uint8_t bits52_b[52];
     uint8_t sig48_a[48];
@@ -1099,10 +1107,15 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
     }
 
     std::vector<uint8_t> dec48;
-    if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+    int vit_metric = -1;
+    if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+        if (out_vit_metric) *out_vit_metric = vit_metric;
+        if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
     }
+    if (out_vit_metric) *out_vit_metric = vit_metric;
     if ((int)dec48.size() != 48) {
+        if (out_fail_reason) *out_fail_reason = "dec48_size";
         return false;
     }
 
@@ -1149,29 +1162,36 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
 
     for (int i = 42; i < 48; i++) {
         if (decoded_bits[i] != 0) {
+            if (out_fail_reason) *out_fail_reason = "tail_nonzero";
             return false;
         }
     }
 
     if (crc_rx != crc_calc) {
+        if (out_fail_reason) *out_fail_reason = "crc_fail";
         return false;
     }
 
     if (bw40 != 0) {
+        if (out_fail_reason) *out_fail_reason = "bw40_set";
         return false;
     }
     if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        if (out_fail_reason) *out_fail_reason = "rsv_set";
         return false;
     }
     // adv_coding: 0=BCC, 1=LDPC - both are valid now
     if (adv_coding != 0 && adv_coding != 1) {
+        if (out_fail_reason) *out_fail_reason = "adv_coding_bad";
         return false;
     }
 
     if (mcs < 0 || mcs > 7) {
+        if (out_fail_reason) *out_fail_reason = "mcs_oor";
         return false;
     }
     if (psdu_length <= 0) {
+        if (out_fail_reason) *out_fail_reason = "len_zero";
         return false;
     }
 
@@ -1180,6 +1200,7 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
     out_sgi = short_gi;
     out_agg = aggregation;
     out_use_ldpc = (adv_coding == 1);
+    if (out_fail_reason) *out_fail_reason = "OK";
     return true;
 }
 
@@ -1409,8 +1430,12 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
                                               uint8_t* dbg_eqbits48_a = nullptr,
                                               uint8_t* dbg_eqbits48_b = nullptr,
                                               uint8_t* dbg_deintl48_a = nullptr,
-                                              uint8_t* dbg_deintl48_b = nullptr)
+                                              uint8_t* dbg_deintl48_b = nullptr,
+                                              int* out_vit_metric = nullptr,
+                                              const char** out_fail_reason = nullptr)
 {
+    if (out_vit_metric) *out_vit_metric = -1;
+    if (out_fail_reason) *out_fail_reason = "init";
     uint8_t eqbits48_a[48];
     uint8_t eqbits48_b[48];
     uint8_t deintl48_a[48];
@@ -1454,10 +1479,15 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
     }
 
     std::vector<uint8_t> dec48;
-    if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+    int vit_metric = -1;
+    if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+        if (out_vit_metric) *out_vit_metric = vit_metric;
+        if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
     }
+    if (out_vit_metric) *out_vit_metric = vit_metric;
     if ((int)dec48.size() != 48) {
+        if (out_fail_reason) *out_fail_reason = "dec48_size";
         return false;
     }
 
@@ -1548,8 +1578,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        bool& out_sgi,
                                        bool& out_agg,
                                        bool& out_use_ldpc,
-                                       int rot = -1)
+                                       int rot = -1,
+                                       int* out_vit_metric = nullptr,
+                                       const char** out_fail_reason = nullptr)
 {
+    if (out_vit_metric) *out_vit_metric = -1;
+    if (out_fail_reason) *out_fail_reason = "init";
     uint8_t eqbits48_a[48];
     uint8_t eqbits48_b[48];
     uint8_t deintl48_a[48];
@@ -1615,10 +1649,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     }
 
     std::vector<uint8_t> dec48;
-    if (!viterbi_decode_133_171(enc96, 96, dec48)) {
+    int vit_metric = -1;
+    if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+        if (out_vit_metric) *out_vit_metric = vit_metric;
+        if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
     }
+    if (out_vit_metric) *out_vit_metric = vit_metric;
     if ((int)dec48.size() != 48) {
+        if (out_fail_reason) *out_fail_reason = "dec48_size";
         return false;
     }
 
@@ -1665,29 +1704,36 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     for (int i = 42; i < 48; i++) {
         if (decoded_bits[i] != 0) {
+            if (out_fail_reason) *out_fail_reason = "tail_nonzero";
             return false;
         }
     }
 
     if (crc_rx != crc_calc) {
+        if (out_fail_reason) *out_fail_reason = "crc_fail";
         return false;
     }
 
     if (bw40 != 0) {
+        if (out_fail_reason) *out_fail_reason = "bw40_set";
         return false;
     }
     if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        if (out_fail_reason) *out_fail_reason = "rsv_set";
         return false;
     }
     // adv_coding: 0=BCC, 1=LDPC - both are valid now
     if (adv_coding != 0 && adv_coding != 1) {
+        if (out_fail_reason) *out_fail_reason = "adv_coding_bad";
         return false;
     }
 
     if (mcs < 0 || mcs > 7) {
+        if (out_fail_reason) *out_fail_reason = "mcs_oor";
         return false;
     }
     if (psdu_length <= 0) {
+        if (out_fail_reason) *out_fail_reason = "len_zero";
         return false;
     }
 
@@ -1696,6 +1742,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     out_sgi = short_gi;
     out_agg = aggregation;
     out_use_ldpc = (adv_coding == 1);
+    if (out_fail_reason) *out_fail_reason = "OK";
     return true;
 }
 
@@ -3028,6 +3075,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             htsig_last_inv_a = inv_a;
                             htsig_last_inv_b = inv_b;
 
+                            int cand_metric = -1;
+                            const char* cand_fail = "init";
                             bool decode_ok = decode_htsig_from_rotated(rot_htsig0,
                                                            rot_htsig1,
                                                            Hhdr52,
@@ -3038,7 +3087,17 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            parsed_sgi,
                                                            parsed_agg,
                                                            parsed_use_ldpc,
-                                                           rot);
+                                                           rot,
+                                                           &cand_metric,
+                                                           &cand_fail);
+                            // Per-rotation metric trace: log ALL 16 candidates so we can
+                            // see which rotations produce a meaningful viterbi best-path
+                            // metric, vs. metrics that are saturated (RANDOM-like).
+                            USRP_LOG("[HT_SIG_CAND] sym=%d rot=%d inv_a=%d inv_b=%d "
+                                     "metric=%d fail=%s\n",
+                                     d_internal_symbol_counter,
+                                     rot, inv_a, inv_b,
+                                     cand_metric, cand_fail);
                             if (!decode_ok) {
                                 continue;
                             }
