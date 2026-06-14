@@ -237,3 +237,48 @@ No regression in software loopback.
 Next iteration: address the upstream L-LTF0 FFT issue (Phase 11 plan
 already drafted at `c225aa1`). Likely targets: L-LTF0/L-LTF1 timing
 alignment, FFT window offset, or hardware-level (TCXO/OCXO).
+
+## Timing offset sweep (Phase 12, Task 2, 2026-06-14)
+
+The `IEEE80211_FRAME_START_OFFSET=N` env var hook was already present in
+`lib/sync_long.cc` (commit b8e0e34, Phase 3). It shifts `FRAME_START_BASE`
+(160) by N samples in both tag-jump and correlation-search paths, via
+`get_frame_start_offset()` helper at line 43-54. Default offset=0
+preserves baseline behavior. No new code was required for this task —
+we proceeded directly to the sweep.
+
+Sweep on USRP, 12s per offset, `test_p10_usrp_v2.py` 400-byte packet
+(5 separate 12s runs, ~1 minute total wall time):
+
+| offset | frame_start | total LSIG OK | enc=0 | enc=0 % | non-zero encodings |
+|-------:|------------:|--------------:|------:|--------:|---------------------|
+|     -4 |         156 |            40 |     8 |  20%    | 0,1,2,6,7 (8 each)  |
+|     -2 |         158 |            32 |     0 |   0%    | 1,3,5               |
+|      0 |         160 |            24 |     0 |   0%    | 2 (24)              |
+|     +2 |         162 |            40 |     0 |   0%    | 2,3,4               |
+|     +4 |         164 |            32 |     0 |   0%    | 3,6                 |
+
+Observations:
+- **Best offset: -4** (20% enc=0). Only offset that produces any enc=0.
+- **Baseline (offset=0)**: 0% enc=0, all frames decode as enc=2.
+- **No offset achieves >=50% enc=0** (the "promising" threshold from the plan).
+- The enc distribution varies wildly between offsets (enc=2 dominant at 0/+2/+4,
+  enc=3,6 dominant at -2/+4, enc=0 appears only at -4 mixed with others).
+- Shifting d_frame_start by ±N samples does not systematically fix the
+  L-LTF0 FFT corruption. Sub-sample-equivalent offsets cannot recover
+  the broken H52 → equalized L-SIG constellation.
+
+Conclusion: **Timing offset sweep does NOT fix the upstream L-LTF0 FFT
+issue.** Best result (offset=-4) is a marginal 20% enc=0 — within noise
+of a stochastic process, not a systematic fix. The env var hook is
+retained (it costs nothing and was already in place from Phase 3), but
+no value of N is the "right" answer. This rules out the sample-level
+d_frame_start timing hypothesis from Phase 11. The remaining
+upstream-fix candidates are:
+
+1. **Task 3: L-LTF1-only H estimation** (skip L-LTF0 average)
+2. **Task 4: per-SC phase tracking (CPE)** on equalized symbols
+3. **Hardware**: 10 MHz OCXO/GPSDO to address LO phase noise (Phase 6 root cause)
+
+No commit was made for Task 2 — the env var hook is already on the
+branch (commit b8e0e34) and the sweep produced no actionable change.
