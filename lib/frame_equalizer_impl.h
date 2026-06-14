@@ -70,6 +70,13 @@ private:
     // See spec: docs/superpowers/specs/2026-06-11-h-chain-traceback-design.md
     bool d_log_ltf0_fft;
 
+    // L-LTF0 FFT pre-compensation diagnostic (Phase 10): when true, dumps
+    // the first 5 subcarriers of L-LTF0 FFT in complex (a+bi) form BEFORE
+    // CFO/SFO compensation. Used to verify that L-SIG mis-decoding (enc=2/4/6/7
+    // instead of 0) is not caused by upstream FFT corruption. Default OFF.
+    // Enable via env var IEEE80211_LTF0_FFT_PRECOMP_DUMP=1.
+    bool d_log_ltf0_fft_precomp;
+
     // H estimation robustness (Phase 4): when true, applies a 3-tap
     // median filter to single-frame H estimates to suppress impulse
     // outliers while preserving tracking response. Default OFF. Enable

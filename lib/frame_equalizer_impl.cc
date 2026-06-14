@@ -524,6 +524,7 @@ gr_complex saved_ltf0_fft[64] = {gr_complex(0,0)};
 bool ltf0_saved = false;
 bool ltf0_ever_saved = false;
 bool g_log_ltf0_fft = false;  // Bridge from d_log_ltf0_fft to static extract_header52_from_sym64
+bool g_log_ltf0_fft_precomp = false;  // Bridge from d_log_ltf0_fft_precomp to static extract_header52_from_sym64
 bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static estimate_header_channel_from_lltf52
 bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site dump (post-filter)
 
@@ -591,6 +592,45 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
             pn += snprintf(dump + pn, sizeof(dump) - pn,
                            " mean|LLTF|=%.3f std|LLTF|=%.3f\n",
                            mean_mag, std_mag);
+            USRP_LOG("%s", dump);
+        }
+
+        // [LTF0_FFT_PRECOMP_DUMP] Companion diagnostic to LTF0_FFT_DUMP: dumps
+        // the first 5 active subcarriers of the L-LTF0 FFT in complex (a+bi)
+        // form, BEFORE any CFO/SFO compensation. Phase 10 root-cause finding:
+        // L-SIG is decoded as enc=2/4/6/7 (non-BPSK) on USRP, which the
+        // candidate loop then rejects. If L-LTF0 FFT is clean (BPSK ±1 on
+        // data SCs) here, the bug is downstream (equalizer/H path). If
+        // corrupted, the bug is upstream (splitter/timing/IQ/RF).
+        // Enable via IEEE80211_LTF0_FFT_PRECOMP_DUMP=1. Atomic snprintf +
+        // USRP_LOG("%s", buf) prevents sync_short stdout shredding (Phase 9).
+        if (g_log_ltf0_fft_precomp) {
+            static const int sc_idx[52] = {
+                -26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1,
+                1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26
+            };
+            static int ltf0_precomp_dump_counter = 0;
+            char dump[1024];
+            int pn = snprintf(dump, sizeof(dump),
+                              "[LTF0_FFT_PRECOMP] counter=%d SC[0:5]=",
+                              ltf0_precomp_dump_counter++);
+            int n_bins = 64;
+            for (int s = 0; s < 5 && pn < (int)sizeof(dump) - 80; s++) {
+                int k = sc_idx[s];
+                if (k < 0) k += n_bins;
+                int w = snprintf(dump + pn, sizeof(dump) - pn,
+                                 "%.3f%+.3fi ",
+                                 saved_ltf0_fft[k].real(),
+                                 saved_ltf0_fft[k].imag());
+                if (w < 0) break;
+                pn += w;
+            }
+            int w = snprintf(dump + pn, sizeof(dump) - pn,
+                             " |SC[26]|=%.3f arg[26]=%.3f\n",
+                             std::abs(saved_ltf0_fft[sc_idx[26] >= 0 ? sc_idx[26] : sc_idx[26] + n_bins]),
+                             std::arg(saved_ltf0_fft[sc_idx[26] >= 0 ? sc_idx[26] : sc_idx[26] + n_bins]));
+            if (w > 0) pn += w;
+            (void)pn;
             USRP_LOG("%s", dump);
         }
     }
@@ -1886,6 +1926,18 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     g_log_ltf0_fft = d_log_ltf0_fft;  // Propagate to file-global for static extract_header52_from_sym64
     if (d_log_ltf0_fft) {
         std::cout << "[FRAME_EQ] LTF0 FFT dump ENABLED via env\n";
+    }
+
+    // Allow opt-in via env var for LTF0 FFT pre-compensation diagnostic (Phase 10)
+    // Dumps the first 5 subcarriers of L-LTF0 FFT in complex (a+bi) form, BEFORE
+    // any CFO/SFO compensation is applied. Used to determine if L-SIG mis-decoding
+    // (enc=2/4/6/7 instead of 0) is caused by upstream FFT corruption. Compare USRP
+    // vs loopback: if USRP shows much higher std, the bug is in splitter/timing/IQ.
+    const char* env_ltf0_fft_precomp_dump = std::getenv("IEEE80211_LTF0_FFT_PRECOMP_DUMP");
+    d_log_ltf0_fft_precomp = (env_ltf0_fft_precomp_dump && env_ltf0_fft_precomp_dump[0] == '1');
+    g_log_ltf0_fft_precomp = d_log_ltf0_fft_precomp;  // Propagate to file-global for static fn
+    if (d_log_ltf0_fft_precomp) {
+        std::cout << "[FRAME_EQ] LTF0 FFT PRE-COMP dump ENABLED via env\n";
     }
 
     // Allow opt-in via env var for H estimation robustness (Phase 4)
