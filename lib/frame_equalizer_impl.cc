@@ -555,8 +555,12 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
                 e_in += std::norm(sym64[j]);
             }
             static int frame_gain_dump_counter = 0;
-            fprintf(stderr, "[FRAME_GAIN_DUMP] fidx=%d e_in=%.2f\n",
-                    frame_gain_dump_counter++, e_in);
+            // Note: single fprintf() with 2 args is safe (stderr unbuffered,
+            // glibc serializes). Phase 9 snprintf+USRP_LOG rule applies to
+            // multi-value dumps only. Format includes e_in_mean for
+            // cross-gain AGC analysis (sum can be 64x larger than mean).
+            fprintf(stderr, "[FRAME_GAIN_DUMP] fidx=%d e_in=%.2f e_in_mean=%.4f\n",
+                    frame_gain_dump_counter++, e_in, e_in / 64.0);
         }
 
         // [LTF0_FFT_DUMP] Diagnostic: dump |saved_ltf0_fft[i]| and arg() for all
