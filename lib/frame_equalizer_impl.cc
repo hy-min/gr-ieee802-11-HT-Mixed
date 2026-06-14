@@ -528,6 +528,7 @@ bool g_log_ltf0_fft_precomp = false;  // Bridge from d_log_ltf0_fft_precomp to s
 bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static estimate_header_channel_from_lltf52
 bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site dump (post-filter)
 bool g_log_h52_input = false;     // Bridge from d_log_h52_input to call-site dump (Hhdr52 at equalizer input)
+bool g_log_frame_gain = false;    // Bridge from d_log_frame_gain to static extract_header52_from_sym64
 
 static int g_extract_call_count = 0;
 
@@ -540,6 +541,23 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         memcpy(saved_ltf0_fft, sym64, 64 * sizeof(gr_complex));
         ltf0_saved = true;
         ltf0_ever_saved = true;
+
+        // [FRAME_GAIN_DUMP] Phase 13 Task 1: dump time-domain input
+        // energy for the L-LTF0 FFT window (64 samples). This runs at the
+        // entry point of extract_header52_from_sym64, BEFORE any guard
+        // (unlike H52_DUMP / E_I_DUMP which are blocked by
+        // d_early_eqsym_valid on USRP per Phase 4). Used to confirm
+        // upstream gain/agc state at the moment L-LTF0 FFT is captured.
+        // Opt-in via IEEE80211_FRAME_GAIN_DUMP=1.
+        if (g_log_frame_gain) {
+            double e_in = 0.0;
+            for (int j = 0; j < 64; j++) {
+                e_in += std::norm(sym64[j]);
+            }
+            static int frame_gain_dump_counter = 0;
+            fprintf(stderr, "[FRAME_GAIN_DUMP] fidx=%d e_in=%.2f\n",
+                    frame_gain_dump_counter++, e_in);
+        }
 
         // [LTF0_FFT_DUMP] Diagnostic: dump |saved_ltf0_fft[i]| and arg() for all
         // 64 FFT bins (then 52 active SCs) per frame. Opt-in via
@@ -1968,6 +1986,18 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     g_log_h52_input = d_log_h52_input;  // Propagate to file-global
     if (d_log_h52_input) {
         std::cout << "[FRAME_EQ] H52 at equalizer-input dump ENABLED via env\n";
+    }
+
+    // Allow opt-in via env var for L-LTF0 entry time-domain gain
+    // diagnostic (Phase 13 Task 1). Dumps |sym64[j]|^2 sum at the FFT
+    // window capture point (BEFORE d_early_eqsym_valid guard). Used to
+    // confirm upstream gain/agc at L-LTF0 FFT entry on USRP. Default OFF.
+    // Enable via IEEE80211_FRAME_GAIN_DUMP=1.
+    const char* env_frame_gain_dump = std::getenv("IEEE80211_FRAME_GAIN_DUMP");
+    d_log_frame_gain = (env_frame_gain_dump && env_frame_gain_dump[0] == '1');
+    g_log_frame_gain = d_log_frame_gain;  // Propagate to file-global
+    if (d_log_frame_gain) {
+        std::cout << "[FRAME_EQ] Frame gain dump ENABLED via env\n";
     }
 
     set_algorithm(algo);

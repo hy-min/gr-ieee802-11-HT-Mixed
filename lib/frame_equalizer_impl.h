@@ -101,6 +101,15 @@ private:
     // IEEE80211_H52_EQ_INPUT_DUMP=1.
     bool d_log_h52_input;
 
+    // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
+    // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
+    // is captured by extract_header52_from_sym64. Runs BEFORE the
+    // d_early_eqsym_valid guard that blocks H52_DUMP / E_I_DUMP on USRP
+    // (per Phase 4 lesson). Used to diagnose upstream gain/agc issues
+    // causing L-LTF0 FFT corruption. Default OFF. Enable via env var
+    // IEEE80211_FRAME_GAIN_DUMP=1.
+    bool d_log_frame_gain;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta
