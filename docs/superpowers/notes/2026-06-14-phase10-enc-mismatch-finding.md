@@ -320,3 +320,72 @@ upstream-fix candidates are:
 
 No code change for Task 3 — the hook is already in place from a prior
 phase and the experiment produced no actionable improvement.
+
+## Per-SC phase tracking experiment (Phase 12, Task 4, 2026-06-14)
+
+`IEEE80211_PER_SC_PHASE_TRACK=1` hook was already on the branch
+(see `lib/frame_equalizer_impl.cc`, opted in at the post-equalize
+symbol loop). It re-estimates per-subcarrier common phase error (CPE)
+on every equalized symbol after CFO/SFO compensation, and applies it
+before constellation demapping.
+
+USRP result (`test_p10_usrp_v2.py` with
+`IEEE80211_PER_SC_PHASE_TRACK=1`, 30s):
+- Total LSIG_DECODE OK events: 81
+- Encoding distribution: enc=0: 11 (13.6%), enc=6: 16 (19.8%),
+  enc=1: 8 (9.9%), enc=2: 16 (19.8%), enc=3: 16 (19.8%),
+  enc=4: 8 (9.9%), enc=5: 6 (7.4%)
+- vs baseline (Task 1 FORCE_HTSIG only, 30s): enc=0: 25/81 (31%)
+
+Loopback (8s, `IEEE80211_PER_SC_PHASE_TRACK=1`):
+- 1 LSIG_DECODE OK, enc=0 — identical to baseline. No regression.
+
+Conclusion: **Per-SC phase tracking did NOT help.** Marginal increase
+in enc=0 (7.9% → 13.6%) is within stochastic noise — the per-symbol
+CPE has no clean phase to track on USRP (Phase 5: LO phase noise
+14.05 rad RMS, no coherent reference). The hook is retained
+(diagnostic value) but reverted from active state. Commit `b695a30`.
+
+## End-to-end combined fixes (2026-06-14, Task 5)
+
+Combined env vars: `IEEE80211_FORCE_HTSIG=1` +
+`IEEE80211_FRAME_START_OFFSET=-4` (best of Task 2 sweep, 20% enc=0).
+L-LTF1 hook (Task 3) and per-SC CPE (Task 4) did not help; omitted.
+
+USRP 30s (`/tmp/test_p10_usrp_v2_30s.py`):
+- Total LSIG_DECODE OK events: 217
+- Encoding distribution: enc=0: 33 (15.2%), enc=7: 96 (44.2%),
+  enc=6: 80 (36.9%), enc=4: 64 (29.5%), enc=3: 48 (22.1%),
+  enc=2: 32 (14.7%), enc=1: 32 (14.7%), enc=5: 16 (7.4%)
+- FORCE_HTSIG fires: 184 (every frame where lsig_enc != 0; gating bypassed)
+- HT_SIG_CAND fires: 3457 (16-24 candidates per forced frame)
+- HT_SIG outcome: 3424 crc_fail / 0 crc_ok — zero successful decodes
+- HT_SIG_PARSE_FAIL: 184
+- **FCS OK: 0**, FAIL: 0 (no end-to-end frame ever completed)
+
+Loopback 10s (`examples/test_direct_loopback.py`, no fixes):
+- 1 LSIG_DECODE OK with enc=0 (BPSK 1/2 — correct)
+- Final: OK=0 FAIL=1 — same as baseline (pre-existing FcsLogger
+  `crc` field bug). No regression.
+
+Conclusion: **The combined fixes do NOT unlock end-to-end.** The
+15.2% enc=0 rate is *worse* than the 31% baseline from FORCE_HTSIG
+alone (Task 1, `72db36b`). FRAME_START_OFFSET=-4 appears to *shift*
+the random distribution (enc=7/6 dominate instead of enc=6/3) without
+fixing the underlying L-LTF0 FFT corruption. Even when enc=0 fires
+(33 events), the upstream H52 is broken → equalized HT-SIG symbols
+are random → 3424/3424 crc_fail on every candidate.
+
+The combination is **not committed**: enc=0 percentage regressed, and
+the gating-bypass output (3424 crc_fail) confirms FORCE_HTSIG alone
+is already the most we can extract from this code path. The
+upstream L-LTF0 FFT destruction (Phase 3 Stage 1 verdict, per-frame
+std=12.7 vs loopback 0) is the real bottleneck, and the algorithmic
+fixes in this phase cannot recover it.
+
+Phase 12 final state: no further code changes warranted. USRP
+validation remains blocked at the upstream FFT/LO layer (Phase 5
+verdict: X300 internal TCXO 14.05 rad RMS, requires external
+OCXO/GPSDO). All env-var hooks (FORCE_HTSIG, FRAME_START_OFFSET,
+H_LLTF1, PER_SC_PHASE_TRACK) remain on the branch for diagnostic
+reuse.
