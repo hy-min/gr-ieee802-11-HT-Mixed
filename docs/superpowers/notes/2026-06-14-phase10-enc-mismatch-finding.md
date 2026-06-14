@@ -282,3 +282,41 @@ upstream-fix candidates are:
 
 No commit was made for Task 2 — the env var hook is already on the
 branch (commit b8e0e34) and the sweep produced no actionable change.
+
+## L-LTF1 only H estimation (Phase 12, Task 3, 2026-06-14)
+
+The `IEEE80211_H_LLTF1` env var hook was already present on the branch
+(`d_use_lltf1_for_h` member, set at `lib/frame_equalizer_impl.cc:1904-1908`,
+consumed at both call sites `2584-2595` and `2949-2957`). When set, the
+H estimation pulls from `d_ltf_compensated[1]` (CFO/SFO-compensated L-LTF1)
+instead of `d_ltf_compensated[0]` (CFO/SFO-compensated L-LTF0), skipping
+the L-LTF0 average that propagates L-LTF0 corruption. No new code was
+required for this task — we proceeded directly to the USRP test.
+
+USRP result (`test_p10_usrp_v2.py` with `IEEE80211_H_LLTF1=1`, 12s):
+- Total LSIG_DECODE OK events: 16
+- Encoding distribution:
+  - enc=7: 16 (100%)    ← all non-BPSK
+  - enc=0: 0 (0%)
+- `[H_SRC] using L-LTF1 (counter=1) for H estimation` log fires 3+ times,
+  confirming the hook engages.
+- Loopback (`examples/test_direct_loopback.py` with `IEEE80211_H_LLTF1=1`):
+  1 LSIG_DECODE OK event, enc=0 (BPSK 1/2 — correct). **No regression.**
+- Baseline comparison (Phase 12 Task 2, offset=0): 24 LSIG OK, 0% enc=0,
+  all enc=2 — L-LTF1-only run is statistically indistinguishable from
+  baseline; both are well below the "promising" threshold of ≥50% enc=0.
+
+Conclusion: **L-LTF1 only H is NOT the fix.** It shifts the random
+distribution (enc=2 → enc=7) but does not produce a systematic enc=0.
+Both L-LTF0 and L-LTF1 are equally corrupted on USRP, which is consistent
+with the Phase 3 Stage 1 verdict that the upstream FFT destruction hits
+both symbols. The env var hook is retained (zero cost, in place from a
+prior phase) but provides no value on USRP. This rules out the
+"skip L-LTF0 averaging" hypothesis from Phase 11. The remaining
+upstream-fix candidates are:
+
+1. **Task 4: per-SC phase tracking (CPE)** on equalized symbols
+2. **Hardware**: 10 MHz OCXO/GPSDO to address LO phase noise (Phase 6 root cause)
+
+No code change for Task 3 — the hook is already in place from a prior
+phase and the experiment produced no actionable improvement.
