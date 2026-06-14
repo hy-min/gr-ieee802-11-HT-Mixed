@@ -201,3 +201,39 @@ crc_fail on every candidate. The gating was a red herring; the real
 fix must address L-LTF0 FFT quality or H52 estimation upstream.
 
 Commit: `fix(frame_eq): bypass lsig_enc!=0 gating behind IEEE80211_FORCE_HTSIG env var`.
+
+## End-to-end validation (2026-06-14)
+
+USRP 30s (`test_p10_usrp_v2.py` + `IEEE80211_FORCE_HTSIG=1`):
+- Sent (PHY TX strobed frames): ~50 (10s × 500ms × 2 boards = ~20 strobed)
+- **Recv (FcsLogger events): 0** (FCS OK=0, FAIL=0)
+- LSIG_DECODE OK events: 81
+- Encoding distribution:
+  - enc=0: 25 (31%)
+  - enc=6: 16 (20%)
+  - enc=3: 16 (20%)
+  - enc=1:  8 (10%)
+  - enc=4:  8 (10%)
+  - enc=5:  8 (10%)
+- FORCE_HTSIG fires: 56 (every frame where lsig_enc != 0; gating bypassed)
+- HT_SIG_CAND fires: 1281 (candidate loop runs 16× per forced frame)
+- HT_SIG_PARSE_FAIL: 72
+- HT_SIG fail reason: **1280/1280 crc_fail** — zero successful decodes across
+  all 16 candidates × 56 forced frames
+- Avg SNR: lsig=21.7 dB, htsig=20.3 dB (modest, not the bottleneck)
+
+Loopback 10s (`examples/test_direct_loopback.py`, no FORCE_HTSIG):
+- **Final: OK=0 FAIL=1** — matches baseline (pre-existing FcsLogger `crc` field bug)
+- Regression-free.
+
+Conclusion: **The soft fix does NOT unlock HT-SIG on USRP.** Mechanically,
+FORCE_HTSIG removes the `lsig_enc != 0` gating (56/56 FORCE_HTSIG fires vs
+the prior 0/0 when the gate was in effect), but the upstream L-LTF0 FFT
+corruption (Phase 10 root cause) means equalized HT-SIG symbols are random →
+**1280/1280 crc_fail on every candidate**. The gating was a red herring;
+the real fix must address L-LTF0 FFT quality or H52 estimation upstream.
+No regression in software loopback.
+
+Next iteration: address the upstream L-LTF0 FFT issue (Phase 11 plan
+already drafted at `c225aa1`). Likely targets: L-LTF0/L-LTF1 timing
+alignment, FFT window offset, or hardware-level (TCXO/OCXO).
