@@ -392,6 +392,25 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             rel_idx = current_idx - d_frame_start_abs;
         }
 
+        // Phase 12: Splitter timing alignment diagnostic (Task 1)
+        // Dump rel_idx of first sample arriving at the splitter relative to
+        // d_frame_start_abs (expected = 176 from sync_long). If rel_idx is
+        // consistently non-zero (off by 1-2 samples), the FFT window would
+        // include CP boundary leakage and corrupt L-LTF0. Opt-in via env var
+        // IEEE80211_SPLITTER_TIMING_DUMP=1. Use snprintf + single fprintf for
+        // multi-arg atomicity (Phase 9 lesson).
+        if (getenv("IEEE80211_SPLITTER_TIMING_DUMP") && frame_started &&
+            rel_idx <= 8) {
+            char tbuf[256];
+            snprintf(tbuf, sizeof(tbuf),
+                     "[SPLITTER_TIMING] seq=%d frame_start_abs=%lld current_idx=%lld rel_idx=%llu expected_first_sym=176\n",
+                     d_frame_seq_counter,
+                     (long long)d_frame_start_abs,
+                     (long long)current_idx,
+                     (unsigned long long)rel_idx);
+            fprintf(stderr, "%s", tbuf);
+        }
+
         // Only process after frame start is known
         if (frame_started) {
             // ============================================================
