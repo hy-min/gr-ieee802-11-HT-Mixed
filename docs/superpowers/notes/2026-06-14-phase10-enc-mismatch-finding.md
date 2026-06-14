@@ -126,3 +126,43 @@ Conclusion: **IQ swap is NOT the fix.** It shifts the random distribution
 (enc=6 → enc=1, enc=0 appears 4/36 times) but does not produce a systematic
 enc=0. Real root cause is upstream L-LTF0 FFT / H estimation, not axis
 confusion. Reverting the change.
+
+## CFO refinement experiment (2026-06-14, Task 4)
+
+Added `IEEE80211_CFO_REFINEMENT=1` env var to frame_equalizer_impl.cc.
+Hook computes a single high-SNR pilot SC (slot 48, subcarrier -21) CFO
+estimate from L-LTF0 vs L-LTF1 phase difference, subtracts the SFO
+contribution at that SC, then blends 50/50 with the existing 52-SC
+mean. Re-derives `d_phase_diff_per_sc` using the refined CFO + the
+existing SFO slope.
+
+USRP result (12s, test_p10_usrp_v2.py with `IEEE80211_CFO_REFINEMENT=1`):
+- Total LSIG_DECODE OK events: 72
+- Encoding distribution:
+  - enc=0: 24 (33%)   ← appears systematically, but...
+  - enc=6: 24 (33%)   ← ...still mixed with non-BPSK
+  - enc=1:  8 (11%)
+  - enc=2:  8 (11%)
+  - enc=3:  8 (11%)
+- HT_SIG_PARSE_FAIL still dominates: 56 events
+
+CFO_REFINEMENT deltas (orig 52-SC mean vs fine pilot-SC):
+- n=12 deltas, mean=0.46, std=1.10, range |0.12..1.90| rad per 4 μs
+- EXPECTED: small (≤ 0.1) — task description hypothesis
+- ACTUAL: huge variance — pilot SC itself is corrupted by the same
+  root cause that breaks L-LTF0 FFT (Phase 5: LO phase noise 14 rad)
+
+Baseline comparison (same 12s run, no env vars, back-to-back):
+- Total LSIG_DECODE OK events: 25
+- enc=0: 9 (36%)   ← similar percentage to refinement run
+- enc=6: 8 (32%)
+- enc=2: 8 (32%)
+
+Conclusion: **CFO refinement is NOT the fix.** The 50/50 blend is just
+biasing the CFO estimate toward a noisy pilot SC, which happens to
+shuffle the random distribution. enc=0 percentage is statistically
+indistinguishable from baseline (33% vs 36%). The huge delta variance
+(1.10 rad std) confirms the pilot SC is being corrupted by the upstream
+root cause — it cannot provide a "fine" reference. The original 52-SC
+mean is the best estimate we can get from L-LTF0/L-LTF1; refinement
+only adds noise. Reverting the change.
