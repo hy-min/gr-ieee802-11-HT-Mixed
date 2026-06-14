@@ -92,6 +92,15 @@ private:
     // See spec: docs/superpowers/specs/2026-06-12-phase4-robust-h-estimation-design.md
     bool d_log_h52_filtered;
 
+    // H52 at equalizer-input diagnostic (Phase 10): when true, dumps
+    // |Hhdr52[i]| and arg(Hhdr52[i]) for all 52 subcarriers per frame at
+    // the point where Hhdr52 is consumed by the L-SIG/HT-SIG equalizer
+    // (right after estimate_header_channel_from_lltf52 returns, before any
+    // median filter). Distinct from d_log_h52 (which dumps H52 from the
+    // earlier split-debug path). Default OFF. Enable via env var
+    // IEEE80211_H52_EQ_INPUT_DUMP=1.
+    bool d_log_h52_input;
+
     int d_frame_bytes;
     int d_frame_encoding;
     int d_frame_mcs;  // Original HT-MCS value (0-7) for output meta

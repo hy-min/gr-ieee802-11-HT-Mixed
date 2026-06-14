@@ -527,6 +527,7 @@ bool g_log_ltf0_fft = false;  // Bridge from d_log_ltf0_fft to static extract_he
 bool g_log_ltf0_fft_precomp = false;  // Bridge from d_log_ltf0_fft_precomp to static extract_header52_from_sym64
 bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static estimate_header_channel_from_lltf52
 bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site dump (post-filter)
+bool g_log_h52_input = false;     // Bridge from d_log_h52_input to call-site dump (Hhdr52 at equalizer input)
 
 static int g_extract_call_count = 0;
 
@@ -1956,6 +1957,19 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] H52 post-filter dump ENABLED via env\n";
     }
 
+    // Allow opt-in via env var for Hhdr52 at equalizer-input diagnostic
+    // (Phase 10). Dumps |Hhdr52[i]| and arg(Hhdr52[i]) for all 52
+    // subcarriers per frame at the moment Hhdr52 is finalized for
+    // L-SIG/HT-SIG equalization. Compare USRP vs loopback to confirm
+    // whether Hhdr52 magnitude/phase coherence is intact at the equalizer
+    // input. Default OFF. Enable via IEEE80211_H52_EQ_INPUT_DUMP=1.
+    const char* env_h52_eq_input_dump = std::getenv("IEEE80211_H52_EQ_INPUT_DUMP");
+    d_log_h52_input = (env_h52_eq_input_dump && env_h52_eq_input_dump[0] == '1');
+    g_log_h52_input = d_log_h52_input;  // Propagate to file-global
+    if (d_log_h52_input) {
+        std::cout << "[FRAME_EQ] H52 at equalizer-input dump ENABLED via env\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -2944,6 +2958,59 @@ int frame_equalizer_impl::general_work(int noutput_items,
             estimate_header_channel_from_lltf52(lltf_for_H2,
                                                 lltf_for_H2,
                                                 Hhdr52);
+            // [H52_EQ_INPUT_DUMP] Phase 10 diagnostic: dump |Hhdr52[i]| and
+            // arg(Hhdr52[i]) for all 52 subcarriers per frame at the moment
+            // Hhdr52 is finalized for L-SIG/HT-SIG equalization (BEFORE the
+            // median filter, so this is the true equalizer-input H). Opt-in
+            // via IEEE80211_H52_EQ_INPUT_DUMP=1. Atomic snprintf+USRP_LOG
+            // prevents sync_short stdout shredding (Phase 9 lesson).
+            // Used to compare USRP Hhdr52 vs loopback Hhdr52 — if USRP shows
+            // wild |H| std or arg jumps, H estimation (or upstream L-LTF0
+            // FFT) is the root cause of L-SIG mis-decoding.
+            if (g_log_h52_input) {
+                static int h52_input_counter = 0;
+                h52_input_counter++;
+                double sum_mag = 0.0, sum_mag2 = 0.0;
+                double sum_arg = 0.0, sum_arg2 = 0.0;
+                int cnt = 0;
+                for (int i = 0; i < 52; i++) {
+                    float m = std::abs(Hhdr52[i]);
+                    float a = std::arg(Hhdr52[i]);
+                    sum_mag += m;
+                    sum_mag2 += (double)m * m;
+                    sum_arg += a;
+                    sum_arg2 += (double)a * a;
+                    cnt++;
+                }
+                double mean_mag = (cnt > 0) ? sum_mag / cnt : 0.0;
+                double var_mag = (cnt > 0) ? (sum_mag2 / cnt - mean_mag * mean_mag) : 0.0;
+                double std_mag = (var_mag > 0) ? std::sqrt(var_mag) : 0.0;
+                double mean_arg = (cnt > 0) ? sum_arg / cnt : 0.0;
+                double var_arg = (cnt > 0) ? (sum_arg2 / cnt - mean_arg * mean_arg) : 0.0;
+                double std_arg = (var_arg > 0) ? std::sqrt(var_arg) : 0.0;
+
+                char dump[8192];
+                int off = snprintf(dump, sizeof(dump),
+                                   "[H52_EQ_INPUT] sym=%d nSC=52 |H|=",
+                                   d_internal_symbol_counter);
+                for (int i = 0; i < 52 && off < (int)sizeof(dump) - 32; i++) {
+                    int w = snprintf(dump + off, sizeof(dump) - off, "%.2f,",
+                                     std::abs(Hhdr52[i]));
+                    if (w < 0) break;
+                    off += w;
+                }
+                off += snprintf(dump + off, sizeof(dump) - off, " arg=");
+                for (int i = 0; i < 52 && off < (int)sizeof(dump) - 16; i++) {
+                    int w = snprintf(dump + off, sizeof(dump) - off, "%.2f,",
+                                     std::arg(Hhdr52[i]));
+                    if (w < 0) break;
+                    off += w;
+                }
+                off += snprintf(dump + off, sizeof(dump) - off,
+                                " mean|H|=%.3f std|H|=%.3f mean(argH)=%.3f std(argH)=%.3f cnt=%d\n",
+                                mean_mag, std_mag, mean_arg, std_arg, h52_input_counter);
+                USRP_LOG("%s", dump);
+            }
             // [Phase 4] Apply 3-tap median filter at the call site (not
             // inside estimate_header_channel_from_lltf52) to keep the
             // function pure and enable clean pre/post dumps. Opt-in via
