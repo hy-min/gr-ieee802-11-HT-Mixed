@@ -99,3 +99,30 @@ Line 3044: }
 - [[2026-06-11-stage1-reorganized-verdict]] — Phase 3 Stage 1: L-LTF0 FFT 破坏
 - [[2026-06-12-phase6-verdict]] — Phase 6 TCXO 结论 (推翻)
 - [[2026-06-12-phase5-verdict]] — Phase 5 LO measurement (推翻)
+
+## IQ swap experiment (2026-06-14)
+
+Added `IEEE80211_LSIG_IQ_SWAP=1` env var to swap I/Q of equalized L-SIG
+(right before `decode_lsig_direct_from_header52` call site, line 3133 in
+`lib/frame_equalizer_impl.cc`). Opt-in via `getenv()` check, off by default.
+
+USRP result (30s, test_p10_usrp_v2.py with `IEEE80211_LSIG_IQ_SWAP=1`):
+- Total LSIG_DECODE OK events: 36
+- Encoding distribution:
+  - enc=4: 12 (33%)
+  - enc=1:  8 (22%)
+  - enc=7:  4 (11%)
+  - enc=3:  4 (11%)
+  - enc=2:  4 (11%)
+  - enc=0:  4 (11%)   ← appears for first time, but only 4/36 frames
+- HT_SIG_PARSE_FAIL still dominates: n_candidates=0 when lsig_enc != 0
+- Compared to baseline (no IQ swap, per memory): enc=2/4/6/7 mix, enc=0 never seen
+
+Loopback result (examples/test_direct_loopback.py):
+- IQ_SWAP unset: `Final: OK=0 FAIL=1` (pre-existing FcsLogger crc bug)
+- IQ_SWAP=1:    `Final: OK=0 FAIL=1` (same — no regression, swap is gated)
+
+Conclusion: **IQ swap is NOT the fix.** It shifts the random distribution
+(enc=6 → enc=1, enc=0 appears 4/36 times) but does not produce a systematic
+enc=0. Real root cause is upstream L-LTF0 FFT / H estimation, not axis
+confusion. Reverting the change.
