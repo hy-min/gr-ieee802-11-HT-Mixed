@@ -1883,6 +1883,51 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
     }
 
+    // Phase 19 Task 7: per-symbol CPE for HT-SIG1.
+    // Hypothesis (from Phase 19 Task 6): CFO/SFO drift between HT-SIG0 (counter=2)
+    // and HT-SIG1 (counter=3, 4 µs later) leaves HT-SIG1 with a residual phase
+    // offset that breaks viterbi convergence. HT-SIG0 is stable across frames
+    // (4 distinct values) but HT-SIG1 varies (4 distinct values), and all 128
+    // frames share the same 8 distinct enc96 patterns — consistent with same
+    // TX content but a consistent RX-side rotation per (inv_a, inv_b) trial.
+    //
+    // Fix: estimate residual phase from HT-SIG0's 4 pilots (indices 48-51 in
+    // the 52-element rx52 layout, corresponding to subcarriers -21, -7, +7, +21
+    // per the 802.11n spec), then apply the OPPOSITE rotation to HT-SIG1's
+    // 48 data symbols before extracting bits. The QBPSK rotation is already
+    // baked into the data (bits live on the IMAG axis), so we use only the
+    // sign of the imag component as the per-pilot reference: normalize each
+    // equalized pilot to +j (a unit vector along +imag axis) so the
+    // argument of their average gives the residual phase estimate.
+    //
+    // rx52_b is const, so we store the rotation as a scalar cpe_rot_b and
+    // multiply by it inside the eq = rx/H computation for HT-SIG1.
+    //
+    // Opt-in via IEEE80211_HT_PER_SYMBOL_CPE=1.
+    gr_complex cpe_rot_b(1.0f, 0.0f);  // identity by default
+    if (getenv("IEEE80211_HT_PER_SYMBOL_CPE")) {
+        const int pilot_sc[4] = {48, 49, 50, 51};  // -21, -7, +7, +21
+        gr_complex pilot_sum(0.0f, 0.0f);
+        int n_pilots = 0;
+        for (int p = 0; p < 4; p++) {
+            int sc = pilot_sc[p];
+            float h_mag = std::abs(H52[sc]);
+            if (h_mag >= 0.001f) {
+                gr_complex eq_p = safe_div(rx52_a[sc], H52[sc]);
+                // QBPSK: pilots are on IMAG axis, so normalize to +j (sign of imag)
+                gr_complex ref = gr_complex(0.0f, (eq_p.imag() >= 0.0f) ? 1.0f : -1.0f);
+                pilot_sum += eq_p / ref;
+                n_pilots++;
+            }
+        }
+        if (n_pilots > 0) {
+            // Average residual phase of HT-SIG0 pilots (relative to +j axis)
+            float cpe_phase_htsig0 = std::arg(pilot_sum / float(n_pilots));
+            // Apply OPPOSITE rotation to HT-SIG1 to compensate
+            cpe_rot_b = std::polar(1.0f, -cpe_phase_htsig0);
+        }
+    }
+
     // Extract bits from HT-SIG1 (rx52_b)
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
@@ -1890,7 +1935,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_b[i], H52[i]);
+            eq = safe_div(rx52_b[i], H52[i]) * cpe_rot_b;
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
