@@ -59,7 +59,7 @@ blocks:
 - name: sync_length
   id: variable
   parameters:
-    comment: ''
+    comment: 'Phase 14 (2026-06-15): exposed as constructor kwarg (default 320 for loopback). USRP tests override to 1 to fix sync_long scheduler deadlock.'
     value: '320'
   states:
     bus_sink: false

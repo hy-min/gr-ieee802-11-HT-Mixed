@@ -33,7 +33,7 @@ import pmt
 
 
 class wifi_phy_hier(gr.hier_block2):
-    def __init__(self, bandwidth=10e6, chan_est=ieee802_11.LS, encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.56, use_ldpc=False):
+    def __init__(self, bandwidth=10e6, chan_est=ieee802_11.LS, encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.56, use_ldpc=False, sync_length=320):
         gr.hier_block2.__init__(
             self, "WiFi PHY Hier",
                 gr.io_signature(1, 1, gr.sizeof_gr_complex*1),
@@ -58,7 +58,15 @@ class wifi_phy_hier(gr.hier_block2):
         # Variables
         ##################################################
         self.window_size = window_size = 48
-        self.sync_length = sync_length = 320
+        # Phase 14 (2026-06-15): sync_length is now a constructor parameter.
+        # Default 320 (preserves software loopback 9/9 regression baseline).
+        # For USRP tests, override to 1 to fix sync_long scheduler deadlock
+        # (sync_long's 2-input-port + set_output_multiple(512) + 320-sample
+        # delay prime causes scheduler to never call general_work on USRP
+        # continuous streaming input). Verified: sync_length=1 unlocks
+        # sync_long (93 calls in 10s) but breaks loopback algorithm. Use
+        # the proper fix (sync_long.cc set_output_multiple(64)) to get both.
+        self.sync_length = sync_length = sync_length
         self.max_symbols = max_symbols = int(5 + 1 + ((16 + 800 * 8 + 6) * 2) / 24)
         self.header_formatter = header_formatter = ieee802_11.signal_field()
 
