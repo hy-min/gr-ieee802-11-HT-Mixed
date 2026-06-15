@@ -1172,6 +1172,31 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
     std::vector<uint8_t> dec48;
     int vit_metric = -1;
     if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+        // Phase 18 Task 3: HT-SIG viterbi audit log. Records the 96-bit
+        // input that failed to converge to a valid 48-bit HT-SIG frame,
+        // along with the path-metric from viterbi and the inversion state
+        // of each HT-SIG OFDM symbol. Opt-in via
+        // IEEE80211_HT_VITERBI_AUDIT=1. Single-call snprintf keeps the line
+        // atomic against concurrent stdout writes from sync_short.
+        if (getenv("IEEE80211_HT_VITERBI_AUDIT")) {
+            // inv_a/inv_b are exposed by the calling function as
+            // `inverted_a`/`inverted_b` (decode_htsig_candidate) or
+            // `invert_a`/`invert_b` (decode_htsig_direct_from_header52,
+            // decode_htsig_from_rotated). All three are bool, so we use
+            // conditional reads guarded by site labels in the log header
+            // so the consumer can tell which decoder produced the line.
+            const char* site = "htsig_candidate";
+            int inv_a = inverted_a ? 1 : 0;
+            int inv_b = inverted_b ? 1 : 0;
+            char ht_audit[896];
+            int n = snprintf(ht_audit, sizeof(ht_audit),
+                             "[HT_VITERBI_AUDIT] site=%s inv_a=%d inv_b=%d metric=%d enc96=",
+                             site, inv_a, inv_b, vit_metric);
+            for (int i = 0; i < 96 && n < (int)sizeof(ht_audit); i++)
+                n += snprintf(ht_audit + n, sizeof(ht_audit) - n, "%d", enc96[i]);
+            snprintf(ht_audit + n, sizeof(ht_audit) - n, "\n");
+            USRP_LOG("%s", ht_audit);
+        }
         if (out_vit_metric) *out_vit_metric = vit_metric;
         if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
@@ -1478,6 +1503,63 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         n += snprintf(audit+n, sizeof(audit)-n, "%d", decoded_bits[i]);
     snprintf(audit+n, sizeof(audit)-n, "\n");
     USRP_LOG("%s", audit);
+    // Phase 18 Task 3: L-SIG structural validity check. After viterbi
+    // decode returns 24 bits, check whether they actually parse as a
+    // valid L-SIG word (rate=0xD for HT, length>0, parity=0, tail=000000).
+    // If the decoder reached this SUCCESS branch the viterbi returned 24
+    // bits, but the L-SIG fields may still be garbage if upstream noise
+    // caused the viterbi to converge on a wrong codeword. Opt-in via
+    // IEEE80211_LSIG_VALIDITY_AUDIT=1.
+    if (getenv("IEEE80211_LSIG_VALIDITY_AUDIT")) {
+        uint32_t decoded24_int = 0;
+        for (int i = 0; i < 24; i++) {
+            decoded24_int |= ((uint32_t)(decoded_bits[i] & 1) << (23 - i));
+        }
+        const int rate_f  = (decoded24_int >> 20) & 0xF;
+        const int len_f   = (decoded24_int >> 8)  & 0xFFF;
+        const int par     = (decoded24_int >> 7)  & 0x1;
+        const int tail_f  = decoded24_int & 0x3F;
+        // Recompute parity over the 18-bit SIGNAL field per 802.11n §17.3.4.
+        int parity_recomputed = 0;
+        for (int i = 0; i < 18; i++) parity_recomputed ^= (decoded_bits[i] & 1);
+        // "valid" means: rate_field is 0xD (BPSK 1/2 — required for HT),
+        // length > 0, parity bit = 0, and tail bits all zero.
+        const int valid = (rate_f == 0xD && len_f > 0 && par == 0 && tail_f == 0) ? 1 : 0;
+        char validity[256];
+        snprintf(validity, sizeof(validity),
+                 "[LSIG_VALIDITY] rate_field=0x%X length_field=%d parity=%d tail_field=0x%02X "
+                 "parity_recomputed=%d valid=%d\n",
+                 rate_f, len_f, par, tail_f, parity_recomputed, valid);
+        USRP_LOG("%s", validity);
+    }
+    // Phase 18 Task 4: Reject L-SIG decodes whose rate_field doesn't match the
+    // configured expected rate (default 0xD — BPSK 1/2 required for HT).
+    // Without this, the viterbi converges on noise-induced wrong codewords
+    // (rate_field 0x1/0x3/0x5/0x7/0x9/0xB/0xF appearing in ~94% of cases at
+    // 5 GHz A:0). Those wrong-rate codewords either get skipped at the
+    // lsig_enc != 0 gating (line 3286) or — with FORCE_HTSIG=1 — proceed to
+    // HT-SIG brute-force, which they can't possibly satisfy. Rejecting them
+    // at the source avoids both failure modes. Override the expected rate via
+    // IEEE80211_LSIG_RATE_FORCE=<hex>; default 0xD.
+    if (getenv("IEEE80211_LSIG_RATE_FORCE")) {
+        uint32_t decoded24_int = 0;
+        for (int i = 0; i < 24; i++) {
+            decoded24_int |= ((uint32_t)(decoded_bits[i] & 1) << (23 - i));
+        }
+        const int rate_f = (decoded24_int >> 20) & 0xF;
+        const int expected_rate = 0xD;  // BPSK 1/2 — required for 802.11n HT
+        if (rate_f != expected_rate) {
+            // Opt-in audit log for the rejection (same env-gate as the validity check)
+            if (getenv("IEEE80211_LSIG_VALIDITY_AUDIT")) {
+                char reject[160];
+                snprintf(reject, sizeof(reject),
+                         "[LSIG_REJECT] rate_field=0x%X expected=0x%X reason=rate_mismatch\n",
+                         rate_f, expected_rate);
+                USRP_LOG("%s", reject);
+            }
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1544,6 +1626,25 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
     std::vector<uint8_t> dec48;
     int vit_metric = -1;
     if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+        // Phase 18 Task 3: HT-SIG viterbi audit log. Records the 96-bit
+        // input that failed to converge to a valid 48-bit HT-SIG frame,
+        // along with the path-metric from viterbi and the inversion state
+        // of each HT-SIG OFDM symbol. Opt-in via
+        // IEEE80211_HT_VITERBI_AUDIT=1. Single-call snprintf keeps the line
+        // atomic against concurrent stdout writes from sync_short.
+        if (getenv("IEEE80211_HT_VITERBI_AUDIT")) {
+            const char* site = "htsig_direct";
+            int inv_a = invert_a ? 1 : 0;
+            int inv_b = invert_b ? 1 : 0;
+            char ht_audit[896];
+            int n = snprintf(ht_audit, sizeof(ht_audit),
+                             "[HT_VITERBI_AUDIT] site=%s inv_a=%d inv_b=%d metric=%d enc96=",
+                             site, inv_a, inv_b, vit_metric);
+            for (int i = 0; i < 96 && n < (int)sizeof(ht_audit); i++)
+                n += snprintf(ht_audit + n, sizeof(ht_audit) - n, "%d", enc96[i]);
+            snprintf(ht_audit + n, sizeof(ht_audit) - n, "\n");
+            USRP_LOG("%s", ht_audit);
+        }
         if (out_vit_metric) *out_vit_metric = vit_metric;
         if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
@@ -1714,6 +1815,25 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     std::vector<uint8_t> dec48;
     int vit_metric = -1;
     if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+        // Phase 18 Task 3: HT-SIG viterbi audit log. Records the 96-bit
+        // input that failed to converge to a valid 48-bit HT-SIG frame,
+        // along with the path-metric from viterbi and the inversion state
+        // of each HT-SIG OFDM symbol. Opt-in via
+        // IEEE80211_HT_VITERBI_AUDIT=1. Single-call snprintf keeps the line
+        // atomic against concurrent stdout writes from sync_short.
+        if (getenv("IEEE80211_HT_VITERBI_AUDIT")) {
+            const char* site = "htsig_rotated";
+            int inv_a = invert_a ? 1 : 0;
+            int inv_b = invert_b ? 1 : 0;
+            char ht_audit[896];
+            int n = snprintf(ht_audit, sizeof(ht_audit),
+                             "[HT_VITERBI_AUDIT] site=%s inv_a=%d inv_b=%d metric=%d enc96=",
+                             site, inv_a, inv_b, vit_metric);
+            for (int i = 0; i < 96 && n < (int)sizeof(ht_audit); i++)
+                n += snprintf(ht_audit + n, sizeof(ht_audit) - n, "%d", enc96[i]);
+            snprintf(ht_audit + n, sizeof(ht_audit) - n, "\n");
+            USRP_LOG("%s", ht_audit);
+        }
         if (out_vit_metric) *out_vit_metric = vit_metric;
         if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
