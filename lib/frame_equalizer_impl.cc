@@ -1169,6 +1169,20 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
+    // Phase 19 Task 2: HT-SIG input constellation dump.
+    // Records the 96 bits fed to viterbi_decode_133_171 for post-mortem
+    // analysis. Opt-in via IEEE80211_HTSIG_INPUT_DUMP=1.
+    if (getenv("IEEE80211_HTSIG_INPUT_DUMP")) {
+        char buf[512];
+        int n = snprintf(buf, sizeof(buf),
+                         "[HTSIG_INPUT_DUMP] inv_a=%d inv_b=%d enc96=",
+                         inverted_a ? 1 : 0, inverted_b ? 1 : 0);
+        for (int i = 0; i < 96 && n < (int)sizeof(buf); i++)
+            n += snprintf(buf + n, sizeof(buf) - n, "%d", enc96[i]);
+        snprintf(buf + n, sizeof(buf) - n, "\n");
+        USRP_LOG("%s", buf);
+    }
+
     std::vector<uint8_t> dec48;
     int vit_metric = -1;
     if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
