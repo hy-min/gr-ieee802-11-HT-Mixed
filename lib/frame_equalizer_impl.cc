@@ -1250,35 +1250,133 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
 
     for (int i = 42; i < 48; i++) {
         if (decoded_bits[i] != 0) {
+            if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+                char buf[256];
+                int n = snprintf(buf, sizeof(buf),
+                                 "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                                 "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                                 "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                                 "tail_nonzero", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                                 adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                                 crc_rx, crc_calc);
+                for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                    n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+                snprintf(buf + n, sizeof(buf) - n, "\n");
+                USRP_LOG("%s", buf);
+            }
             if (out_fail_reason) *out_fail_reason = "tail_nonzero";
             return false;
         }
     }
 
     if (crc_rx != crc_calc) {
+        if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                             "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                             "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                             "crc_fail", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                             adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                             crc_rx, crc_calc);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+        }
         if (out_fail_reason) *out_fail_reason = "crc_fail";
         return false;
     }
 
     if (bw40 != 0) {
+        if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                             "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                             "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                             "bw40_set", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                             adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                             crc_rx, crc_calc);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+        }
         if (out_fail_reason) *out_fail_reason = "bw40_set";
         return false;
     }
     if (rsv0 != 0 || rsv1 != 0 || rsv2 != 0) {
+        if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                             "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                             "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                             "rsv_set", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                             adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                             crc_rx, crc_calc);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+        }
         if (out_fail_reason) *out_fail_reason = "rsv_set";
         return false;
     }
     // adv_coding: 0=BCC, 1=LDPC - both are valid now
     if (adv_coding != 0 && adv_coding != 1) {
+        if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                             "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                             "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                             "adv_coding_bad", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                             adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                             crc_rx, crc_calc);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+        }
         if (out_fail_reason) *out_fail_reason = "adv_coding_bad";
         return false;
     }
 
     if (mcs < 0 || mcs > 7) {
+        if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                             "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                             "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                             "mcs_oor", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                             adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                             crc_rx, crc_calc);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+        }
         if (out_fail_reason) *out_fail_reason = "mcs_oor";
         return false;
     }
     if (psdu_length <= 0) {
+        if (getenv("IEEE80211_HT_STRUCT_AUDIT")) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "[HT_STRUCT_AUDIT] fail_reason=%s mcs=%d length=%d "
+                             "bw40=%d rsv=%d%d%d adv_coding=%d tail=0x%02X%02X%02X "
+                             "crc_rx=0x%02X crc_calc=0x%02X dec48=",
+                             "len_zero", mcs, psdu_length, bw40, rsv0, rsv1, rsv2,
+                             adv_coding, decoded_bits[42], decoded_bits[43], decoded_bits[44],
+                             crc_rx, crc_calc);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf); i++)
+                n += snprintf(buf + n, sizeof(buf) - n, "%d", decoded_bits[i]);
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+        }
         if (out_fail_reason) *out_fail_reason = "len_zero";
         return false;
     }
