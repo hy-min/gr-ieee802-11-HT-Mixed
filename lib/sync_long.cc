@@ -340,6 +340,21 @@ public:
 
         consume(0, i);
         consume(1, i);
+
+        // === IEEE80211_SYNC_LONG_OUT_DUMP hook (Phase 14 Experiment B) ===
+        // Reports per-work-call: items produced + items consumed + state at exit.
+        // Used to locate the deadlock between splitter -> sync_long -> equalizer.
+        // Opt-in via IEEE80211_SYNC_LONG_OUT_DUMP=1.
+        // State enum: SYNC=0, COPY=1, RESET=2.
+        if (getenv("IEEE80211_SYNC_LONG_OUT_DUMP")) {
+            static int sl_out_dump_counter = 0;
+            const char* state_name = (d_state == SYNC) ? "SYNC" :
+                                     (d_state == COPY) ? "COPY" : "RESET";
+            fprintf(stderr, "[SYNC_LONG_OUT] fidx=%d nout=%d consumed=%d state=%s (%d)\n",
+                    sl_out_dump_counter++, o, i, state_name, (int)d_state);
+        }
+        // === end hook ===
+
         return o;
     }
 
