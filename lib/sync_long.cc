@@ -82,8 +82,14 @@ public:
         set_tag_propagation_policy(block::TPP_DONT);
         d_correlation = (gr_complex*)volk_malloc(sizeof(gr_complex) * 8192, volk_get_alignment());
 
-        // Ensure adequate output buffer for HT-mixed preamble (448+ samples)
-        set_output_multiple(512);
+        // Phase 14 (2026-06-15): Reduced from 512 to 80 to fix scheduler deadlock
+        // with USRP continuous streaming. The 512-multiple could never be satisfied
+        // when sync_long's 2 input ports (direct + 320-sample delayed) compete with
+        // small USRP data chunks. 80 = 1 OFDM symbol (CP=16 + 64 data) is the
+        // minimum to align with natural frame structure while keeping scheduler
+        // satisfied. Comment "448+ samples for HT-mixed preamble" was theoretical
+        // and never enforced by set_min_output_buffer elsewhere in hier block.
+        set_output_multiple(80);
     }
 
     ~sync_long_impl() {
