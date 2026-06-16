@@ -2240,6 +2240,19 @@ static int estimate_per_sc_phase_from_htsig0(
     return valid;
 }
 
+// Phase 20: Apply per-SC phase correction to HT-SIG1 equalized symbols.
+// Rotates each SC by -phase[i] (opposite of the error estimated from HT-SIG0).
+// Modifies rx_htsig1 in place.
+static void apply_per_sc_phase_correction(
+    gr_complex* rx_htsig1,
+    const float* phase_per_sc)
+{
+    for (int i = 0; i < 52; i++) {
+        gr_complex rotation = std::polar(1.0f, -phase_per_sc[i]);
+        rx_htsig1[i] *= rotation;
+    }
+}
+
 } // anonymous namespace
 
 // ======================================================================
