@@ -900,6 +900,7 @@ private:
             USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK seed=%d len=%d\n", best_seed, d_ht_len);
             pmt::pmt_t blob = pmt::make_blob(d_out_bytes.data() + 2, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(105));
+            d_meta = pmt::dict_add(d_meta, pmt::mp("crc"), pmt::from_long(1));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
             return;
         }
@@ -1180,6 +1181,7 @@ private:
             USRP_LOG( "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d\n", d_ht_len);
             pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
+            d_meta = pmt::dict_add(d_meta, pmt::mp("crc"), pmt::from_long(1));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
             USRP_LOG( "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
             return;
@@ -1253,6 +1255,7 @@ private:
             USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK (fallback), publishing message len=%d\n", d_ht_len);
             pmt::pmt_t blob = pmt::make_blob(psdu_ldpc, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
+            d_meta = pmt::dict_add(d_meta, pmt::mp("crc"), pmt::from_long(1));
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
         }
     }
