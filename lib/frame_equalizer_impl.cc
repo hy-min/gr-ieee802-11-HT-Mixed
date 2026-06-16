@@ -1842,6 +1842,12 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
     return true;
 }
 
+// Forward declarations for Phase 20 helpers (defined below).
+static int estimate_per_sc_phase_from_htsig0(
+    const gr_complex* rx_htsig0,
+    const gr_complex* expected_htsig0,
+    float* phase_per_sc);
+
 // Simplified HT-SIG decode for QBPSK-rotated symbols
 // Skips CPE rotation since QBPSK already compensates for phase
 static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
@@ -1881,6 +1887,46 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
         eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+    }
+
+    // Phase 20 Task 5: Per-SC phase diagnostic dump. Re-encode HT-SIG0
+    // from eqbits48_a[48] (BPSK with QBPSK rotation: bit 1 -> +j, bit 0 -> -j),
+    // then estimate per-SC phase from rx52_a / H52 vs re-encoded expected.
+    // Opt-in via IEEE80211_HT_PER_SC_PHASE_DUMP=1.
+    if (getenv("IEEE80211_HT_PER_SC_PHASE_DUMP")) {
+        gr_complex expected_htsig0[52];
+        for (int i = 0; i < 48; i++) {
+            // QBPSK: bit on IMAG axis. Re-encode to a unit vector.
+            expected_htsig0[i] = gr_complex(0.0f, (eqbits48_a[i] ? 1.0f : -1.0f));
+        }
+        // Pilot SCs (i=48..51): assume +j (placeholder; will refine if needed)
+        for (int i = 48; i < 52; i++) {
+            expected_htsig0[i] = gr_complex(0.0f, 1.0f);
+        }
+        // Compute equalized HT-SIG0 symbols (rx52_a / H52)
+        gr_complex eq_htsig0[52];
+        for (int i = 0; i < 52; i++) {
+            float h_mag = std::abs(H52[i]);
+            if (h_mag < 0.001f) {
+                eq_htsig0[i] = gr_complex(0.0f, 0.0f);
+            } else {
+                eq_htsig0[i] = safe_div(rx52_a[i], H52[i]);
+            }
+        }
+        // Estimate per-SC phase
+        float phase_per_sc[52];
+        int valid_sc = estimate_per_sc_phase_from_htsig0(
+            eq_htsig0, expected_htsig0, phase_per_sc);
+        // Atomic dump (single snprintf + USRP_LOG)
+        char buf[1024];
+        int n = snprintf(buf, sizeof(buf),
+                         "[HT_PER_SC_PHASE] inv_a=%d inv_b=%d valid_sc=%d phase=[",
+                         invert_a ? 1 : 0, invert_b ? 1 : 0, valid_sc);
+        for (int i = 0; i < 52 && n < (int)sizeof(buf); i++) {
+            n += snprintf(buf + n, sizeof(buf) - n, "%.3f,", phase_per_sc[i]);
+        }
+        snprintf(buf + n, sizeof(buf) - n, "]\n");
+        USRP_LOG("%s", buf);
     }
 
     // Phase 19 Task 7: per-symbol CPE for HT-SIG1.
