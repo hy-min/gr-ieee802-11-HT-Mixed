@@ -24,7 +24,10 @@ public:
                 gr::io_signature::make(1, 1, sizeof(gr_complex)),
                 gr::io_signature::make3(
                     3, 3, sizeof(gr_complex), sizeof(gr_complex), sizeof(float))),
-          d_energy_gate_factor(energy_gate_factor),
+          d_energy_gate_factor(
+              getenv("IEEE80211_SYNC_SHORT_BYPASS_ENERGY_GATE")
+                  ? 0.0f
+                  : energy_gate_factor),
           d_noise_est_window(noise_est_window),
           d_alpha(std::exp(-1.0f / static_cast<float>(noise_est_window))),
           d_noise_floor(1e-6f),
