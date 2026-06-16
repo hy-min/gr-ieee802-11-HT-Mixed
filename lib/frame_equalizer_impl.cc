@@ -2217,6 +2217,29 @@ static float estimate_cfo_from_lltf52(const gr_complex* lltf0,
     return (count > 0) ? (float)(phase_sum / count) : 0.0f;
 }
 
+// Phase 20: Per-subcarrier phase estimation from HT-SIG0.
+// Given the received HT-SIG0 equalized symbols (rx_htsig0) and the
+// expected symbols (re-encoded from HT-SIG0 hard-decision bits),
+// estimate the per-SC phase error. Skips SCs with near-zero expected
+// (DC null at i=0 and i=26) to avoid NaN/Inf.
+static int estimate_per_sc_phase_from_htsig0(
+    const gr_complex* rx_htsig0,
+    const gr_complex* expected_htsig0,
+    float* phase_per_sc)
+{
+    int valid = 0;
+    for (int i = 0; i < 52; i++) {
+        if (std::abs(expected_htsig0[i]) < 1e-6f) {
+            phase_per_sc[i] = 0.0f;
+            continue;
+        }
+        gr_complex ratio = rx_htsig0[i] / expected_htsig0[i];
+        phase_per_sc[i] = std::arg(ratio);
+        valid++;
+    }
+    return valid;
+}
+
 } // anonymous namespace
 
 // ======================================================================
