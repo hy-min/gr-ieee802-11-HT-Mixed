@@ -108,20 +108,38 @@ def main():
             print(f"  (vs clean frames' equalizer lts0_bin: {sorted(Counter(clean_eq).items())})")
 
     # Verdict
-    splitter_drift = False
-    eq_drift = False
-    if splitter_idx_rows:
-        splitter_drift = any(r != EXPECTED_SPLITTER_CURRENT_IDX for r in splitter_idxs)
-    if eq_idx_rows:
-        eq_drift = any(r != EXPECTED_EQ_LTS0_BIN for r in eq_idxs)
+    # Ensure pathology-correlation lists are always defined (no UnboundLocalError
+    # when there are no pathological frames or no splitter/eq rows)
+    path_splitter = path_splitter if (pathological and splitter_idx_rows) else []
+    clean_splitter = clean_splitter if (clean and splitter_idx_rows) else []
+    path_eq = path_eq if (pathological and eq_idx_rows) else []
+    clean_eq = clean_eq if (clean and eq_idx_rows) else []
 
-    if splitter_drift or eq_drift:
-        print(f"\n[VERDICT] HYPOTHESIS CONFIRMED — timing offset observed")
-        print(f"  splitter_drift={splitter_drift}, eq_drift={eq_drift}")
+    # Pathology-aware verdict: drift must correlate with pathology, not just exist
+    splitter_drift_on_path = bool(path_splitter) and any(
+        r != EXPECTED_SPLITTER_CURRENT_IDX for r in path_splitter
+    )
+    eq_drift_on_path = bool(path_eq) and any(
+        r != EXPECTED_EQ_LTS0_BIN for r in path_eq
+    )
+    splitter_clean_at_baseline = bool(clean_splitter) and all(
+        r == EXPECTED_SPLITTER_CURRENT_IDX for r in clean_splitter
+    )
+    eq_clean_at_baseline = bool(clean_eq) and all(
+        r == EXPECTED_EQ_LTS0_BIN for r in clean_eq
+    )
+
+    if (splitter_drift_on_path and splitter_clean_at_baseline) or \
+       (eq_drift_on_path and eq_clean_at_baseline):
+        print(f"\n[VERDICT] HYPOTHESIS CONFIRMED — timing offset correlates with pathology")
+        print(f"  splitter: drift_on_path={splitter_drift_on_path}, clean_at_baseline={splitter_clean_at_baseline}")
+        print(f"  equalizer: drift_on_path={eq_drift_on_path}, clean_at_baseline={eq_clean_at_baseline}")
         print(f"  Recommendation: proceed to Task 7 (env-var-gated fixed offset correction)")
         return 0
     else:
-        print(f"\n[VERDICT] HYPOTHESIS REFUTED — timing is correct, issue is elsewhere")
+        print(f"\n[VERDICT] HYPOTHESIS REFUTED — timing is correct (or drift doesn't correlate with pathology)")
+        print(f"  splitter: drift_on_path={splitter_drift_on_path}, clean_at_baseline={splitter_clean_at_baseline}")
+        print(f"  equalizer: drift_on_path={eq_drift_on_path}, clean_at_baseline={eq_clean_at_baseline}")
         print(f"  Recommendation: pivot investigation (Phase 32 or alternative root cause)")
         return 2
 
