@@ -82,6 +82,11 @@ public:
         set_tag_propagation_policy(block::TPP_DONT);
         d_correlation = (gr_complex*)volk_malloc(sizeof(gr_complex) * 8192, volk_get_alignment());
 
+        // Phase 31b (2026-06-17): Input dump opt-in via env var
+        if (getenv("IEEE80211_SYNC_LONG_INPUT_DUMP")) {
+            fprintf(stderr, "[SYNC_LONG] IEEE80211_SYNC_LONG_INPUT_DUMP=1 (input samples + FIR output will be logged, first 5 calls only)\n");
+        }
+
         // Phase 14 (2026-06-15): Reduced from 512 to 80 to fix scheduler deadlock
         // with USRP continuous streaming. The 512-multiple could never be satisfied
         // when sync_long's 2 input ports (direct + 320-sample delayed) compete with
@@ -110,6 +115,15 @@ public:
         // Work call counter for debugging
         static int s_call_count = 0;
         int call_count = s_call_count++;
+
+        // === IEEE80211_SYNC_LONG_INPUT_DUMP hook (Phase 31b, 2026-06-17) ===
+        // Dumps input samples (port 0 from sync_short, port 1 from blocks_delay)
+        // + FIR output magnitudes + peak detection to diagnose 0.003 correlation
+        // peak on USRP air path. Atomic single-call pattern (snprintf + USRP_LOG).
+        // Opt-in via IEEE80211_SYNC_LONG_INPUT_DUMP=1. Limited to first 5 calls.
+        static int sl_in_dump_calls = 0;
+        const bool sl_in_dump_enabled = (sl_in_dump_calls < 5) && (getenv("IEEE80211_SYNC_LONG_INPUT_DUMP") != nullptr);
+        // === end hook ===
 
         const gr_complex* in = (const gr_complex*)input_items[0];
         const gr_complex* in_delayed = (const gr_complex*)input_items[1];
@@ -211,6 +225,48 @@ public:
         case SYNC: {
             int filter_len = std::min(SYNC_LENGTH, std::max(ninput - 63, 0));
             d_fir.filterN(d_correlation, in, filter_len);
+
+            // === IEEE80211_SYNC_LONG_INPUT_DUMP hook (Phase 31b, 2026-06-17) ===
+            // Dumps the first 64 samples of each input port + the first 64 FIR output
+            // magnitudes + the top correlation magnitudes. Uses atomic single-call
+            // pattern (snprintf into buf, then USRP_LOG) to avoid interleaved writes.
+            if (sl_in_dump_enabled) {
+                char buf[4096];
+                int off = 0;
+                off += snprintf(buf+off, sizeof(buf)-off,
+                    "[SYNC_LONG_DUMP] call=%d ninput=%d filter_len=%d ninput0=%d ninput1=%d state=SYNC | ",
+                    sl_in_dump_calls, ninput, filter_len, ninput_items[0], ninput_items[1]);
+                // First 64 samples of port 0 (sync_short output)
+                for (int k = 0; k < 64 && k < ninput_items[0]; k++) {
+                    off += snprintf(buf+off, sizeof(buf)-off, "in0[%d]=(%.3f,%.3f) ", k, in[k].real(), in[k].imag());
+                }
+                off += snprintf(buf+off, sizeof(buf)-off, "| ");
+                // First 64 samples of port 1 (blocks_delay output)
+                for (int k = 0; k < 64 && k < ninput_items[1]; k++) {
+                    off += snprintf(buf+off, sizeof(buf)-off, "in1[%d]=(%.3f,%.3f) ", k, in_delayed[k].real(), in_delayed[k].imag());
+                }
+                off += snprintf(buf+off, sizeof(buf)-off, "| ");
+                // First 64 FIR output magnitudes
+                for (int k = 0; k < 64 && k < filter_len; k++) {
+                    double mag = abs(d_correlation[k]);
+                    off += snprintf(buf+off, sizeof(buf)-off, "fir[%d]=%.4f ", k, mag);
+                }
+                off += snprintf(buf+off, sizeof(buf)-off, "| ");
+                // Top 10 correlation magnitudes (sorted by abs value)
+                // We have d_cor at this point: re-sort and dump
+                std::vector<std::pair<gr_complex,int>> tmp_cor;
+                for (int k = 0; k < filter_len; k++) {
+                    tmp_cor.push_back(std::pair<gr_complex,int>(d_correlation[k], k));
+                }
+                std::sort(tmp_cor.begin(), tmp_cor.end(), compare_abs);
+                for (int k = 0; k < 10 && k < (int)tmp_cor.size(); k++) {
+                    double mag = abs(tmp_cor[k].first);
+                    off += snprintf(buf+off, sizeof(buf)-off, "top[%d]=(%.4f@%d) ", k, mag, tmp_cor[k].second);
+                }
+                fprintf(stderr, "%s\n", buf);
+                sl_in_dump_calls++;
+            }
+            // === end hook ===
 
             while (i + 63 < ninput) {
 
