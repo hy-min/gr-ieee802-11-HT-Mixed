@@ -1498,6 +1498,52 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         eqbits48[i] = hard_bit_from_complex(eq);
     }
 
+    // Phase 31 Task 18 (RC-C L-SIG viterbi): dump the raw 48 L-SIG
+    // equalized constellation points (real, imag), |Hhdr52|, arg(Hhdr52),
+    // and hard bits. This verifies the H-X2+H-X6 hypothesis: H52
+    // over-equalization inflates |eq|^2 and per-SC phase error rotates
+    // BPSK constellation, producing 50/50 hard bits and viterbi failure.
+    // Atomic snprintf+USRP_LOG("%s", buf) for thread safety. Flood-gated
+    // to first 10 calls. Opt-in via IEEE80211_LSIG_EQ_DUMP=1.
+    if (getenv("IEEE80211_LSIG_EQ_DUMP") && getenv("IEEE80211_LSIG_EQ_DUMP")[0] != '\0') {
+        static int g_lsig_eq_dump_counter = 0;
+        if (g_lsig_eq_dump_counter < 10) {
+            char buf[4096];
+            int n = snprintf(buf, sizeof(buf),
+                             "[LSIG_EQ_DUMP] counter=%d inv=%d |H|=",
+                             g_lsig_eq_dump_counter, invert_bits ? 1 : 0);
+            for (int i = 0; i < 48 && n < (int)sizeof(buf) - 64; i++) {
+                n += snprintf(buf + n, sizeof(buf) - n, "%.3f,",
+                              std::abs(H52[i]));
+            }
+            n += snprintf(buf + n, sizeof(buf) - n, " argH=");
+            for (int i = 0; i < 48 && n < (int)sizeof(buf) - 64; i++) {
+                n += snprintf(buf + n, sizeof(buf) - n, "%.2f,",
+                              std::arg(H52[i]));
+            }
+            n += snprintf(buf + n, sizeof(buf) - n, " eq=");
+            for (int i = 0; i < 48 && n < (int)sizeof(buf) - 64; i++) {
+                float h_mag_d = std::abs(H52[i]);
+                gr_complex eq_d;
+                if (h_mag_d < 0.001f) {
+                    eq_d = gr_complex(0.0f, 0.0f);
+                } else {
+                    eq_d = safe_div(rx52[i], H52[i]);
+                }
+                n += snprintf(buf + n, sizeof(buf) - n, "(%.2f,%.2f) ",
+                              eq_d.real(), eq_d.imag());
+            }
+            n += snprintf(buf + n, sizeof(buf) - n, " bits=");
+            for (int i = 0; i < 48 && n < (int)sizeof(buf) - 16; i++) {
+                n += snprintf(buf + n, sizeof(buf) - n, "%d",
+                              (int)eqbits48[i]);
+            }
+            snprintf(buf + n, sizeof(buf) - n, "\n");
+            USRP_LOG("%s", buf);
+            g_lsig_eq_dump_counter++;
+        }
+    }
+
     if (invert_bits) {
         for (int i = 0; i < 48; i++) {
             eqbits48[i] ^= 0x1;
@@ -2460,6 +2506,21 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     g_log_h52_input = d_log_h52_input;  // Propagate to file-global
     if (d_log_h52_input) {
         std::cout << "[FRAME_EQ] H52 at equalizer-input dump ENABLED via env\n";
+    }
+
+    // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
+    // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
+    // error rotates BPSK constellation, causing viterbi_fail. Dump the
+    // 48 raw equalized points (real, imag), |Hhdr52|, arg(Hhdr52), and
+    // hard bits per frame to confirm. Atomic snprintf+USRP_LOG prevents
+    // sync_short stdout shredding. Default OFF. Enable via
+    // IEEE80211_LSIG_EQ_DUMP=1.
+    static bool g_lsig_eq_dump_inited = false;
+    if (!g_lsig_eq_dump_inited) {
+        if (getenv("IEEE80211_LSIG_EQ_DUMP") && getenv("IEEE80211_LSIG_EQ_DUMP")[0] != '\0') {
+            fprintf(stderr, "[FRAME_EQUALIZER] IEEE80211_LSIG_EQ_DUMP=1 (L-SIG constellation will be logged, first 10 calls only)\n");
+        }
+        g_lsig_eq_dump_inited = true;
     }
 
     // Allow opt-in via env var for L-LTF0 entry time-domain gain
