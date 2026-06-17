@@ -19,6 +19,10 @@
 namespace gr {
 namespace ieee802_11 {
 
+// Phase 31: L-LTF0 sample boundary diagnostic (env-var gated, default OFF)
+static bool g_lltf_timing_dump = false;
+static bool g_lltf_timing_inited = false;
+
 ht_symbol_splitter::sptr
 ht_symbol_splitter::make(int fft_size, int symbol_size, int cp_size)
 {
@@ -60,6 +64,15 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
     d_buffer.resize(d_fft_size);
     d_buffer_count = 0;
     d_buffer_filled = false;
+
+    // Phase 31: L-LTF0 sample boundary diagnostic (env-var gated, default OFF)
+    if (!g_lltf_timing_inited) {
+        if (getenv("IEEE80211_LLTF_TIMING_DUMP") && getenv("IEEE80211_LLTF_TIMING_DUMP")[0] != '\0') {
+            g_lltf_timing_dump = true;
+            fprintf(stderr, "[SPLITTER] IEEE80211_LLTF_TIMING_DUMP=1 (LTS0/LTS1 sample indices will be logged)\n");
+        }
+        g_lltf_timing_inited = true;
+    }
 
     // We output in multiples of fft_size
     set_output_multiple(d_fft_size);
@@ -716,6 +729,20 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                 d_buffer[0].real(), d_buffer[0].imag(),
                                 d_buffer[63].real(), d_buffer[63].imag(),
                                 total_energy);
+
+                        // Phase 31: dump LTS0 sample index (env-var gated)
+                        // Fires when L-LTF0 (rel_idx==63) is emitted as an FFT.
+                        // LTS1 should follow 80 samples later at rel_idx==143.
+                        if (g_lltf_timing_dump && symbol_type == 0 && rel_idx == 63) {
+                            char buf[256];
+                            snprintf(buf, sizeof(buf),
+                                     "[SPLITTER] LTS0 seq=%d current_idx=%llu lts1_expected_rel=%llu\n",
+                                     d_frame_seq_counter,
+                                     (unsigned long long)current_idx,
+                                     (unsigned long long)(rel_idx + 80));
+                            fprintf(stderr, "%s", buf);
+                        }
+
                         uint64_t fft_pos = nitems_written(0) + produced;
                         memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
                         produced += d_fft_size;
