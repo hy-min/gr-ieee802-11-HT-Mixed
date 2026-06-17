@@ -1,0 +1,91 @@
+#!/home/hy/conda/envs/gnuradio/bin/python
+"""Phase 31 31a: collect 100 frames of L-LTF timing data via IEEE80211_LLTF_TIMING_DUMP=1.
+
+Outputs /tmp/p31a_diagnostic.csv with columns:
+  splitter_seq, splitter_lts0_idx, splitter_lts1_idx,
+  eq_lts0_idx, eq_lts1_idx, avg_snr_lsig, lsig_ok
+
+Usage: run via examples/test_usrp_minimal_loopback.py with env-vars set.
+The dump output is parsed post-hoc from /tmp/p31a_raw.log.
+
+Note: actual dump format from Task 2/3 implementations:
+  [SPLITTER] LTS0 seq=N current_idx=M lts1_expected_rel=K
+  [EQUALIZER] H52 compute nread=A lts0_bin=B lts1_bin=C d_sym_idx=D lts0_mag0=E lts0_mag25=F
+LTS1 is NOT dumped by the splitter (by design); we use the predicted lts1_expected_rel.
+"""
+import os
+import sys
+import re
+import csv
+import subprocess
+import time
+
+DURATION = 30  # seconds
+OUTPUT_CSV = "/tmp/p31a_diagnostic.csv"
+RAW_LOG = "/tmp/p31a_raw.log"
+
+ENV = os.environ.copy()
+ENV["IEEE80211_LLTF_TIMING_DUMP"] = "1"
+ENV["IEEE80211_SYNC_SHORT_BYPASS_ENERGY_GATE"] = "1"
+ENV["IEEE80211_LSIG_RATE_FORCE"] = "0xD"
+
+def run_capture():
+    cmd = [
+        "/home/hy/conda/envs/gnuradio/bin/python",
+        "test_usrp_minimal_loopback.py",  # Note: at project root, NOT examples/
+        "--duration", str(DURATION),
+    ]
+    with open(RAW_LOG, "w") as f:
+        proc = subprocess.Popen(cmd, env=ENV, stdout=f, stderr=subprocess.STDOUT)
+        proc.wait()
+
+def parse_dump_to_csv():
+    """Parse [SPLITTER] LTS0 and [EQUALIZER] H52 dump lines into CSV rows."""
+    # Note: actual dump format (from Task 2 implementation):
+    #   [SPLITTER] LTS0 seq=N current_idx=M lts1_expected_rel=K
+    # LTS1 is NOT dumped (by design); we use lts1_expected_rel from the splitter
+    # and lts1_bin from the equalizer.
+    pattern_splitter = re.compile(
+        r"\[SPLITTER\] LTS0 seq=(\d+) current_idx=(\d+) lts1_expected_rel=(\d+)"
+    )
+    pattern_eq = re.compile(
+        r"\[EQUALIZER\] H52 compute nread=(\d+) lts0_bin=(\d+) lts1_bin=(\d+)"
+    )
+    pattern_snr = re.compile(r"avg_snr_lsig=([\d.]+)")
+    pattern_lsig_ok = re.compile(r"LSIG_OK=(\d)")
+
+    rows = []
+    with open(RAW_LOG) as f:
+        for line in f:
+            m_s = pattern_splitter.search(line)
+            m_e = pattern_eq.search(line)
+            m_n = pattern_snr.search(line)
+            m_l = pattern_lsig_ok.search(line)
+            if m_s or m_e:
+                lts0_idx = m_s.group(2) if m_s else ""
+                lts1_idx = m_s.group(3) if m_s else ""
+                rows.append({
+                    "splitter_seq": m_s.group(1) if m_s else "",
+                    "splitter_lts0_idx": lts0_idx,
+                    "splitter_lts1_idx": lts1_idx,
+                    "eq_lts0_idx": m_e.group(2) if m_e else "",
+                    "eq_lts1_idx": m_e.group(3) if m_e else "",
+                    "avg_snr_lsig": m_n.group(1) if m_n else "",
+                    "lsig_ok": m_l.group(1) if m_l else "",
+                })
+    return rows
+
+if __name__ == "__main__":
+    print(f"[31a] Capturing {DURATION}s of USRP frames with IEEE80211_LLTF_TIMING_DUMP=1 ...")
+    run_capture()
+    rows = parse_dump_to_csv()
+    print(f"[31a] Collected {len(rows)} LTS0/LTS1 records")
+    with open(OUTPUT_CSV, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "splitter_seq", "splitter_lts0_idx", "splitter_lts1_idx",
+            "eq_lts0_idx", "eq_lts1_idx",
+            "avg_snr_lsig", "lsig_ok",
+        ])
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"[31a] Wrote {OUTPUT_CSV}")
