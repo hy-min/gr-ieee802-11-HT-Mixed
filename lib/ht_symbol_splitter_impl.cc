@@ -23,6 +23,17 @@ namespace ieee802_11 {
 static bool g_lltf_timing_dump = false;
 static bool g_lltf_timing_inited = false;
 
+// Phase 31 Task 7: L-LTF0 sample boundary correction (env-var gated, default 0)
+// Adds a fixed sample offset K ∈ {-4..+4} to the L-LTF0 sample extraction window
+// to compensate for upstream FFT window misalignment in the e2e USRP chain.
+// Default K=0 produces identical behavior to current code.
+// Usage: IEEE80211_LLTF_OFFSET_CORRECT=K (K integer, e.g., -2, -1, +1, +2).
+// Range: clamped to [-4, +4] (larger values rejected).
+// Affects ONLY the L-LTF0 and L-LTF1 region (rel_idx < 144). All other
+// regions (L-SIG, HT-SIG, HT-STF, HT-LTF, HT-DATA) are unchanged.
+static int g_lltf_offset_correct = 0;
+static bool g_lltf_offset_correct_inited = false;
+
 ht_symbol_splitter::sptr
 ht_symbol_splitter::make(int fft_size, int symbol_size, int cp_size)
 {
@@ -72,6 +83,20 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
             fprintf(stderr, "[SPLITTER] IEEE80211_LLTF_TIMING_DUMP=1 (LTS0/LTS1 sample indices will be logged)\n");
         }
         g_lltf_timing_inited = true;
+    }
+
+    // Phase 31 Task 7: L-LTF0 sample boundary correction (env-var gated, default 0)
+    // Parses IEEE80211_LLTF_OFFSET_CORRECT, clamps to [-4, +4], and stores
+    // the offset. K=0 (default) preserves current behavior exactly.
+    if (!g_lltf_offset_correct_inited) {
+        if (getenv("IEEE80211_LLTF_OFFSET_CORRECT") && getenv("IEEE80211_LLTF_OFFSET_CORRECT")[0] != '\0') {
+            int K = atoi(getenv("IEEE80211_LLTF_OFFSET_CORRECT"));
+            if (K < -4) K = -4;
+            if (K >  4) K =  4;
+            g_lltf_offset_correct = K;
+            fprintf(stderr, "[SPLITTER] IEEE80211_LLTF_OFFSET_CORRECT=%d (L-LTF0 offset shifted by %d samples)\n", K, K);
+        }
+        g_lltf_offset_correct_inited = true;
     }
 
     // We output in multiples of fft_size
@@ -304,11 +329,16 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     // at a boundary, output it first before processing new data.
     // This prevents starvation from firing and outputting partial data.
     // ============================================================
+    // Phase 31 Task 7: Apply IEEE80211_LLTF_OFFSET_CORRECT (K) to L-LTF0
+    // (63+K) and L-LTF1 (143+K) carryover boundaries. K=0 is identical to
+    // original.
     if (d_buffer_count == d_fft_size && d_frame_start_known) {
         uint64_t last_rel_idx = d_last_rel_idx;
         bool at_boundary = false;
         // Check if last_rel_idx was at a boundary position
-        if (last_rel_idx == 63 || last_rel_idx == 143 || last_rel_idx == 223 ||
+        if (last_rel_idx == (uint64_t)(63 + g_lltf_offset_correct) ||
+            last_rel_idx == (uint64_t)(143 + g_lltf_offset_correct) ||
+            last_rel_idx == 223 ||
             last_rel_idx == 303 || last_rel_idx == 383 || last_rel_idx == 463 ||
             last_rel_idx == 543) {
             at_boundary = true;
@@ -445,15 +475,19 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             // should_buffer calculation - determines what region we're in
             // ============================================================
             // Compute should_buffer based on rel_idx BEFORE transition check
+            // Phase 31 Task 7: Apply IEEE80211_LLTF_OFFSET_CORRECT (K) to the
+            // L-LTF0 and L-LTF1 region boundaries only. K=0 (default) is
+            // byte-identical to original code. K>0 shifts window later
+            // (later boundary), K<0 shifts window earlier.
             bool should_buffer = false;
-            if (rel_idx < 64) {
-                // Stage 1: L-LTF0 DATA (rel_idx 0-63)
+            if (rel_idx < (uint64_t)(64 + g_lltf_offset_correct)) {
+                // Stage 1: L-LTF0 DATA (rel_idx 0..63+K when K>=0, K..63 when K<0)
                 should_buffer = true;
-            } else if (rel_idx < 80) {
-                // Stage 1b: L-LTF1 CP (rel_idx 64-79) - 跳过！
+            } else if (rel_idx < (uint64_t)(80 + g_lltf_offset_correct)) {
+                // Stage 1b: L-LTF1 CP (rel_idx 64+K..79+K)
                 should_buffer = false;
-            } else if (rel_idx < 144) {
-                // Stage 1c: L-LTF1 DATA (rel_idx 80-143)
+            } else if (rel_idx < (uint64_t)(144 + g_lltf_offset_correct)) {
+                // Stage 1c: L-LTF1 DATA (rel_idx 80+K..143+K)
                 should_buffer = true;
             } else if (rel_idx < 160) {
                 // Stage 2: L-SIG CP (rel_idx 144-159) - 跳过
@@ -642,11 +676,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                 // ============================================================
                 // Boundary trigger: output FFT window when 64 samples collected
                 // ============================================================
+                // Phase 31 Task 7: Apply IEEE80211_LLTF_OFFSET_CORRECT (K) to the
+                // L-LTF0/L-LTF1 boundary checks. K=0 (default) is byte-identical
+                // to original code.
                 bool at_boundary = false;
-                if (rel_idx < 64) {
-                    at_boundary = (rel_idx == 63);
-                } else if (rel_idx < 144) {
-                    at_boundary = (rel_idx == 143);
+                if (rel_idx < (uint64_t)(64 + g_lltf_offset_correct)) {
+                    at_boundary = (rel_idx == (uint64_t)(63 + g_lltf_offset_correct));
+                } else if (rel_idx < (uint64_t)(144 + g_lltf_offset_correct)) {
+                    at_boundary = (rel_idx == (uint64_t)(143 + g_lltf_offset_correct));
                 } else if (rel_idx < 160) {
                     at_boundary = false;
                 } else if (rel_idx < 224) {
@@ -701,8 +738,10 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         // DO NOT output
                     } else {
                         // Debug: Print symbol type based on rel_idx
+                        // Phase 31 Task 7: Apply K offset to L-LTF0/L-LTF1 detection
                         int symbol_type = -1;
-                        if (rel_idx == 63 || rel_idx == 143) {
+                        if (rel_idx == (uint64_t)(63 + g_lltf_offset_correct) ||
+                            rel_idx == (uint64_t)(143 + g_lltf_offset_correct)) {
                             symbol_type = 0; // L-LTF FFT
                         } else if (rel_idx == 223) {
                             symbol_type = 2; // L-SIG FFT
@@ -731,15 +770,18 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                                 total_energy);
 
                         // Phase 31: dump LTS0 sample index (env-var gated)
-                        // Fires when L-LTF0 (rel_idx==63) is emitted as an FFT.
-                        // LTS1 should follow 80 samples later at rel_idx==143.
-                        if (g_lltf_timing_dump && symbol_type == 0 && rel_idx == 63) {
+                        // Fires when L-LTF0 is emitted as an FFT. With K=0
+                        // (default), the L-LTF0 boundary is at rel_idx==63.
+                        // With K != 0, the boundary shifts to rel_idx==63+K.
+                        if (g_lltf_timing_dump && symbol_type == 0 &&
+                            rel_idx == (uint64_t)(63 + g_lltf_offset_correct)) {
                             char buf[256];
                             snprintf(buf, sizeof(buf),
-                                     "[SPLITTER] LTS0 seq=%d current_idx=%llu lts1_expected_rel=%llu\n",
+                                     "[SPLITTER] LTS0 seq=%d current_idx=%llu lts1_expected_rel=%llu K=%d\n",
                                      d_frame_seq_counter,
                                      (unsigned long long)current_idx,
-                                     (unsigned long long)(rel_idx + 80));
+                                     (unsigned long long)(rel_idx + 80),
+                                     g_lltf_offset_correct);
                             fprintf(stderr, "%s", buf);
                         }
 
