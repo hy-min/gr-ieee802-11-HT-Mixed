@@ -1,5 +1,5 @@
 #!/home/hy/conda/envs/gnuradio/bin/python
-"""Phase 31 31a: collect 100 frames of L-LTF timing data via IEEE80211_LLTF_TIMING_DUMP=1.
+"""Phase 31 31a: 30-second capture of L-LTF timing data via IEEE80211_LLTF_TIMING_DUMP=1.
 
 Outputs /tmp/p31a_diagnostic.csv with columns:
   splitter_seq, splitter_lts0_idx, splitter_lts1_idx,
@@ -20,6 +20,11 @@ import csv
 import subprocess
 import time
 
+# Resolve project root from this script's location so we don't depend on cwd.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+LOOPBACK_SCRIPT = os.path.join(PROJECT_ROOT, "test_usrp_minimal_loopback.py")
+
 DURATION = 30  # seconds
 OUTPUT_CSV = "/tmp/p31a_diagnostic.csv"
 RAW_LOG = "/tmp/p31a_raw.log"
@@ -30,14 +35,20 @@ ENV["IEEE80211_SYNC_SHORT_BYPASS_ENERGY_GATE"] = "1"
 ENV["IEEE80211_LSIG_RATE_FORCE"] = "0xD"
 
 def run_capture():
+    if not os.path.isfile(LOOPBACK_SCRIPT):
+        print(f"[31a] ERROR: loopback script not found: {LOOPBACK_SCRIPT}", file=sys.stderr)
+        sys.exit(1)
     cmd = [
         "/home/hy/conda/envs/gnuradio/bin/python",
-        "test_usrp_minimal_loopback.py",  # Note: at project root, NOT examples/
+        LOOPBACK_SCRIPT,
         "--duration", str(DURATION),
     ]
     with open(RAW_LOG, "w") as f:
-        proc = subprocess.Popen(cmd, env=ENV, stdout=f, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, env=ENV, stdout=f, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT)
         proc.wait()
+    if proc.returncode != 0:
+        print(f"[31a] ERROR: loopback capture failed (returncode={proc.returncode}); see {RAW_LOG}", file=sys.stderr)
+        sys.exit(proc.returncode)
 
 def parse_dump_to_csv():
     """Parse [SPLITTER] LTS0 and [EQUALIZER] H52 dump lines into CSV rows."""
@@ -51,7 +62,7 @@ def parse_dump_to_csv():
     pattern_eq = re.compile(
         r"\[EQUALIZER\] H52 compute nread=(\d+) lts0_bin=(\d+) lts1_bin=(\d+)"
     )
-    pattern_snr = re.compile(r"avg_snr_lsig=([\d.]+)")
+    pattern_snr = re.compile(r"avg_snr_lsig=([\d.\-]+)")
     pattern_lsig_ok = re.compile(r"LSIG_OK=(\d)")
 
     rows = []
