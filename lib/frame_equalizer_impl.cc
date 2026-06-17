@@ -529,6 +529,7 @@ bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static esti
 bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site dump (post-filter)
 bool g_log_h52_input = false;     // Bridge from d_log_h52_input to call-site dump (Hhdr52 at equalizer input)
 bool g_log_frame_gain = false;    // Bridge from d_log_frame_gain to static extract_header52_from_sym64
+bool g_eq_lltf_timing_dump = false;  // Phase 31: bridge to H52 compute site dump in general_work
 
 static int g_extract_call_count = 0;
 
@@ -2473,6 +2474,26 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] Frame gain dump ENABLED via env\n";
     }
 
+    // Phase 31: receive-side L-LTF timing diagnostic (env-var gated, default OFF).
+    // Mirrors the splitter's IEEE80211_LLTF_TIMING_DUMP. At the H52
+    // computation site (just before compute_H52_tx_order), logs the
+    // absolute FFT-block read position of the current HT-DATA symbol
+    // (nread), the implied L-LTF0 and L-LTF1 absolute FFT-block positions
+    // (i.e. nread - d_data_start_rel and nread - d_data_start_rel + 1),
+    // and the d_sym_idx when H52 is computed. The splitter emits its
+    // own [SPLITTER] LTS0 line with its own current_idx; comparing the
+    // two values for the same frame reveals whether any timing offset
+    // is in the upstream path (splitter) or the equalizer's H52 input.
+    // Default OFF. Enable via IEEE80211_LLTF_TIMING_DUMP=1.
+    static bool g_eq_lltf_timing_inited = false;
+    if (!g_eq_lltf_timing_inited) {
+        if (getenv("IEEE80211_LLTF_TIMING_DUMP") && getenv("IEEE80211_LLTF_TIMING_DUMP")[0] != '\0') {
+            g_eq_lltf_timing_dump = true;
+            fprintf(stderr, "[EQUALIZER] IEEE80211_LLTF_TIMING_DUMP=1 (received LTS0/LTS1 indices logged at H52 compute site)\n");
+        }
+        g_eq_lltf_timing_inited = true;
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -3822,6 +3843,32 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     // different TX reference sequence (PHT_LTF vs legacy LTF).
                     // Edge subcarriers (-28,-27,+27,+28) already come from HT-LTF1
                     // via saved_htltf_edge, so the edge improvement is preserved.
+
+                    // Phase 31: receive-side L-LTF timing diagnostic. At the H52
+                    // computation site (first HT-DATA symbol), log the equalizer's
+                    // current FFT-block read position and the implied L-LTF0/L-LTF1
+                    // absolute FFT-block positions so they can be diffed against the
+                    // splitter's [SPLITTER] LTS0 line for the same frame. nread is
+                    // the absolute FFT-block offset of the current symbol
+                    // (abs_in_off); lts0_bin is the implied offset of the L-LTF0
+                    // FFT block (= nread - d_data_start_rel); lts1_bin is the
+                    // implied offset of the L-LTF1 FFT block (= nread - d_data_start_rel + 1).
+                    // d_sym_idx is the relative symbol index within the frame.
+                    // env-var-gated via IEEE80211_LLTF_TIMING_DUMP, default OFF.
+                    if (g_eq_lltf_timing_dump) {
+                        char buf[256];
+                        snprintf(buf, sizeof(buf),
+                                 "[EQUALIZER] H52 compute nread=%llu lts0_bin=%llu lts1_bin=%llu "
+                                 "d_sym_idx=%d lts0_mag0=%.3f lts0_mag25=%.3f\n",
+                                 (unsigned long long)abs_in_off,
+                                 (unsigned long long)(abs_in_off - d_data_start_rel),
+                                 (unsigned long long)(abs_in_off - d_data_start_rel + 1),
+                                 d_sym_idx,
+                                 std::abs(d_early_eqsym[kLltf0Rel][0]),
+                                 std::abs(d_early_eqsym[kLltf0Rel][25]));
+                        USRP_LOG("%s", buf);
+                    }
+
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
                     d_H52_tx_order_valid = true;
                 }
