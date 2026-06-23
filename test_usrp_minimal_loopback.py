@@ -68,6 +68,28 @@ class MinimalUSRPTest(gr.top_block):
         # Debug counters
         self.msg_debug_mac = blocks.message_debug()
         self.msg_debug_rx = blocks.message_debug()
+
+        # FCS logger: counts PDUs by crc metadata (Phase 34 e2e verification).
+        # Mirrors examples/test_direct_loopback.py:18-33. Note: decode_mac sets
+        # crc=1 in FCS-OK publish path (fixed in Phase 22).
+        class FcsLogger(gr.basic_block):
+            def __init__(self):
+                gr.basic_block.__init__(self, name="fcs", in_sig=None, out_sig=None)
+                self.message_port_register_in(pmt.intern("pdu"))
+                self.set_msg_handler(pmt.intern("pdu"), self.handle)
+                self.ok = 0
+                self.fail = 0
+
+            def handle(self, msg):
+                meta = pmt.car(msg)
+                crc = pmt.to_long(pmt.dict_ref(meta, pmt.intern('crc'), pmt.from_long(0)))
+                if crc:
+                    self.ok += 1
+                    print("*** FCS OK ***")
+                else:
+                    self.fail += 1
+
+        self.fcs = FcsLogger()
         
         # Encoding stripper
         class encoding_stripper(gr.basic_block):
@@ -147,6 +169,7 @@ class MinimalUSRPTest(gr.top_block):
         self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
         
         self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
+        self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.fcs, 'pdu'))
         
         print(f"[TEST] Config: freq={args.freq}MHz rate={args.rate}MHz tx_gain={args.tx_gain} rx_gain={args.rx_gain}")
         print(f"[TEST] C-layer stderr redirected to /dev/null")
@@ -156,8 +179,8 @@ class MinimalUSRPTest(gr.top_block):
 
 def main():
     parser = argparse.ArgumentParser(description='Minimal USRP Loopback Test (No GUI)')
-    parser.add_argument('--freq', type=float, default=5180, help='Center frequency in MHz')
-    parser.add_argument('--tx-gain', type=float, default=10, help='TX gain dB')
+    parser.add_argument('--freq', type=float, default=5890, help='Center frequency in MHz')
+    parser.add_argument('--tx-gain', type=float, default=20, help='TX gain dB')
     parser.add_argument('--rx-gain', type=float, default=20, help='RX gain dB')
     parser.add_argument('--rate', type=float, default=20, help='Sample rate in MHz')
     parser.add_argument('--interval', type=int, default=1000, help='Frame interval ms')
@@ -206,6 +229,7 @@ def main():
     print(f"[TEST] Sent: {sent}")
     print(f"[TEST] Recv: {recv}")
     print(f"[TEST] Success Rate: {recv/max(1,sent)*100:.1f}%")
+    print(f"[TEST] FCS_OK={tb.fcs.ok} FCS_FAIL={tb.fcs.fail}")
     
     if args.capture and os.path.exists(args.capture):
         size = os.path.getsize(args.capture)

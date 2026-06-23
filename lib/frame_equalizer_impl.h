@@ -161,6 +161,17 @@ private:
     float d_sfo_per_sc_est = 0.0f;  // raw SFO estimate (rad/subcarrier) for logging
     bool  d_enable_cfo_comp;        // enable CFO/SFO compensation on HT-DATA
 
+    // Phase 34: per-frame sub-sample timing offset (δ) estimation+correction.
+    // Discovered via Phase 33b USRP validation: argH[b] = -2π·kScIndex52[b]·δ/64
+    // with δ per-frame in [0,1) at 1/64 quantization, causing 64-PSK residual
+    // that rotates BPSK across decision boundary → L-SIG viterbi fails.
+    // Linear regression on argH vs SC index recovers δ, applied as per-SC
+    // phase rotation. Default OFF. Enable via env var IEEE80211_TIMING_OFFSET_APPLY=1.
+    float d_timing_offset_per_frame = 0.0f;  // in 1/64 sample units, [0, 1)
+    bool  d_timing_offset_valid      = false;
+    bool  d_log_timing_offset_dump   = false;
+    bool  d_apply_timing_offset      = false;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase

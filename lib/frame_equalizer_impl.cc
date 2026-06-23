@@ -775,6 +775,58 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     }
 }
 
+// Phase 34: estimate per-frame sub-sample timing offset δ from H52.
+// argH[i] ≈ a + b·kScIndex52[i] (assuming flat channel + linear δ phase);
+// δ = -b × 64 / (2π) mod 1.0, in units of 1/64 sample (range [0, 1)).
+// Discovered via Phase 33b USRP validation: argH[b] = -2π·kScIndex52[b]·δ/64
+// with δ per-frame in [0,1) at 1/64 quantization. Causes 64-PSK residual on
+// USRP frames. Loopback has δ=0 always (no air path).
+static float estimate_timing_offset_from_h52(const gr_complex* H52)
+{
+    static const int kScIndex52[52] = {
+        -26,-25,-24,-23,-22,
+        -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+        -6,-5,-4,-3,-2,-1,
+        1,2,3,4,5,6,
+        8,9,10,11,12,13,
+        14,15,16,17,18,19,
+        20,22,23,24,25,26,
+        -21,-7,7,21
+    };
+    double sum_sc = 0.0, sum_sc2 = 0.0, sum_arg = 0.0, sum_sc_arg = 0.0;
+    double sum_w = 0.0;
+    for (int i = 0; i < 52; i++) {
+        float a = std::arg(H52[i]);
+        int sc = kScIndex52[i];
+        // |H|-weighted regression: stronger SCs contribute more (channel flatness assumption)
+        float w = std::abs(H52[i]);
+        sum_sc += sc * w;
+        sum_sc2 += (double)sc * sc * w;
+        sum_arg += a * w;
+        sum_sc_arg += (double)sc * a * w;
+        sum_w += w;
+    }
+    if (sum_w < 1e-9) return 0.0f;
+    // Weighted least-squares: argH = a + b·SC
+    double mean_sc = sum_sc / sum_w;
+    double mean_arg = sum_arg / sum_w;
+    double cov_sc_arg = 0.0, var_sc = 0.0;
+    for (int i = 0; i < 52; i++) {
+        float a = std::arg(H52[i]);
+        int sc = kScIndex52[i];
+        float w = std::abs(H52[i]);
+        double dsc = sc - mean_sc;
+        cov_sc_arg += w * dsc * (a - mean_arg);
+        var_sc += w * dsc * dsc;
+    }
+    if (var_sc < 1e-9) return 0.0f;
+    double b = cov_sc_arg / var_sc;  // slope of argH vs SC
+    float delta = (float)(-b * 64.0 / (2.0 * M_PI));
+    // Wrap to [0, 1) (1/64 sample units)
+    delta = delta - std::floor(delta);
+    return delta;
+}
+
 static float estimate_header_cpe_rad(const gr_complex* rx52,
                                      const gr_complex* H52,
                                      bool is_ht_sig)
@@ -2555,6 +2607,20 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         g_eq_lltf_timing_inited = true;
     }
 
+    // Phase 34: per-frame sub-sample timing offset (δ) estimation+correction.
+    // Discovered via Phase 33b USRP validation: argH[b] = -2π·kScIndex52[b]·δ/64
+    // with δ per-frame in [0,1) at 1/64 quantization. Causes 64-PSK residual
+    // that breaks L-SIG viterbi. δ is estimated from H52 via linear
+    // regression of argH vs SC index, then applied as per-SC phase rotation
+    // (retroactively for L-SIG/HT-SIG0, real-time for HT-SIG1+data). Default OFF.
+    // Enable via IEEE80211_TIMING_OFFSET_APPLY=1.
+    const char* env_toa = std::getenv("IEEE80211_TIMING_OFFSET_APPLY");
+    d_apply_timing_offset = (env_toa && env_toa[0] == '1');
+    d_log_timing_offset_dump = d_apply_timing_offset;  // coupled: dump only when applying
+    if (d_apply_timing_offset) {
+        std::cout << "[FRAME_EQ] IEEE80211_TIMING_OFFSET_APPLY=1 (δ estimation+correction ENABLED)\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -2628,6 +2694,10 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_cfo_estimated = false;
     std::memset(d_phase_diff_per_sc, 0, sizeof(d_phase_diff_per_sc));
     d_phase_diff_valid = false;
+
+    // Phase 34: reset per-frame sub-sample timing offset state.
+    d_timing_offset_per_frame = 0.0f;
+    d_timing_offset_valid = false;
 
     std::memset(d_early_bits, 0, sizeof(d_early_bits));
     std::memset(d_early_bits_valid, 0, sizeof(d_early_bits_valid));
@@ -3021,6 +3091,19 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // Use d_internal_symbol_counter for symbol type determination
         // d_sym_idx may be out of sync due to 'continue' path skipping its increment
         if (d_internal_symbol_counter >= 0 && d_internal_symbol_counter < 8) {
+            // Subcarrier index mapping for 52 active SCs. Defined here (not in the
+            // narrower CFO/SFO estimation block below) so that the Phase 34
+            // δ-correction path can reuse it.
+            static const int kScIndex52[52] = {
+                -26,-25,-24,-23,-22,  // i=0..4
+                -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,  // i=5..17
+                -6,-5,-4,-3,-2,-1,  // i=18..23
+                1,2,3,4,5,6,  // i=24..29
+                8,9,10,11,12,13,  // i=30..35
+                14,15,16,17,18,19,  // i=36..41
+                20,22,23,24,25,26,  // i=42..47
+                -21,-7,7,21  // i=48..51 (pilots)
+            };
             // Use d_internal_symbol_counter for array indexing - it tracks actual symbol count
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
@@ -3034,13 +3117,24 @@ int frame_equalizer_impl::general_work(int noutput_items,
             if (d_phase_diff_valid && d_internal_symbol_counter >= kLSigRel) {
                 for (int i = 0; i < 52; i++) {
                     float total_phase = d_phase_diff_per_sc[i] * d_internal_symbol_counter;
+                    // Phase 34: add δ correction for counter>=4 (HT-SIG1 and data symbols).
+                    // δ is per-frame sub-sample timing offset (1/64 sample quantization on USRP).
+                    // L-SIG (counter=2) and HT-SIG0 (counter=3) are corrected retroactively
+                    // at Hhdr52 compute time (counter=4) by multiplying d_early_eqsym[2,3].
+                    if (d_apply_timing_offset && d_timing_offset_valid &&
+                        d_internal_symbol_counter >= 4) {
+                        total_phase += -2.0f * (float)M_PI * kScIndex52[i] *
+                                       d_timing_offset_per_frame / 64.0f *
+                                       d_internal_symbol_counter;
+                    }
                     gr_complex rot = std::exp(gr_complex(0.0f, -total_phase));
                     d_early_eqsym[d_internal_symbol_counter][i] *= rot;
                 }
-                USRP_LOG("[HDR_COMP] counter=%d phase[0]=%.4f phase[26]=%.4f\n",
+                USRP_LOG("[HDR_COMP] counter=%d phase[0]=%.4f phase[26]=%.4f delta=%.4f\n",
                          d_internal_symbol_counter,
                          d_phase_diff_per_sc[0] * d_internal_symbol_counter,
-                         d_phase_diff_per_sc[26] * d_internal_symbol_counter);
+                         d_phase_diff_per_sc[26] * d_internal_symbol_counter,
+                         d_timing_offset_per_frame);
             }
 
             // CFO estimation from L-LTF0 / L-LTF1 phase difference
@@ -3059,16 +3153,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Estimate SFO using linear regression on all 52 subcarriers.
                 // phase_diff[i] = CFO + SFO * sc_index[i].
                 // Since 64-bin CFO ≈ 0, we fit phase_diff vs sc_index to get SFO.
-                static const int kScIndex52[52] = {
-                    -26,-25,-24,-23,-22,  // i=0..4
-                    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,  // i=5..17
-                    -6,-5,-4,-3,-2,-1,  // i=18..23
-                    1,2,3,4,5,6,  // i=24..29
-                    8,9,10,11,12,13,  // i=30..35
-                    14,15,16,17,18,19,  // i=36..41
-                    20,22,23,24,25,26,  // i=42..47
-                    -21,-7,7,21  // i=48..51 (pilots)
-                };
+                // (kScIndex52 is declared above for use by Phase 34 δ correction.)
                 double sum_sc2 = 0.0, sum_sc_phase = 0.0;
                 double sum_phase = 0.0;
                 for (int i = 0; i < 52; i++) {
@@ -3651,6 +3736,61 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                " mean|H|=%.3f std|H|=%.3f mean(argH)=%.3f std(argH)=%.3f\n",
                                mean_mag, std_mag, mean_arg, std_arg);
                 USRP_LOG("%s", h52_dump);
+            }
+
+            // Phase 34: estimate per-frame sub-sample timing offset δ from Hhdr52
+            // (final H used for L-SIG/HT-SIG viterbi) and apply retroactive
+            // correction to d_early_eqsym[c] for c = kLSigRel..kHtSig1Rel.
+            // argH[b] ≈ -2π·kScIndex52[b]·δ/64 → linear regression gives δ.
+            // Multiplies each SC's d_early_eqsym[c] by exp(+j·2π·δ·SC/64),
+            // removing the δ_phase factor that d_early_eqsym[c] picked up at
+            // its sample time. After this, eq = d_early_eqsym / Hhdr52 has the
+            // δ factor cancelled in both numerator and denominator (assuming
+            // constant per-frame δ).
+            if (d_apply_timing_offset) {
+                float delta = estimate_timing_offset_from_h52(Hhdr52);
+                d_timing_offset_per_frame = delta;
+                d_timing_offset_valid = true;
+
+                // Retroactive correction to L-SIG (counter=2), HT-SIG0 (counter=3),
+                // HT-SIG1 (counter=4). All three have already had CFO+SFO rotation
+                // applied at line 3034-3039. We are removing the δ contribution.
+                static const int kScIndex52[52] = {
+                    -26,-25,-24,-23,-22,
+                    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+                    -6,-5,-4,-3,-2,-1,
+                    1,2,3,4,5,6,
+                    8,9,10,11,12,13,
+                    14,15,16,17,18,19,
+                    20,22,23,24,25,26,
+                    -21,-7,7,21
+                };
+                for (int sym = kLSigRel; sym <= kHtSig1Rel; sym++) {
+                    if (!d_early_eqsym_valid[sym]) continue;
+                    for (int i = 0; i < 52; i++) {
+                        float delta_phase = (float)(2.0 * M_PI) *
+                                            kScIndex52[i] * delta / 64.0f;
+                        d_early_eqsym[sym][i] *= std::exp(gr_complex(0.0f, delta_phase));
+                    }
+                }
+
+                // Diagnostic dump (flood-gated to first 10 frames, atomic snprintf).
+                if (d_log_timing_offset_dump) {
+                    static int g_delta_dump_counter = 0;
+                    if (g_delta_dump_counter < 10) {
+                        char delta_buf[256];
+                        snprintf(delta_buf, sizeof(delta_buf),
+                                 "[DELTA_DUMP] counter=%d delta=%.4f (k/64=%d) "
+                                 "|H|mean=%.3f valid_lsig=%d valid_htsig0=%d valid_htsig1=%d\n",
+                                 d_internal_symbol_counter, delta,
+                                 (int)std::round(delta * 64.0f), std::abs(Hhdr52[26]),
+                                 d_early_eqsym_valid[kLSigRel] ? 1 : 0,
+                                 d_early_eqsym_valid[kHtSig0Rel] ? 1 : 0,
+                                 d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
+                        USRP_LOG("%s", delta_buf);
+                        g_delta_dump_counter++;
+                    }
+                }
             }
 
             bool found = false;
