@@ -29,14 +29,25 @@
 using namespace gr::ieee802_11;
 using namespace std;
 
-// FFT window timing experiment (Phase 3, 2026-06-11):
-// d_frame_start is hardcoded to 160 in two paths (see below). To test whether
-// sub-sample timing is the source of L-LTF0 FFT corruption (per-frame std
-// 12.7x loopback), allow opt-in adjustment via env var.
-// Default offset=0 preserves the current behavior (160).
-// Usage: IEEE80211_FRAME_START_OFFSET=N (N can be negative, e.g., -2, +1).
-// See: docs/superpowers/notes/2026-06-11-stage1-reorganized-verdict.md
-static const int FRAME_START_BASE = 160;
+// L-LTF0 FFT window timing (Phase 32+, 2026-06-18):
+// Phase 32 investigation discovered the FFT window for L-LTF0 was positioned
+// 14 samples BEFORE the actual L-LTF data start, causing saved_ltf0_fft to
+// show an 8-DPSK phase pattern instead of the expected real ±1 BPSK
+// (LEGACY_LTF). FRAME_START_BASE=174 positions the FFT window at the L-LTF
+// DATA start (= 160 L-LTF START + 16 GI). In sync_long's input stream the
+// sync short already consumes 320 samples (2 L-STF repetitions), so the
+// offset 174 from the post-skip origin lands the FFT at the correct place.
+//
+// Empirically verified with FRAME_START_BASE=174 (offset=0):
+//   - LTF0_FFT_DUMP: arg(LLTF) = 0/π exactly (perfect BPSK), was 8-DPSK
+//   - H52_DUMP: arg(H) std = 0.0000 (was 1.8647), all 52 SCs |H|=8.875, arg(H)=0
+//   - Loopback FCS OK=1, no regression
+//
+// IEEE80211_FRAME_START_OFFSET env var still works for fine-tuning
+// (N can be negative or positive, e.g., -2, +1); default offset=0 means
+// d_frame_start=174.
+// See: project_p32_h52_e2e_vs_offline.md
+static const int FRAME_START_BASE = 174;
 static int g_frame_start_offset = 0;
 static bool g_frame_start_offset_inited = false;
 
@@ -543,15 +554,15 @@ public:
             int offset_compensation = 13;
             d_frame_start = best_ht_lower_peak + 1 - offset_compensation;
             if (d_frame_start < 0) d_frame_start = 0;
-            // CRITICAL FIX: Force d_frame_start=160 for all frames. Frame 1 works
-            // perfectly with d_frame_start=160 (LTF_CORR=0.9990). Frame 2+ have
+            // CRITICAL FIX: Force d_frame_start=174 for all frames. Frame 1 works
+            // perfectly with d_frame_start=174 (LTF_CORR=0.9990). Frame 2+ have
             // correlation peaks shifted by L-STF interference (lower_peak=199-201
             // instead of 172). The preamble structure is identical for all frames;
             // L-LTF0 DATA should always start at the same relative offset within
             // the SYNC window. With SPLITTER using tag_abs_pos+16, d_frame_start
             // must be constant for correct alignment.
             int fs_offset = get_frame_start_offset();
-            if (d_frame_start != 160 || fs_offset != 0) {
+            if (d_frame_start != 174 || fs_offset != 0) {
                 int target = FRAME_START_BASE + fs_offset;
                 fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to %d (offset=%d)\n",
                         d_frame_start, target, fs_offset);
