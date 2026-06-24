@@ -2561,12 +2561,15 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     }
 
     // Phase 35: HT-SIG diagnostic dumps.
-    d_log_htsig_bin      = (std::getenv("IEEE80211_HTSIG_BIN_DUMP")      && std::getenv("IEEE80211_HTSIG_BIN_DUMP")[0]      == '1');
-    d_log_htsig_pilot    = (std::getenv("IEEE80211_HTSIG_PILOT_DUMP")    && std::getenv("IEEE80211_HTSIG_PILOT_DUMP")[0]    == '1');
-    d_log_htsig_eq_input = (std::getenv("IEEE80211_HTSIG_EQ_INPUT_DUMP") && std::getenv("IEEE80211_HTSIG_EQ_INPUT_DUMP")[0] == '1');
-    if (d_log_htsig_bin)      std::cout << "[FRAME_EQ] IEEE80211_HTSIG_BIN_DUMP=1\n";
-    if (d_log_htsig_pilot)    std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_DUMP=1\n";
-    if (d_log_htsig_eq_input) std::cout << "[FRAME_EQ] IEEE80211_HTSIG_EQ_INPUT_DUMP=1\n";
+    // BIN_DUMP and PILOT_DUMP: two layers of the HT-SIG chain (raw FFT
+    // bins post-extract/post-rotation; 4 pilot phases). EQ_INPUT_DUMP
+    // removed per code review (was no-op duplicate of BIN_DUMP at the
+    // counter=4 site). If a distinct layer dump is needed later, add
+    // it back at the post-extract pre-rotation site.
+    d_log_htsig_bin   = (std::getenv("IEEE80211_HTSIG_BIN_DUMP")   && std::getenv("IEEE80211_HTSIG_BIN_DUMP")[0]   == '1');
+    d_log_htsig_pilot = (std::getenv("IEEE80211_HTSIG_PILOT_DUMP") && std::getenv("IEEE80211_HTSIG_PILOT_DUMP")[0] == '1');
+    if (d_log_htsig_bin)   std::cout << "[FRAME_EQ] IEEE80211_HTSIG_BIN_DUMP=1\n";
+    if (d_log_htsig_pilot) std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_DUMP=1\n";
 
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
@@ -3915,7 +3918,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Fires at counter=4 (HT-SIG1 captured) AFTER CFO+SFO+delta correction
                 // has been applied to d_early_eqsym[3] and d_early_eqsym[4].
                 // Dumps pre-rotation FFT bins and pilot phases for layer diagnosis.
-                if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot || d_log_htsig_eq_input)) {
+                if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot)) {
                     static int g_htsig_dump_counter = 0;
                     if (g_htsig_dump_counter < 10) {
                         if (d_log_htsig_bin && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
@@ -3936,43 +3939,39 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                     d_early_eqsym[4][i].imag(),
                                     (i < 51) ? ',' : ']');
                             }
-                            USRP_LOG("%s]\n", htbuf);
+                            USRP_LOG("%s\n", htbuf);
                         }
                         if (d_log_htsig_pilot && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
+                            // Phase 35 review fix (Issue 1): guard NaN risk on
+                            // std::arg(0). On USRP, |H| at pilots can drop to
+                            // 0.02-0.13 (Phase 31b); atan2(0,0) is
+                            // implementation-defined and may yield NaN, which
+                            // chokes the Python parser. Output NaN sentinel
+                            // when |H| < 1e-3.
+                            auto safe_arg = [](const gr_complex& c) -> float {
+                                return (std::abs(c) > 1e-3f) ? std::arg(c)
+                                                             : std::numeric_limits<float>::quiet_NaN();
+                            };
                             char pbuf[256];
                             snprintf(pbuf, sizeof(pbuf),
                                 "[HTSIG_PILOT_DUMP] counter=4 frame=%d "
                                 "htsig0_pilots=arg[%.3f,%.3f,%.3f,%.3f] "
                                 "htsig1_pilots=arg[%.3f,%.3f,%.3f,%.3f]\n",
                                 g_htsig_dump_counter,
-                                std::arg(d_early_eqsym[3][48]), std::arg(d_early_eqsym[3][49]),
-                                std::arg(d_early_eqsym[3][50]), std::arg(d_early_eqsym[3][51]),
-                                std::arg(d_early_eqsym[4][48]), std::arg(d_early_eqsym[4][49]),
-                                std::arg(d_early_eqsym[4][50]), std::arg(d_early_eqsym[4][51]));
+                                safe_arg(d_early_eqsym[3][48]), safe_arg(d_early_eqsym[3][49]),
+                                safe_arg(d_early_eqsym[3][50]), safe_arg(d_early_eqsym[3][51]),
+                                safe_arg(d_early_eqsym[4][48]), safe_arg(d_early_eqsym[4][49]),
+                                safe_arg(d_early_eqsym[4][50]), safe_arg(d_early_eqsym[4][51]));
                             USRP_LOG("%s", pbuf);
                         }
-                        if (d_log_htsig_eq_input && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
-                            // At counter=4, d_early_eqsym[3,4] already have CFO+SFO+delta applied.
-                            // EQ_INPUT_DUMP = BIN_DUMP at this site (documented in plan).
-                            char ebuf[4096];
-                            int n = 0;
-                            n += snprintf(ebuf + n, sizeof(ebuf) - n,
-                                "[HTSIG_EQ_INPUT_DUMP] counter=4 frame=%d eq_htsig0=[", g_htsig_dump_counter);
-                            for (int i = 0; i < 52; i++) {
-                                n += snprintf(ebuf + n, sizeof(ebuf) - n, "%.3f%+.3fi%c",
-                                    d_early_eqsym[3][i].real(),
-                                    d_early_eqsym[3][i].imag(),
-                                    (i < 51) ? ',' : ']');
-                            }
-                            n += snprintf(ebuf + n, sizeof(ebuf) - n, " eq_htsig1=[");
-                            for (int i = 0; i < 52; i++) {
-                                n += snprintf(ebuf + n, sizeof(ebuf) - n, "%.3f%+.3fi%c",
-                                    d_early_eqsym[4][i].real(),
-                                    d_early_eqsym[4][i].imag(),
-                                    (i < 51) ? ',' : ']');
-                            }
-                            USRP_LOG("%s]\n", ebuf);
-                        }
+                        // Phase 35 review fix (Issue 2): EQ_INPUT_DUMP removed.
+                        // At counter=4, d_early_eqsym[3,4] already have
+                        // CFO+SFO+delta applied, so dumping here would
+                        // duplicate BIN_DUMP and waste the 10-frame
+                        // flood-gate budget. If a distinct layer dump is
+                        // needed later, add it at the post-extract
+                        // pre-rotation site (different memory, distinct
+                        // dump semantics).
                         g_htsig_dump_counter++;
                     }
                 }

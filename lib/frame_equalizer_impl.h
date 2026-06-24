@@ -102,17 +102,16 @@ private:
     bool d_log_h52_input;
 
     // HT-SIG diagnostic dumps (Phase 35): when true, dumps HT-SIG0/1
-    // FFT bins and pilot phases for offline analysis. Three independent
-    // env-vars targeting three layers of the HT-SIG chain:
+    // FFT bins and pilot phases for offline analysis. Two independent
+    // env-vars targeting two layers of the HT-SIG chain:
     //   HTSIG_BIN_DUMP: raw FFT bins (post-extract, post-rotation at counter=4)
     //   HTSIG_PILOT_DUMP: 4 pilot phases
-    //   HTSIG_EQ_INPUT_DUMP: same as BIN_DUMP at counter=4 (placeholder;
-    //     will be repositioned if needed for layer diagnosis)
+    // (HTSIG_EQ_INPUT_DUMP was removed per code review — it was a
+    // no-op duplicate of BIN_DUMP at the counter=4 site.)
     // All flood-gated to first 10 frames per run.
     // Default OFF. Enable via env var IEEE80211_<NAME>=1.
     bool d_log_htsig_bin;
     bool d_log_htsig_pilot;
-    bool d_log_htsig_eq_input;
 
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
