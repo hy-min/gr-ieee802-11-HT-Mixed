@@ -157,3 +157,93 @@ if __name__ == "__main__":
     test_make_known_htsig_bits_case_b()
     test_make_known_htsig_bits_case_c()
     print("\nHT-SIG bit synthesis tests passed (3/3).")
+
+
+# ============================================================
+# BCC encoder: rate 1/2, K=7, polynomials 133 (octal) and 171 (octal)
+# Mirrors `viterbi_decode_133_171` companion in C++.
+# ============================================================
+def bcc_encode_24(bits24):
+    """Encode 24 input bits into 48 coded bits using K=7 rate 1/2 BCC.
+
+    Polynomials: G0 = 133 (octal) = 1011011, G1 = 171 (octal) = 1111001
+    Trellis starts in state 0 and is forced to state 0 at the end via
+    6 tail bits (input forcing). Caller is responsible for ensuring the
+    input already contains the 6 tail bits at positions 18..23 (already
+    the case in our 48-bit HT-SIG layout — bits 42..47 are tail, which
+    are 6 zeros, so the last 6 input bits to BCC are also zeros).
+    """
+    assert len(bits24) == 24
+    # Convert octal polynomials to bit masks
+    g0 = 0o133  # = 91
+    g1 = 0o171  # = 121
+    state = 0   # K=7 shift register, 6-bit state
+    out = np.zeros(48, dtype=np.uint8)
+    for t in range(24):
+        # Shift in current input bit as MSB
+        reg = ((state << 1) | int(bits24[t])) & 0x7F
+        o0 = bin(reg & g0).count("1") & 1
+        o1 = bin(reg & g1).count("1") & 1
+        out[2 * t] = o0
+        out[2 * t + 1] = o1
+        state = reg & 0x3F  # keep last 6 bits
+    return out
+
+
+# ============================================================
+# HT-SIG interleaver per IEEE 802.11n Table 18-6 (depth-2, BPSK)
+# Forward: j = 3*(k%16) + k/16  (k in 0..47)
+# Deinterleaver uses the same formula (since 2nd permutation is identity for BPSK).
+# ============================================================
+def htsig_interleave(bits48):
+    """Apply the 802.11n HT-SIG interleaver permutation."""
+    assert len(bits48) == 48
+    out = np.zeros(48, dtype=np.uint8)
+    for k in range(48):
+        j = 3 * (k % 16) + k // 16
+        out[j] = bits48[k] & 1
+    return out
+
+
+def htsig_deinterleave(bits48):
+    """Inverse of htsig_interleave. Since the permutation is its own
+    inverse for this particular j mapping, we apply the same formula."""
+    return htsig_interleave(bits48)
+
+
+# ============================================================
+# BPSK + QBPSK modulation: bits 0 -> -j, bits 1 -> +j
+# (mirrors line 2054 in frame_equalizer_impl.cc: bit on IMAG axis)
+# ============================================================
+def bpsk_qbpsk_modulate(coded_bits):
+    """Map coded bits to complex symbols with QBPSK rotation.
+
+    bit 0 -> -j (imag < 0)
+    bit 1 -> +j (imag >= 0)
+    Returns 48-element complex64 array.
+    """
+    assert len(coded_bits) == 48
+    syms = np.empty(48, dtype=np.complex64)
+    for i in range(48):
+        syms[i] = 1j if coded_bits[i] else -1j
+    return syms
+
+
+# ============================================================
+# Pilot insertion at SCs {-21, -7, 7, 21} (bins 48..51 in 52-order)
+# Pilot sign: kHtPilotPolarity127[data_sym_idx % 127], flipped for pilot_idx==3
+# Pilots are on IMAG axis (QBPSK): pilot_value = sign * j
+# ============================================================
+def insert_ht_pilots(data48_syms, data_sym_idx):
+    """Insert 4 pilots into a 52-SC array. data48_syms[i] for i in 0..47.
+    Pilots occupy bins 48..51 (SC indices -21, -7, +7, +21)."""
+    assert len(data48_syms) == 48
+    p = int(K_HT_PILOT_POLARITY_127[data_sym_idx % 127])
+    out = np.empty(52, dtype=np.complex64)
+    out[:48] = data48_syms
+    # Pilot polarity: pilots 0,1,2 use +p, pilot 3 uses -p
+    out[48] = 1j * p       # SC -21
+    out[49] = 1j * p       # SC -7
+    out[50] = 1j * p       # SC +7
+    out[51] = -1j * p      # SC +21
+    return out
