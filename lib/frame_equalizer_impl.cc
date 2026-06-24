@@ -282,6 +282,64 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
     return std::arg(acc);
 }
 
+// Phase 36: estimate per-symbol per-SC phase (a, b) from HT-SIG pilots.
+// Uses ht_expected_pilot polarity-aware helper. Linear regression on
+// (sc_index, channel_phase) over the 4 pilots. Returns true if at least
+// 2 valid pilots contributed; false otherwise.
+//
+//   channel_phase[sc] = a + b * sc
+//   rx_pilot[bin] = expected_pilot * H * exp(j * (a + b * sc))
+//   ⇒ arg(rx_pilot * conj(expected)) = channel_phase
+//
+// In practice:
+//   For each pilot i:
+//     expected = ht_expected_pilot(sym_idx, i)  // ±1 with polarity
+//     eq_pilot = rx52[bin_i] / H52[bin_i]        // equalized
+//     channel_phase_i = arg(eq_pilot * conj(expected))
+//   Linear fit: (a, b) = polyfit(kPilot4Sc, channel_phase, 1)
+//
+// `rx52` and `H52` are in 52-bin TX-order where bin indices 48..51
+// are pilots at SCs -21, -7, 7, 21 (matches kPilot4Sc order).
+static bool estimate_htsig_pilot_persc(const gr_complex* rx52,
+                                       const gr_complex* H52,
+                                       int sym_idx,
+                                       float& out_a,
+                                       float& out_b) {
+    // Per-pilot channel phase accumulator (for linear regression).
+    double sum_sc = 0.0, sum_sc2 = 0.0;
+    double sum_phi = 0.0, sum_sc_phi = 0.0;
+    int n_valid = 0;
+    for (int i = 0; i < 4; i++) {
+        const int sc = kPilot4Sc[i];          // -21, -7, 7, 21
+        const int bin = 48 + i;                // bin 48..51 in 52-bin order
+        const gr_complex& h = H52[bin];
+        const gr_complex& rx = rx52[bin];
+        if (std::abs(h) < 1e-3f || std::abs(rx) < 1e-3f) {
+            continue;  // skip null pilots
+        }
+        const gr_complex expected = ht_expected_pilot(sym_idx, i);
+        const gr_complex eq = rx / h;             // equalized symbol
+        const gr_complex phase_c = eq * std::conj(expected);
+        // Channel phase at this pilot's SC.
+        const float phi = std::arg(phase_c);
+        sum_sc += sc;
+        sum_sc2 += (double)sc * sc;
+        sum_phi += phi;
+        sum_sc_phi += (double)sc * phi;
+        n_valid++;
+    }
+    if (n_valid < 2) {
+        return false;  // need at least 2 points for linear fit
+    }
+    const double denom = (double)n_valid * sum_sc2 - sum_sc * sum_sc;
+    if (std::abs(denom) < 1e-6) {
+        return false;  // all pilots at same SC (shouldn't happen)
+    }
+    out_b = (float)(((double)n_valid * sum_sc_phi - sum_sc * sum_phi) / denom);
+    out_a = (float)((sum_phi - out_b * sum_sc) / n_valid);
+    return true;
+}
+
 // Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
