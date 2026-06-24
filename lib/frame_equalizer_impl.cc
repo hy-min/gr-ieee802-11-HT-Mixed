@@ -2571,6 +2571,18 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     if (d_log_htsig_bin)   std::cout << "[FRAME_EQ] IEEE80211_HTSIG_BIN_DUMP=1\n";
     if (d_log_htsig_pilot) std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_DUMP=1\n";
 
+    // Phase 35 Task 7c: per-symbol pilot CPE on HT-SIG0/HT-SIG1.
+    // Pilots at bins {48,49,50,51} (SCs {-21,-7,7,21}). Per-symbol,
+    // averages arg(pilot) over the 4 pilots and rotates all 52 bins of
+    // that symbol by exp(-j*phi). Cancels per-symbol phase drift that
+    // Phase 34 δ correction (constant per frame) cannot reach. Default OFF.
+    // Enable via IEEE80211_HTSIG_PILOT_CPE=1.
+    const char* env_hpc = std::getenv("IEEE80211_HTSIG_PILOT_CPE");
+    d_apply_htsig_pilot_cpe = (env_hpc && env_hpc[0] == '1');
+    if (d_apply_htsig_pilot_cpe) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_CPE=1 (HT-SIG pilot-aided CPE ENABLED)\n";
+    }
+
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
     // error rotates BPSK constellation, causing viterbi_fail. Dump the
@@ -3912,6 +3924,39 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 int start_rot = 0;
                 if (energy_rot != detected_rot && energy_rot == 1) {
                     start_rot = energy_rot;
+                }
+
+                // Phase 35 Task 7c: per-symbol pilot-aided CPE on HT-SIG0/HT-SIG1.
+                // 4 pilots at bins {48,49,50,51} map to SCs {-21,-7,7,21}.
+                // Average their phase per symbol, then rotate that symbol's
+                // 52 bins by exp(-j*phi). Cancels per-symbol phase drift
+                // that δ correction (constant per frame) cannot reach.
+                // Gated on |bin| > 1e-3 to avoid NaN from arg(0). Applied
+                // BEFORE the diagnostic dump and the rotation block so that
+                // both downstream consumers see the corrected state.
+                if (d_apply_htsig_pilot_cpe &&
+                    d_early_eqsym_valid[kHtSig0Rel] && d_early_eqsym_valid[kHtSig1Rel]) {
+                    static const int kPilotBins[4] = {48, 49, 50, 51};
+                    auto apply_pilot_cpe = [](gr_complex* eqsym52, const int* pilot_bins) {
+                        double sum_arg = 0.0;
+                        int n_valid = 0;
+                        for (int p = 0; p < 4; p++) {
+                            const gr_complex& c = eqsym52[pilot_bins[p]];
+                            if (std::abs(c) > 1e-3f) {
+                                sum_arg += std::arg(c);
+                                n_valid++;
+                            }
+                        }
+                        if (n_valid == 0) return;  // skip if all pilots are null
+                        float phi = (float)(sum_arg / n_valid);
+                        gr_complex rot = std::exp(gr_complex(0.0f, -phi));
+                        for (int i = 0; i < 52; i++) {
+                            eqsym52[i] *= rot;
+                        }
+                    };
+                    apply_pilot_cpe(d_early_eqsym[kHtSig0Rel], kPilotBins);
+                    apply_pilot_cpe(d_early_eqsym[kHtSig1Rel], kPilotBins);
+                    USRP_LOG("[HTSIG_PILOT_CPE] applied per-symbol rotation\n");
                 }
 
                 // Phase 35: HT-SIG diagnostic dumps (flood-gated to first 10 frames).

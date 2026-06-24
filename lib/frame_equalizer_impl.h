@@ -113,6 +113,15 @@ private:
     bool d_log_htsig_bin;
     bool d_log_htsig_pilot;
 
+    // Phase 35 Task 7c: per-symbol pilot-aided CPE on HT-SIG0/HT-SIG1.
+    // Cancels per-symbol phase drift that the Phase 34 δ correction cannot
+    // reach (δ is constant per-frame; per-symbol drift varies between
+    // symbols). For each HT-SIG symbol, averages arg() over the 4 valid
+    // pilots at bins {48,49,50,51} (SCs {-21,-7,7,21}) and rotates all 52
+    // bins by exp(-j*phi). Default OFF. Enable via
+    // IEEE80211_HTSIG_PILOT_CPE=1.
+    bool d_apply_htsig_pilot_cpe;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the
