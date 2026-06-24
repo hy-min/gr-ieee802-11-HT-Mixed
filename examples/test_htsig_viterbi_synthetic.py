@@ -185,39 +185,48 @@ def bcc_encode_24(bits24):
 
 # ============================================================
 # HT-SIG interleaver per IEEE 802.11n Table 18-6 (depth-2, BPSK)
-# Forward (TX side):  j = 16*(k%3) + k//3
-# Deinterleaver (RX): j = 3*(k%16)  + k//16
-# These ARE inverses (round-trip identity). The 2nd permutation step in the
-# IEEE spec is omitted here because it is identity for BPSK (N_BPSC=1).
+# Both TX forward and RX deinterleaver use the SAME permutation:
+#   j = 3*(k%16) + k//16
+# but with OPPOSITE read/write semantics:
+#   TX forward (lib/utils.cc:382-386):       out[j(k)] = in[k]   (write to j, read from k)
+#   RX deinterleaver (frame_equalizer_impl.cc:2159-2166): out[k] = in[j(k)]  (write to k, read from j)
+# These compose to a round-trip identity.
+# The 2nd permutation step in the IEEE spec is omitted here because it is
+# identity for BPSK (N_BPSC=1).
 # ============================================================
 def htsig_interleave(bits48):
     """Apply the 802.11n HT-SIG forward interleaver permutation.
 
-    Per IEEE 802.11n Table 18-6 (N_COL=16, N_ROW=3, BPSK, N_CBPS=48):
-        j = 16 * (k % 3) + k // 3
+    Mirrors the C++ TX in `lib/utils.cc:382-386` (n_col=16, n_row=3, BPSK, s=1):
+        j = 3 * (k % 16) + k // 16
+        out[j] = in[k]
+    So bit at input position k goes to output position j(k) = 3*(k%16) + k//16.
     """
     assert len(bits48) == 48
     out = np.zeros(48, dtype=np.uint8)
     for k in range(48):
-        j = 16 * (k % 3) + k // 3
+        j = 3 * (k % 16) + k // 16
         out[j] = bits48[k] & 1
     return out
 
 
 def htsig_deinterleave(bits48):
-    """Inverse of htsig_interleave (per IEEE 802.11n Table 18-6).
+    """Inverse of htsig_interleave.
 
-    Per IEEE 802.11n Table 18-6 (N_COL=16, N_ROW=3):
-        j = 3 * (k % 16) + k // 16
+    Mirrors the C++ RX in `lib/frame_equalizer_impl.cc:2159-2166`:
+        for k in 0..47:
+            j = 3 * (k % 16) + k // 16
+            out[k] = in[j]
+    So bit at output position k comes from input position j(k) = 3*(k%16) + k//16.
 
-    Note: the 2nd permutation step in the IEEE spec is omitted for BPSK
-    (the second permutation is identity for N_BPSC=1).
+    Round-trip identity: htsig_deinterleave(htsig_interleave(x)) == x
+    because the same formula is used for both but with opposite read/write.
     """
     assert len(bits48) == 48
     out = np.zeros(48, dtype=np.uint8)
     for k in range(48):
         j = 3 * (k % 16) + k // 16
-        out[j] = bits48[k] & 1
+        out[k] = bits48[j] & 1
     return out
 
 
