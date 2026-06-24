@@ -192,23 +192,40 @@ def bcc_encode_24(bits24):
 
 # ============================================================
 # HT-SIG interleaver per IEEE 802.11n Table 18-6 (depth-2, BPSK)
-# Forward: j = 3*(k%16) + k/16  (k in 0..47)
-# Deinterleaver uses the same formula (since 2nd permutation is identity for BPSK).
+# Forward (TX side):  j = 16*(k%3) + k//3
+# Deinterleaver (RX): j = 3*(k%16)  + k//16
+# These ARE inverses (round-trip identity). The 2nd permutation step in the
+# IEEE spec is omitted here because it is identity for BPSK (N_BPSC=1).
 # ============================================================
 def htsig_interleave(bits48):
-    """Apply the 802.11n HT-SIG interleaver permutation."""
+    """Apply the 802.11n HT-SIG forward interleaver permutation.
+
+    Per IEEE 802.11n Table 18-6 (N_COL=16, N_ROW=3, BPSK, N_CBPS=48):
+        j = 16 * (k % 3) + k // 3
+    """
+    assert len(bits48) == 48
+    out = np.zeros(48, dtype=np.uint8)
+    for k in range(48):
+        j = 16 * (k % 3) + k // 3
+        out[j] = bits48[k] & 1
+    return out
+
+
+def htsig_deinterleave(bits48):
+    """Inverse of htsig_interleave (per IEEE 802.11n Table 18-6).
+
+    Per IEEE 802.11n Table 18-6 (N_COL=16, N_ROW=3):
+        j = 3 * (k % 16) + k // 16
+
+    Note: the 2nd permutation step in the IEEE spec is omitted for BPSK
+    (the second permutation is identity for N_BPSC=1).
+    """
     assert len(bits48) == 48
     out = np.zeros(48, dtype=np.uint8)
     for k in range(48):
         j = 3 * (k % 16) + k // 16
         out[j] = bits48[k] & 1
     return out
-
-
-def htsig_deinterleave(bits48):
-    """Inverse of htsig_interleave. Since the permutation is its own
-    inverse for this particular j mapping, we apply the same formula."""
-    return htsig_interleave(bits48)
 
 
 # ============================================================
