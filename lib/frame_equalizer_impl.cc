@@ -237,6 +237,14 @@ static constexpr int kPilot4Sc[4] = { -21, -7, 7, 21 };
 // SC -21 → bin 43, SC -7 → bin 57, SC +7 → bin 7, SC +21 → bin 21
 static constexpr int kPilot4Bin[4] = { 43, 57, 7, 21 };
 
+// EXPLICIT FFT bin mapping for 52 active subcarriers (SC → bin index in
+// 52-bin TX order, including pilots at the end).
+static constexpr int kScIndex52[52] = {
+    -26,-25,-24,-23,-22,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
+    -6,-5,-4,-3,-2,-1,1,2,3,4,5,6,8,9,10,11,12,13,14,15,16,17,18,19,
+    20,22,23,24,25,26,-21,-7,7,21
+};
+
 static constexpr int kHtPilotPolarity127[127] = {
     1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, -1, 1, 1, -1, 1, -1, -1, 1, 1,
     -1, 1, 1, -1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, -1, -1, 1, 1, 1,
@@ -841,16 +849,6 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
 // USRP frames. Loopback has δ=0 always (no air path).
 static float estimate_timing_offset_from_h52(const gr_complex* H52)
 {
-    static const int kScIndex52[52] = {
-        -26,-25,-24,-23,-22,
-        -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
-        -6,-5,-4,-3,-2,-1,
-        1,2,3,4,5,6,
-        8,9,10,11,12,13,
-        14,15,16,17,18,19,
-        20,22,23,24,25,26,
-        -21,-7,7,21
-    };
     double sum_sc = 0.0, sum_sc2 = 0.0, sum_arg = 0.0, sum_sc_arg = 0.0;
     double sum_w = 0.0;
     for (int i = 0; i < 52; i++) {
@@ -3179,19 +3177,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
         // Use d_internal_symbol_counter for symbol type determination
         // d_sym_idx may be out of sync due to 'continue' path skipping its increment
         if (d_internal_symbol_counter >= 0 && d_internal_symbol_counter < 8) {
-            // Subcarrier index mapping for 52 active SCs. Defined here (not in the
-            // narrower CFO/SFO estimation block below) so that the Phase 34
-            // δ-correction path can reuse it.
-            static const int kScIndex52[52] = {
-                -26,-25,-24,-23,-22,  // i=0..4
-                -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,  // i=5..17
-                -6,-5,-4,-3,-2,-1,  // i=18..23
-                1,2,3,4,5,6,  // i=24..29
-                8,9,10,11,12,13,  // i=30..35
-                14,15,16,17,18,19,  // i=36..41
-                20,22,23,24,25,26,  // i=42..47
-                -21,-7,7,21  // i=48..51 (pilots)
-            };
             // Use d_internal_symbol_counter for array indexing - it tracks actual symbol count
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
@@ -3843,16 +3828,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Retroactive correction to L-SIG (counter=2), HT-SIG0 (counter=3),
                 // HT-SIG1 (counter=4). All three have already had CFO+SFO rotation
                 // applied at line 3034-3039. We are removing the δ contribution.
-                static const int kScIndex52[52] = {
-                    -26,-25,-24,-23,-22,
-                    -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,
-                    -6,-5,-4,-3,-2,-1,
-                    1,2,3,4,5,6,
-                    8,9,10,11,12,13,
-                    14,15,16,17,18,19,
-                    20,22,23,24,25,26,
-                    -21,-7,7,21
-                };
                 for (int sym = kLSigRel; sym <= kHtSig1Rel; sym++) {
                     if (!d_early_eqsym_valid[sym]) continue;
                     for (int i = 0; i < 52; i++) {
@@ -4032,22 +4007,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // the diagnostic dump so dumps show post-CPE state.
                 if (d_apply_htsig_pilot_persc &&
                     d_early_eqsym_valid[kHtSig0Rel] && d_early_eqsym_valid[kHtSig1Rel]) {
-                    // kScIndex52 declared at line 3185 is in a narrower scope
-                    // (d_internal_symbol_counter range check); redeclare here.
-                    static const int kScIndex52[52] = {
-                        -26,-25,-24,-23,-22,  // i=0..4
-                        -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,  // i=5..17
-                        -6,-5,-4,-3,-2,-1,  // i=18..23
-                        1,2,3,4,5,6,  // i=24..29
-                        8,9,10,11,12,13,  // i=30..35
-                        14,15,16,17,18,19,  // i=36..41
-                        20,22,23,24,25,26,  // i=42..47
-                        -21,-7,7,21  // i=48..51 (pilots)
-                    };
                     auto apply_persc = [&](gr_complex* eqsym52, int sym_idx) {
                         float a = 0.0f, b = 0.0f;
                         if (!estimate_htsig_pilot_persc(eqsym52, Hhdr52, sym_idx, a, b)) {
                             return;  // not enough valid pilots, skip
+                        }
+                        // Defensive: if helper returned true but a/b are not finite, skip
+                        // (could happen if upstream arg() returns NaN despite magnitude gate).
+                        if (!std::isfinite(a) || !std::isfinite(b)) {
+                            return;
                         }
                         // Apply per-SC rotation: exp(-j·(a + b·sc_index)) for each bin.
                         for (int i = 0; i < 52; i++) {
@@ -4058,8 +4026,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         // sync_short stdout shredding, per Phase 9 lesson).
                         char pcbuf[256];
                         snprintf(pcbuf, sizeof(pcbuf),
-                                 "[HTSIG_PILOT_PERSC] sym=%d a=%.4f b=%.6f sc_range=[-26,26]\n",
-                                 sym_idx, a, b);
+                                 "[HTSIG_PILOT_PERSC] sym=%d a=%.4f b=%.6f sc_range=[%d,%d]\n",
+                                 sym_idx, a, b, kScIndex52[0], kScIndex52[51]);
                         USRP_LOG("%s", pcbuf);
                     };
                     apply_persc(d_early_eqsym[kHtSig0Rel], /*sym_idx*/ 0);
