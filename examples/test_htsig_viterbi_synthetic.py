@@ -558,10 +558,82 @@ def test_layer1_clean():
     print(f"[PASS] Layer 1 clean: {passed}/3")
 
 
+# ============================================================
+# Carrier Frequency Offset (CFO) impairment.
+# Apply as per-SC phase rotation: each SC sees exp(j*2π*f_cfo*sc/(sample_rate*n_fft))
+# where sc is the SC index. CFO is the same for both symbols in this model
+# (a static coherent rotation), plus an additional time-variation between
+# HT-SIG0 (counter=0) and HT-SIG1 (counter=1, 4 µs later).
+# ============================================================
+def apply_cfo_per_sc(sc52, cfo_hz, sample_rate=20e6):
+    """Apply CFO as a per-SC phase rotation. Counter=0 for HT-SIG0."""
+    n_fft = 64
+    ts = 1.0 / sample_rate  # 50 ns
+    phase_per_sc = 2 * np.pi * cfo_hz * K_SC_INDEX_52.astype(np.float64) * ts
+    return sc52 * np.exp(1j * phase_per_sc).astype(np.complex64)
+
+
+def synth_and_decode_with_cfo(case_name, cfo_hz, **case_kwargs):
+    """Same as Layer 1 but inject CFO between HT-SIG0 and HT-SIG1."""
+    bits48_tx = make_known_htsig_bits(**case_kwargs)
+    coded96 = _bcc_encode_48(bits48_tx)
+    coded0 = coded96[0:48]
+    coded1 = coded96[48:96]
+    intl0 = htsig_interleave(coded0)
+    intl1 = htsig_interleave(coded1)
+    syms0 = bpsk_qbpsk_modulate(intl0)
+    syms1 = bpsk_qbpsk_modulate(intl1)
+    sc52_0 = insert_ht_pilots(syms0, 0)
+    sc52_1 = insert_ht_pilots(syms1, 1)
+    if cfo_hz != 0:
+        sc52_0 = apply_cfo_per_sc(sc52_0, cfo_hz)
+        sc52_1 = apply_cfo_per_sc(sc52_1, cfo_hz)
+        # Add time-variation: HT-SIG1 is 4 µs after HT-SIG0
+        additional_phase = 2 * np.pi * cfo_hz * 4e-6
+        sc52_1 = sc52_1 * np.exp(1j * additional_phase).astype(np.complex64)
+    eq48_a = sc52_0[0:48]
+    eq48_b = sc52_1[0:48]
+    dec48, info = decode_htsig_attempt(eq48_a, eq48_b)
+    info["case"] = case_name
+    info["cfo_hz"] = cfo_hz
+    info["expected_mcs"] = case_kwargs.get("mcs", 0)
+    info["expected_length"] = case_kwargs.get("length", 100)
+    if dec48 is not None:
+        info["bit_match"] = bool(np.array_equal(dec48, bits48_tx))
+    return info
+
+
+def test_layer2_cfo():
+    """Layer 2: +CFO sweep. Expect 3/3 PASS at CFO <= 1 kHz."""
+    cases = [
+        ("A", {"mcs": 0, "length": 100, "sgi": 0, "ldpc": 0}),
+        ("B", {"mcs": 7, "length": 1000, "sgi": 1, "aggregation": 1}),
+        ("C", {"mcs": 0, "length": 10, "ldpc": 1}),
+    ]
+    cfo_values = [0, 100, 500, 1000, 5000]
+    results = {}  # {cfo: passed_count}
+    for cfo in cfo_values:
+        passed = 0
+        for name, kwargs in cases:
+            info = synth_and_decode_with_cfo(name, cfo, **kwargs)
+            if info.get("crc_ok") and info.get("bit_match"):
+                passed += 1
+        results[cfo] = passed
+        print(f"[INFO] Layer2/CFO={cfo}Hz: {passed}/3")
+    # Pass criterion: 3/3 PASS at CFO <= 1 kHz
+    assert results[0] == 3, f"Layer 2 CFO=0Hz must be 3/3, got {results[0]}/3"
+    assert results[100] == 3, f"Layer 2 CFO=100Hz must be 3/3, got {results[100]}/3"
+    assert results[500] == 3, f"Layer 2 CFO=500Hz must be 3/3, got {results[500]}/3"
+    assert results[1000] == 3, f"Layer 2 CFO=1000Hz must be 3/3, got {results[1000]}/3"
+    print(f"[PASS] Layer 2 +CFO: 3/3 PASS at CFO <= 1 kHz. "
+          f"5kHz result: {results[5000]}/3")
+
+
 if __name__ == "__main__":
     test_viterbi_encode_decode_roundtrip()
     test_make_known_htsig_bits_case_a()
     test_make_known_htsig_bits_case_b()
     test_make_known_htsig_bits_case_c()
     test_layer1_clean()
-    print("\nPhase 37 Layer 1 (clean) tests passed.")
+    test_layer2_cfo()
+    print("\nPhase 37 Layer 1+2 tests passed.")
