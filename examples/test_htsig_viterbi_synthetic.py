@@ -370,9 +370,198 @@ def _bcc_encode_30(bits30):
     return out
 
 
+# ============================================================
+# HT-SIG BCC encoder: encodes ALL 48 bits (42 info + 6 zero tail)
+# as one block, producing 96 coded bits. The 6 zero tail bits at
+# positions 42..47 force the encoder back to state 0, which is
+# required by the C++ viterbi (which prefers state-0 endpoints).
+#
+# Mirrors lib/signal_field_impl.cc:265-266:
+#   char encoded[96];
+#   convolutional_encoding(ht_bits, encoded, ht_frame);
+# ============================================================
+def _bcc_encode_48(bits48):
+    """Encode 48 input bits (42 info + 6 zero tail) into 96 coded bits.
+
+    The last 6 input bits MUST be zero (tail bits) to force the encoder
+    back to state 0. make_known_htsig_bits() already produces this format
+    (bits 42..47 are zero).
+    """
+    assert len(bits48) == 48
+    assert all(bits48[i] == 0 for i in range(42, 48)), \
+        "Last 6 bits must be zero (tail bits)"
+    g0 = 0o133  # 91
+    g1 = 0o171  # 121
+    state = 0
+    out = np.zeros(96, dtype=np.uint8)
+    for t in range(48):
+        reg = ((state << 1) | int(bits48[t])) & 0x7F
+        o0 = bin(reg & g0).count("1") & 1
+        o1 = bin(reg & g1).count("1") & 1
+        out[2 * t] = o0
+        out[2 * t + 1] = o1
+        state = reg & 0x3F
+    return out
+
+
+# ============================================================
+# QBPSK rotation candidates (4 rotations x inv_a x inv_b = 16 candidates).
+# QBPSK detection: E_Q > E_I rotates by 90 deg (-90, 0, +90, 180).
+# For an ideal test signal with known rotation=0, candidates with the wrong
+# rotation or wrong inversions will fail parity/CRC/tail checks.
+# ============================================================
+def slice_with_qbpsk_candidate(eq48_a, eq48_b, rot_idx, inv_a, inv_b):
+    """Apply QBPSK rotation + invert flags, return hard-decision bits
+    for each of the two halves.
+
+    rot_idx in {0, 1, 2, 3} mapping:
+      0: rotate by -90 deg  (mult by j)
+      1: rotate by 0 deg    (no rotation)
+      2: rotate by +90 deg  (mult by -j)
+      3: rotate by 180 deg  (mult by -1)
+    Then bit decision on IMAG axis: bit = (imag >= 0).
+    """
+    rot_phases = {0: 1j, 1: 1.0 + 0j, 2: -1j, 3: -1.0 + 0j}
+    rot = rot_phases[rot_idx]
+    eq48_a_r = eq48_a * rot
+    eq48_b_r = eq48_b * rot
+    bits_a = (eq48_a_r.imag >= 0).astype(np.uint8)
+    bits_b = (eq48_b_r.imag >= 0).astype(np.uint8)
+    if inv_a:
+        bits_a ^= 1
+    if inv_b:
+        bits_b ^= 1
+    return bits_a, bits_b
+
+
+def decode_htsig_attempt(eq48_a, eq48_b):
+    """Try all 16 QBPSK rotation candidates. Return (best_decoded48, info_dict)
+    or (None, info_dict) if all fail.
+
+    info_dict contains: best_metric, chosen_rot, chosen_inv_a, chosen_inv_b,
+    crc_ok (bool), fail_reason.
+    """
+    best = None
+    best_metric = 10**9
+    best_info = {"crc_ok": False, "fail_reason": "no_candidate"}
+    for rot_idx in range(4):
+        for inv_a in (False, True):
+            for inv_b in (False, True):
+                bits_a, bits_b = slice_with_qbpsk_candidate(
+                    eq48_a, eq48_b, rot_idx, inv_a, inv_b)
+                # Deinterleave each half
+                deint_a = htsig_deinterleave(bits_a)
+                deint_b = htsig_deinterleave(bits_b)
+                # Concatenate 96 bits
+                enc96 = np.concatenate([deint_a, deint_b])
+                # Viterbi decode
+                dec48, metric = viterbi_decode_133_171(enc96)
+                if dec48 is None or len(dec48) != 48:
+                    continue
+                # Validate tail + CRC
+                tail_ok = np.all(dec48[42:48] == 0)
+                crc_calc = _ht_crc8_compute(dec48[0:34])
+                crc_match = np.array_equal(crc_calc, dec48[34:42])
+                # bw40 and rsv must be 0
+                field_ok = (dec48[7] == 0 and np.all(dec48[24:27] == 0))
+                if tail_ok and crc_match and field_ok and metric < best_metric:
+                    best = dec48
+                    best_metric = metric
+                    best_info = {
+                        "crc_ok": True,
+                        "rot_idx": rot_idx,
+                        "inv_a": inv_a,
+                        "inv_b": inv_b,
+                        "metric": metric,
+                        "fail_reason": "OK",
+                    }
+    if best is None:
+        return None, best_info
+    return best, best_info
+
+
+# ============================================================
+# Layer 1: clean (no impairment). Ideal channel H = identity.
+# Synthesize -> modulate -> decode -> expect CRC OK + correct fields.
+# ============================================================
+def synth_and_decode_layer1(case_name, **case_kwargs):
+    """One Layer 1 test case. Returns dict with crc_ok, mcs, length, etc.
+
+    Mirrors the C++ flow at lib/signal_field_impl.cc:265-266 and
+    lib/frame_equalizer_impl.cc:2159-2171:
+      1. Encode 48 info+tail bits -> 96 coded bits
+      2. Split into [0:48] for HT-SIG0, [48:96] for HT-SIG1
+      3. Interleave each half (per IEEE 802.11n Table 18-6)
+      4. QBPSK modulate each half (bits on IMAG axis)
+      5. Insert pilots at SCs {-21, -7, 7, 21} with polarity
+      6. (No impairment in Layer 1)
+      7. Slice pilots out -> 48 data SCs per symbol
+      8. Try all 16 QBPSK + inversion candidates
+      9. Deinterleave each half, concatenate to 96 bits
+     10. Viterbi decode 96 bits -> 48 bits
+     11. Check tail + CRC8
+    """
+    bits48_tx = make_known_htsig_bits(**case_kwargs)
+    # Encode all 48 bits as one block (42 info + 6 zero tail)
+    coded96 = _bcc_encode_48(bits48_tx)
+    # Split for the two OFDM symbols
+    coded0 = coded96[0:48]    # HT-SIG0 coded bits
+    coded1 = coded96[48:96]   # HT-SIG1 coded bits
+    # Interleave each half
+    intl0 = htsig_interleave(coded0)
+    intl1 = htsig_interleave(coded1)
+    # QBPSK modulate
+    syms0 = bpsk_qbpsk_modulate(intl0)
+    syms1 = bpsk_qbpsk_modulate(intl1)
+    # Insert pilots (data_sym_idx 0 for HT-SIG0, 1 for HT-SIG1)
+    sc52_0 = insert_ht_pilots(syms0, 0)
+    sc52_1 = insert_ht_pilots(syms1, 1)
+    # Equalize: H = identity (ideal channel), so eq = rx directly.
+    # Also need to drop the pilot SCs to get back to 48-element arrays.
+    eq48_a = sc52_0[0:48]
+    eq48_b = sc52_1[0:48]
+    # Run the full decoder over 16 candidates
+    dec48, info = decode_htsig_attempt(eq48_a, eq48_b)
+    info["expected_mcs"] = case_kwargs.get("mcs", 0)
+    info["expected_length"] = case_kwargs.get("length", 100)
+    info["expected_agg"] = case_kwargs.get("aggregation", 0)
+    info["expected_sgi"] = case_kwargs.get("sgi", 0)
+    info["expected_ldpc"] = case_kwargs.get("ldpc", 0)
+    if dec48 is not None:
+        info["got_mcs"] = sum(int(dec48[i]) << i for i in range(7))
+        info["got_length"] = sum(int(dec48[8 + i]) << i for i in range(16))
+        info["got_agg"] = int(dec48[27])
+        info["got_sgi"] = int(dec48[31])
+        info["got_ldpc"] = int(dec48[30])
+        info["bit_match"] = bool(np.array_equal(dec48, bits48_tx))
+    return info
+
+
+def test_layer1_clean():
+    """Layer 1: clean (no impairment). 3/3 must PASS."""
+    cases = [
+        ("A", {"mcs": 0, "length": 100, "sgi": 0, "ldpc": 0}),
+        ("B", {"mcs": 7, "length": 1000, "sgi": 1, "aggregation": 1}),
+        ("C", {"mcs": 0, "length": 10, "ldpc": 1}),
+    ]
+    passed = 0
+    for name, kwargs in cases:
+        info = synth_and_decode_layer1(name, **kwargs)
+        if info.get("crc_ok") and info.get("bit_match"):
+            print(f"[PASS] Layer1/{name}: CRC OK, metric={info.get('metric')}, "
+                  f"mcs={info['got_mcs']}, length={info['got_length']}, "
+                  f"agg={info['got_agg']}, sgi={info['got_sgi']}, ldpc={info['got_ldpc']}")
+            passed += 1
+        else:
+            print(f"[FAIL] Layer1/{name}: {info}")
+    assert passed == 3, f"Layer 1: expected 3/3 PASS, got {passed}/3"
+    print(f"[PASS] Layer 1 clean: {passed}/3")
+
+
 if __name__ == "__main__":
     test_viterbi_encode_decode_roundtrip()
     test_make_known_htsig_bits_case_a()
     test_make_known_htsig_bits_case_b()
     test_make_known_htsig_bits_case_c()
-    print("\nHT-SIG bit synthesis tests passed (3/3).")
+    test_layer1_clean()
+    print("\nPhase 37 Layer 1 (clean) tests passed.")
