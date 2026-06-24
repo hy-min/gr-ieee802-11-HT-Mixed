@@ -4024,6 +4024,48 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     USRP_LOG("[HTSIG_PILOT_CPE] applied per-symbol rotation\n");
                 }
 
+                // Phase 36: per-SC linear fit on HT-SIG pilots. Captures per-SC
+                // phase variation that the per-symbol MEAN (above) cannot reach.
+                // For each symbol, recover (a, b) such that channel_phase(sc) ≈
+                // a + b·sc, then apply exp(-j·(a + b·sc)) per bin. Uses the same
+                // Hhdr52 channel estimate as the viterbi path. Inserted BEFORE
+                // the diagnostic dump so dumps show post-CPE state.
+                if (d_apply_htsig_pilot_persc &&
+                    d_early_eqsym_valid[kHtSig0Rel] && d_early_eqsym_valid[kHtSig1Rel]) {
+                    // kScIndex52 declared at line 3185 is in a narrower scope
+                    // (d_internal_symbol_counter range check); redeclare here.
+                    static const int kScIndex52[52] = {
+                        -26,-25,-24,-23,-22,  // i=0..4
+                        -20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,  // i=5..17
+                        -6,-5,-4,-3,-2,-1,  // i=18..23
+                        1,2,3,4,5,6,  // i=24..29
+                        8,9,10,11,12,13,  // i=30..35
+                        14,15,16,17,18,19,  // i=36..41
+                        20,22,23,24,25,26,  // i=42..47
+                        -21,-7,7,21  // i=48..51 (pilots)
+                    };
+                    auto apply_persc = [&](gr_complex* eqsym52, int sym_idx) {
+                        float a = 0.0f, b = 0.0f;
+                        if (!estimate_htsig_pilot_persc(eqsym52, Hhdr52, sym_idx, a, b)) {
+                            return;  // not enough valid pilots, skip
+                        }
+                        // Apply per-SC rotation: exp(-j·(a + b·sc_index)) for each bin.
+                        for (int i = 0; i < 52; i++) {
+                            const float ph = a + b * (float)kScIndex52[i];
+                            eqsym52[i] *= std::exp(gr_complex(0.0f, -ph));
+                        }
+                        // Atomic diagnostic (single snprintf + USRP_LOG to avoid
+                        // sync_short stdout shredding, per Phase 9 lesson).
+                        char pcbuf[256];
+                        snprintf(pcbuf, sizeof(pcbuf),
+                                 "[HTSIG_PILOT_PERSC] sym=%d a=%.4f b=%.6f sc_range=[-26,26]\n",
+                                 sym_idx, a, b);
+                        USRP_LOG("%s", pcbuf);
+                    };
+                    apply_persc(d_early_eqsym[kHtSig0Rel], /*sym_idx*/ 0);
+                    apply_persc(d_early_eqsym[kHtSig1Rel], /*sym_idx*/ 1);
+                }
+
                 // Phase 35: HT-SIG diagnostic dumps (flood-gated to first 10 frames).
                 // Fires at counter=4 (HT-SIG1 captured) AFTER CFO+SFO+delta correction
                 // has been applied to d_early_eqsym[3] and d_early_eqsym[4].
