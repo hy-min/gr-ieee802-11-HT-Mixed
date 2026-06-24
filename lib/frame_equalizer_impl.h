@@ -122,6 +122,12 @@ private:
     // IEEE80211_HTSIG_PILOT_CPE=1.
     bool d_apply_htsig_pilot_cpe;
 
+    // Phase 36: per-SC linear fit on HT-SIG pilots. Uses ht_expected_pilot
+    // polarity-aware helper + linear regression on (sc_index, channel_phase)
+    // to recover (a, b) coefficients. Replaces/supplements Phase 35 per-symbol
+    // mean. Default OFF.
+    bool d_apply_htsig_pilot_persc;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the

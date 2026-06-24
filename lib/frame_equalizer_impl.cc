@@ -2583,6 +2583,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_CPE=1 (HT-SIG pilot-aided CPE ENABLED)\n";
     }
 
+    // Phase 36: per-SC linear fit on HT-SIG pilots.
+    const char* env_hpcps = std::getenv("IEEE80211_HTSIG_PILOT_PERSC");
+    d_apply_htsig_pilot_persc = (env_hpcps && env_hpcps[0] == '1');
+    if (d_apply_htsig_pilot_persc) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_PERSC=1 (HT-SIG per-SC pilot CPE ENABLED)\n";
+    }
+
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
     // error rotates BPSK constellation, causing viterbi_fail. Dump the
