@@ -152,13 +152,6 @@ def test_make_known_htsig_bits_case_c():
           f"ldpc={bits[30]} crc[0..3]={bits[34:38].tolist()}")
 
 
-if __name__ == "__main__":
-    test_make_known_htsig_bits_case_a()
-    test_make_known_htsig_bits_case_b()
-    test_make_known_htsig_bits_case_c()
-    print("\nHT-SIG bit synthesis tests passed (3/3).")
-
-
 # ============================================================
 # BCC encoder: rate 1/2, K=7, polynomials 133 (octal) and 171 (octal)
 # Mirrors `viterbi_decode_133_171` companion in C++.
@@ -264,3 +257,113 @@ def insert_ht_pilots(data48_syms, data_sym_idx):
     out[50] = 1j * p       # SC +7
     out[51] = -1j * p      # SC +21
     return out
+
+
+# ============================================================
+# Viterbi decoder (hard-decision, K=7, rate 1/2, polynomials 133/171)
+# Mirrors `viterbi_decode_133_171` in lib/frame_equalizer_impl.cc:997.
+# ============================================================
+def viterbi_decode_133_171(rx_bits):
+    """Decode rx_bits (length N, even) using K=7 rate 1/2 viterbi.
+    Returns (decoded_bits, best_metric).
+    Best metric is the path metric of the best path ending in state 0.
+    """
+    assert len(rx_bits) % 2 == 0
+    n_steps = len(rx_bits) // 2
+    INF = 10**9
+    metric_prev = np.full(64, INF, dtype=np.int64)
+    metric_prev[0] = 0
+    prev_state = np.full((n_steps + 1, 64), -1, dtype=np.int32)
+    prev_bit = np.zeros((n_steps + 1, 64), dtype=np.uint8)
+
+    for t in range(n_steps):
+        metric_curr = np.full(64, INF, dtype=np.int64)
+        r0 = int(rx_bits[2 * t])
+        r1 = int(rx_bits[2 * t + 1])
+        for s in range(64):
+            mp = metric_prev[s]
+            if mp >= INF:
+                continue
+            for b in (0, 1):
+                reg = ((s << 1) | b) & 0x7F
+                o0 = bin(reg & 0o133).count("1") & 1
+                o1 = bin(reg & 0o171).count("1") & 1
+                ns = reg & 0x3F
+                bm = (o0 != r0) + (o1 != r1)
+                mc = mp + bm
+                if mc < metric_curr[ns]:
+                    metric_curr[ns] = mc
+                    prev_state[t + 1, ns] = s
+                    prev_bit[t + 1, ns] = b
+        metric_prev = metric_curr
+
+    best_state = 0
+    best_metric = int(metric_prev[best_state])
+    if best_metric >= INF:
+        # Search all states for lowest
+        idx = int(np.argmin(metric_prev))
+        best_state = idx
+        best_metric = int(metric_prev[idx])
+        if best_metric >= INF:
+            return None, INF
+
+    decoded = np.zeros(n_steps, dtype=np.uint8)
+    cur = best_state
+    for t in range(n_steps, 0, -1):
+        decoded[t - 1] = prev_bit[t, cur]
+        cur = int(prev_state[t, cur])
+        if cur < 0 and t > 1:
+            return None, INF
+    return decoded, best_metric
+
+
+def test_viterbi_encode_decode_roundtrip():
+    """BCC encode 24 random bits, then viterbi decode, expect to recover
+    the input. This is the viterbi's correctness sanity check.
+
+    NOTE: 802.11 BCC encoders append 6 zero tail bits to force the
+    trellis back to state 0. Without tail bits, the encoder doesn't
+    terminate at state 0 and the viterbi (which prefers state-0
+    endpoints) decodes the LAST 6 bits incorrectly. This test
+    correctly appends 6 zero tail bits, encodes 30 bits -> 60 bits,
+    viterbi-decodes back to 30 bits, and asserts the first 24 bits
+    (the info bits) match.
+    """
+    rng = np.random.default_rng(seed=12345)
+    info24 = rng.integers(0, 2, 24, dtype=np.uint8)
+    bits30 = np.concatenate([info24, np.zeros(6, dtype=np.uint8)])
+    coded60 = bcc_encode_24(bits30) if False else _bcc_encode_30(bits30)
+    decoded30, metric = viterbi_decode_133_171(coded60)
+    assert decoded30 is not None, "viterbi failed to converge"
+    info_decoded = decoded30[:24]
+    assert np.array_equal(info_decoded, info24), \
+        f"viterbi mismatch: got {info_decoded}, expected {info24}, metric={metric}"
+    print(f"[PASS] test_viterbi_encode_decode_roundtrip: metric={metric}, "
+          f"len={len(info24)}, all-match=True")
+
+
+def _bcc_encode_30(bits30):
+    """Encode 30 input bits (24 info + 6 zero tail) into 60 coded bits.
+    Same algorithm as bcc_encode_24, but length-parameterized to test
+    the tail-bit termination that the C++ encoder expects."""
+    assert len(bits30) == 30
+    g0 = 0o133
+    g1 = 0o171
+    state = 0
+    out = np.zeros(60, dtype=np.uint8)
+    for t in range(30):
+        reg = ((state << 1) | int(bits30[t])) & 0x7F
+        o0 = bin(reg & g0).count("1") & 1
+        o1 = bin(reg & g1).count("1") & 1
+        out[2 * t] = o0
+        out[2 * t + 1] = o1
+        state = reg & 0x3F
+    return out
+
+
+if __name__ == "__main__":
+    test_viterbi_encode_decode_roundtrip()
+    test_make_known_htsig_bits_case_a()
+    test_make_known_htsig_bits_case_b()
+    test_make_known_htsig_bits_case_c()
+    print("\nHT-SIG bit synthesis tests passed (3/3).")
