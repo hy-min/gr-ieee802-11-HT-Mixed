@@ -2560,6 +2560,14 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] H52 at equalizer-input dump ENABLED via env\n";
     }
 
+    // Phase 35: HT-SIG diagnostic dumps.
+    d_log_htsig_bin      = (std::getenv("IEEE80211_HTSIG_BIN_DUMP")      && std::getenv("IEEE80211_HTSIG_BIN_DUMP")[0]      == '1');
+    d_log_htsig_pilot    = (std::getenv("IEEE80211_HTSIG_PILOT_DUMP")    && std::getenv("IEEE80211_HTSIG_PILOT_DUMP")[0]    == '1');
+    d_log_htsig_eq_input = (std::getenv("IEEE80211_HTSIG_EQ_INPUT_DUMP") && std::getenv("IEEE80211_HTSIG_EQ_INPUT_DUMP")[0] == '1');
+    if (d_log_htsig_bin)      std::cout << "[FRAME_EQ] IEEE80211_HTSIG_BIN_DUMP=1\n";
+    if (d_log_htsig_pilot)    std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_DUMP=1\n";
+    if (d_log_htsig_eq_input) std::cout << "[FRAME_EQ] IEEE80211_HTSIG_EQ_INPUT_DUMP=1\n";
+
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
     // error rotates BPSK constellation, causing viterbi_fail. Dump the
@@ -3901,6 +3909,72 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 int start_rot = 0;
                 if (energy_rot != detected_rot && energy_rot == 1) {
                     start_rot = energy_rot;
+                }
+
+                // Phase 35: HT-SIG diagnostic dumps (flood-gated to first 10 frames).
+                // Fires at counter=4 (HT-SIG1 captured) AFTER CFO+SFO+delta correction
+                // has been applied to d_early_eqsym[3] and d_early_eqsym[4].
+                // Dumps pre-rotation FFT bins and pilot phases for layer diagnosis.
+                if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot || d_log_htsig_eq_input)) {
+                    static int g_htsig_dump_counter = 0;
+                    if (g_htsig_dump_counter < 10) {
+                        if (d_log_htsig_bin && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
+                            char htbuf[4096];
+                            int n = 0;
+                            n += snprintf(htbuf + n, sizeof(htbuf) - n,
+                                "[HTSIG_BIN_DUMP] counter=4 frame=%d htsig0=[", g_htsig_dump_counter);
+                            for (int i = 0; i < 52; i++) {
+                                n += snprintf(htbuf + n, sizeof(htbuf) - n, "%.3f%+.3fi%c",
+                                    d_early_eqsym[3][i].real(),
+                                    d_early_eqsym[3][i].imag(),
+                                    (i < 51) ? ',' : ']');
+                            }
+                            n += snprintf(htbuf + n, sizeof(htbuf) - n, " htsig1=[");
+                            for (int i = 0; i < 52; i++) {
+                                n += snprintf(htbuf + n, sizeof(htbuf) - n, "%.3f%+.3fi%c",
+                                    d_early_eqsym[4][i].real(),
+                                    d_early_eqsym[4][i].imag(),
+                                    (i < 51) ? ',' : ']');
+                            }
+                            USRP_LOG("%s]\n", htbuf);
+                        }
+                        if (d_log_htsig_pilot && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
+                            char pbuf[256];
+                            snprintf(pbuf, sizeof(pbuf),
+                                "[HTSIG_PILOT_DUMP] counter=4 frame=%d "
+                                "htsig0_pilots=arg[%.3f,%.3f,%.3f,%.3f] "
+                                "htsig1_pilots=arg[%.3f,%.3f,%.3f,%.3f]\n",
+                                g_htsig_dump_counter,
+                                std::arg(d_early_eqsym[3][48]), std::arg(d_early_eqsym[3][49]),
+                                std::arg(d_early_eqsym[3][50]), std::arg(d_early_eqsym[3][51]),
+                                std::arg(d_early_eqsym[4][48]), std::arg(d_early_eqsym[4][49]),
+                                std::arg(d_early_eqsym[4][50]), std::arg(d_early_eqsym[4][51]));
+                            USRP_LOG("%s", pbuf);
+                        }
+                        if (d_log_htsig_eq_input && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
+                            // At counter=4, d_early_eqsym[3,4] already have CFO+SFO+delta applied.
+                            // EQ_INPUT_DUMP = BIN_DUMP at this site (documented in plan).
+                            char ebuf[4096];
+                            int n = 0;
+                            n += snprintf(ebuf + n, sizeof(ebuf) - n,
+                                "[HTSIG_EQ_INPUT_DUMP] counter=4 frame=%d eq_htsig0=[", g_htsig_dump_counter);
+                            for (int i = 0; i < 52; i++) {
+                                n += snprintf(ebuf + n, sizeof(ebuf) - n, "%.3f%+.3fi%c",
+                                    d_early_eqsym[3][i].real(),
+                                    d_early_eqsym[3][i].imag(),
+                                    (i < 51) ? ',' : ']');
+                            }
+                            n += snprintf(ebuf + n, sizeof(ebuf) - n, " eq_htsig1=[");
+                            for (int i = 0; i < 52; i++) {
+                                n += snprintf(ebuf + n, sizeof(ebuf) - n, "%.3f%+.3fi%c",
+                                    d_early_eqsym[4][i].real(),
+                                    d_early_eqsym[4][i].imag(),
+                                    (i < 51) ? ',' : ']');
+                            }
+                            USRP_LOG("%s]\n", ebuf);
+                        }
+                        g_htsig_dump_counter++;
+                    }
                 }
 
                 // Try all 4 rotations and 180 degree ambiguity on each symbol
