@@ -23,6 +23,10 @@ namespace ieee802_11 {
 static bool g_lltf_timing_dump = false;
 static bool g_lltf_timing_inited = false;
 
+// Phase 40: HT-SIG FFT window sample index diagnostic (env-var gated, default OFF)
+static bool g_htsig_timing_dump = false;
+static bool g_htsig_timing_inited = false;
+
 // Phase 31 Task 7: L-LTF0 sample boundary correction (env-var gated, default 0)
 // Adds a fixed sample offset K ∈ {-4..+4} to the L-LTF0 sample extraction window
 // to compensate for upstream FFT window misalignment in the e2e USRP chain.
@@ -83,6 +87,20 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
             fprintf(stderr, "[SPLITTER] IEEE80211_LLTF_TIMING_DUMP=1 (LTS0/LTS1 sample indices will be logged)\n");
         }
         g_lltf_timing_inited = true;
+    }
+
+    // Phase 40: HT-SIG FFT window sample index diagnostic
+    // Dumps the absolute splitter sample index at which each HT-SIG0/1 FFT
+    // window starts. If HT-SIG0 starts at the expected rel_idx 240 but the
+    // equalizer's H52 was extracted from a L-LTF0 FFT at K=14 shifted position,
+    // there's a 14-sample offset between H52's reference frame and HT-SIG's
+    // actual frame. Compare with `IEEE80211_LLTF_TIMING_DUMP` lines for L-LTF0.
+    if (!g_htsig_timing_inited) {
+        if (getenv("IEEE80211_HTSIG_TIMING_DUMP") && getenv("IEEE80211_HTSIG_TIMING_DUMP")[0] != '\0') {
+            g_htsig_timing_dump = true;
+            fprintf(stderr, "[SPLITTER] IEEE80211_HTSIG_TIMING_DUMP=1 (HT-SIG0/1 sample indices will be logged)\n");
+        }
+        g_htsig_timing_inited = true;
     }
 
     // Phase 31 Task 7: L-LTF0 sample boundary correction (env-var gated, default 0)
@@ -345,6 +363,24 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         } else if (last_rel_idx >= 544) {
             uint64_t sym_offset = (last_rel_idx - 544) % 80;
             at_boundary = (sym_offset == 0);
+        }
+        // Phase 40: log which boundary we're emitting at, with the absolute
+        // sample index, the rel_idx within the frame, and the expected rel_idx
+        // for this symbol. If rel_idx != expected, FFT window is misaligned.
+        if (g_htsig_timing_dump && at_boundary) {
+            const char* label = "unknown";
+            int expected_rel = -1;
+            if (last_rel_idx == 63 + g_lltf_offset_correct) { label = "L-LTF0"; expected_rel = 63; }
+            else if (last_rel_idx == 143 + g_lltf_offset_correct) { label = "L-LTF1"; expected_rel = 143; }
+            else if (last_rel_idx == 223) { label = "L-SIG"; expected_rel = 223; }
+            else if (last_rel_idx == 303) { label = "HT-SIG0"; expected_rel = 303; }
+            else if (last_rel_idx == 383) { label = "HT-SIG1"; expected_rel = 383; }
+            else if (last_rel_idx == 463) { label = "HT-STF"; expected_rel = 463; }
+            else if (last_rel_idx == 543) { label = "HT-LTF"; expected_rel = 543; }
+            fprintf(stderr,
+                    "[HTSIG_TIMING] %s emitted rel_idx=%llu expected=%d K=%d delta=%lld\n",
+                    label, (unsigned long long)last_rel_idx, expected_rel,
+                    g_lltf_offset_correct, (long long)((long long)last_rel_idx - (long long)expected_rel));
         }
         if (at_boundary) {
             memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
