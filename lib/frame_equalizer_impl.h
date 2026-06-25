@@ -138,6 +138,20 @@ private:
     // mean. Default OFF.
     bool d_apply_htsig_pilot_persc;
 
+    // Phase 39: HT-SIG pilot-based H re-estimation. Replaces Hhdr52
+    // (L-LTF0-based) for HT-SIG0/1 equalization only, using each symbol's
+    // own 4 pilots at SCs {-21,-7,7,21} (known QBPSK values {+j,+j,+j,-j}).
+    // Bypasses L-LTF0 deep nulls that amplify noise 7-50x during
+    // equalization. Linear interpolate 4 pilot SCs to all 52 SCs. L-SIG
+    // remains on Hhdr52 (Phase 34 fix). Default OFF. Enable via
+    // IEEE80211_HTSIG_H_REESTIMATE=1.
+    bool d_apply_htsig_h_reestimate;
+
+    // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
+    // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
+    // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
+    bool d_log_htsig_h52;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the

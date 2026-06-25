@@ -348,6 +348,114 @@ static bool estimate_htsig_pilot_persc(const gr_complex* rx52,
     return true;
 }
 
+// Phase 39: Estimate channel H from HT-SIG symbol's own 4 pilot SCs.
+// QBPSK pilot TX values per 802.11n Table 19-9/19-10:
+//   SC -21: +j
+//   SC -7:  +j
+//   SC +7:  +j
+//   SC +21: -j
+// (Stored at bins {48,49,50,51} in the 52-element rx52 layout.)
+//
+// Algorithm:
+//   1. For each pilot bin: H_at_pilot[p] = safe_div(rx52[48+p], qbpsk[p])
+//   2. Mark pilot_valid[p] = (|H_at_pilot[p]| > 0.05)
+//   3. If <2 valid pilots: copy H_fallback to H_htsig52, return false
+//   4. Pilot bins (48..51): H_htsig52[48+p] = H_at_pilot[p]
+//      (or H_fallback[48+p] if pilot invalid; the linear interp below
+//      skips invalid anchors and uses the next valid neighbor)
+//   5. Data bins (0..47): piecewise linear interpolation in the complex
+//      plane (real/imag independently) between the surrounding valid
+//      pilot anchors. Edge SCs (outside pilot range) extrapolate from
+//      the nearest segment using its slope. If a pilot anchor is invalid,
+//      we skip it: the segment endpoints become the nearest valid pair
+//      on each side of the bin's SC index. If no valid anchor exists on
+//      one side, the bin falls back to H_fallback[bin].
+//
+// Returns: true if >=2 pilots were valid (output has re-estimated H);
+//          false if helper fell back to H_fallback (output is mostly a
+//          copy of H_fallback, with only valid pilot bins overridden).
+static bool estimate_H_from_htsig_pilots(
+    const gr_complex* rx52,
+    const gr_complex* H_fallback,
+    gr_complex* H_htsig52)
+{
+    // HT-SIG pilot values in QBPSK (imag axis): {+j, +j, +j, -j}
+    static const gr_complex kHtsigPilotQbpsk[4] = {
+        gr_complex(0.0f,  1.0f),   // SC -21: +j
+        gr_complex(0.0f,  1.0f),   // SC -7:  +j
+        gr_complex(0.0f,  1.0f),   // SC +7:  +j
+        gr_complex(0.0f, -1.0f)    // SC +21: -j
+    };
+    static const int kPilotSc[4] = {-21, -7, 7, 21};
+
+    gr_complex H_at_pilot[4];
+    bool pilot_valid[4] = {false, false, false, false};
+    for (int p = 0; p < 4; p++) {
+        const int bin = 48 + p;
+        const gr_complex p_rx = rx52[bin];
+        if (std::abs(p_rx) < 1e-3f) {
+            H_at_pilot[p] = H_fallback[bin];
+            continue;
+        }
+        H_at_pilot[p] = safe_div(p_rx, kHtsigPilotQbpsk[p]);
+        pilot_valid[p] = (std::abs(H_at_pilot[p]) > 0.05f);
+    }
+
+    int n_valid = 0;
+    for (int p = 0; p < 4; p++) if (pilot_valid[p]) n_valid++;
+    if (n_valid < 2) {
+        // Bootstrap failed: copy fallback H wholesale.
+        std::memcpy(H_htsig52, H_fallback, 52 * sizeof(gr_complex));
+        return false;
+    }
+
+    // Pilot bins: use the re-estimated H (or fallback if invalid).
+    for (int p = 0; p < 4; p++) {
+        H_htsig52[48 + p] = pilot_valid[p] ? H_at_pilot[p] : H_fallback[48 + p];
+    }
+
+    // Data bins: piecewise linear interpolation in the complex plane.
+    // For each bin, find the surrounding valid pilot anchors (left/right)
+    // by SC index. If no valid anchor exists on one side, fall back to
+    // H_fallback[bin] for that bin.
+    auto lerp_complex = [](gr_complex a, gr_complex b, float t) -> gr_complex {
+        return a + (b - a) * t;
+    };
+
+    for (int i = 0; i < 48; i++) {
+        const int sc = kScIndex52[i];
+        // Find nearest valid pilot with sc_p <= sc (left_idx)
+        int left_idx = -1;
+        for (int p = 0; p < 4; p++) {
+            if (pilot_valid[p] && kPilotSc[p] <= sc) {
+                left_idx = p;
+            }
+        }
+        // Find nearest valid pilot with sc_p >= sc (right_idx)
+        int right_idx = -1;
+        for (int p = 3; p >= 0; p--) {
+            if (pilot_valid[p] && kPilotSc[p] >= sc) {
+                right_idx = p;
+            }
+        }
+        if (left_idx == -1 || right_idx == -1) {
+            // Outside the valid range; use fallback.
+            H_htsig52[i] = H_fallback[i];
+            continue;
+        }
+        if (left_idx == right_idx) {
+            // Single anchor on both sides (degenerate).
+            H_htsig52[i] = H_at_pilot[left_idx];
+            continue;
+        }
+        const int sc_l = kPilotSc[left_idx];
+        const int sc_r = kPilotSc[right_idx];
+        const float t = (float)(sc - sc_l) / (float)(sc_r - sc_l);
+        H_htsig52[i] = lerp_complex(H_at_pilot[left_idx], H_at_pilot[right_idx], t);
+    }
+    return true;
+}
+
 // Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
@@ -2007,7 +2115,8 @@ static int estimate_per_sc_phase_from_htsig0(
 // Skips CPE rotation since QBPSK already compensates for phase
 static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        const gr_complex* rx52_b,
-                                       const gr_complex* H52,
+                                       const gr_complex* H52_a,
+                                       const gr_complex* H52_b,
                                        bool invert_a,
                                        bool invert_b,
                                        int& out_len_bytes,
@@ -2032,12 +2141,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     // Extract bits from HT-SIG0 (rx52_a)
     for (int i = 0; i < 48; i++) {
-        float h_mag = std::abs(H52[i]);
+        float h_mag = std::abs(H52_a[i]);
         gr_complex eq;
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_a[i], H52[i]);
+            eq = safe_div(rx52_a[i], H52_a[i]);
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
@@ -2061,11 +2170,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         // Compute equalized HT-SIG0 symbols (rx52_a / H52)
         gr_complex eq_htsig0[52];
         for (int i = 0; i < 52; i++) {
-            float h_mag = std::abs(H52[i]);
+            float h_mag = std::abs(H52_a[i]);
             if (h_mag < 0.001f) {
                 eq_htsig0[i] = gr_complex(0.0f, 0.0f);
             } else {
-                eq_htsig0[i] = safe_div(rx52_a[i], H52[i]);
+                eq_htsig0[i] = safe_div(rx52_a[i], H52_a[i]);
             }
         }
         // Estimate per-SC phase
@@ -2112,9 +2221,9 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         int n_pilots = 0;
         for (int p = 0; p < 4; p++) {
             int sc = pilot_sc[p];
-            float h_mag = std::abs(H52[sc]);
+            float h_mag = std::abs(H52_a[sc]);
             if (h_mag >= 0.001f) {
-                gr_complex eq_p = safe_div(rx52_a[sc], H52[sc]);
+                gr_complex eq_p = safe_div(rx52_a[sc], H52_a[sc]);
                 // QBPSK: pilots are on IMAG axis, so normalize to +j (sign of imag)
                 gr_complex ref = gr_complex(0.0f, (eq_p.imag() >= 0.0f) ? 1.0f : -1.0f);
                 pilot_sum += eq_p / ref;
@@ -2131,12 +2240,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     // Extract bits from HT-SIG1 (rx52_b)
     for (int i = 0; i < 48; i++) {
-        float h_mag = std::abs(H52[i]);
+        float h_mag = std::abs(H52_b[i]);
         gr_complex eq;
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
         } else {
-            eq = safe_div(rx52_b[i], H52[i]) * cpe_rot_b;
+            eq = safe_div(rx52_b[i], H52_b[i]) * cpe_rot_b;
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
@@ -2646,6 +2755,26 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_apply_htsig_pilot_persc = (env_hpcps && env_hpcps[0] == '1');
     if (d_apply_htsig_pilot_persc) {
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_PERSC=1 (HT-SIG per-SC pilot CPE ENABLED)\n";
+    }
+
+    // Phase 39: HT-SIG pilot-based H re-estimation. Replaces Hhdr52
+    // (L-LTF0-based) for HT-SIG equalization with H_htsig0/1 estimated
+    // from each symbol's own 4 pilots. Bypasses L-LTF0 deep nulls.
+    // L-SIG remains on Hhdr52 (Phase 34 fix). Default OFF.
+    // Enable via IEEE80211_HTSIG_H_REESTIMATE=1.
+    const char* env_hhr = std::getenv("IEEE80211_HTSIG_H_REESTIMATE");
+    d_apply_htsig_h_reestimate = (env_hhr && env_hhr[0] == '1');
+    if (d_apply_htsig_h_reestimate) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H_REESTIMATE=1 (HT-SIG pilot-based H re-estimation ENABLED)\n";
+    }
+
+    // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps
+    // |H_htsig0|, |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC
+    // for offline verification. Enable via IEEE80211_HTSIG_H52_DUMP=1.
+    const char* env_hhd = std::getenv("IEEE80211_HTSIG_H52_DUMP");
+    d_log_htsig_h52 = (env_hhd && env_hhd[0] == '1');
+    if (d_log_htsig_h52) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H52_DUMP=1\n";
     }
 
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
@@ -4280,6 +4409,64 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
                 }
 
+                // Phase 39: HT-SIG pilot-based H re-estimation.
+                // Computes H_htsig0 and H_htsig1 from each symbol's own
+                // 4 pilots, replacing Hhdr52 (L-LTF0-based) for HT-SIG
+                // equalization. L-SIG remains on Hhdr52 (Phase 34 fix).
+                // Both pointers default to Hhdr52 (preserves current
+                // behavior when env var is OFF = no loopback regression).
+                // Computed AFTER the diagnostic dump block (so dumps
+                // show pre-replacement state) and BEFORE the viterbi
+                // brute-force loop.
+                gr_complex H_htsig0[52];
+                gr_complex H_htsig1[52];
+                const gr_complex* H_a_ptr = Hhdr52;
+                const gr_complex* H_b_ptr = Hhdr52;
+                if (d_apply_htsig_h_reestimate &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    bool h0_ok = estimate_H_from_htsig_pilots(
+                        d_early_eqsym[kHtSig0Rel], Hhdr52, H_htsig0);
+                    bool h1_ok = estimate_H_from_htsig_pilots(
+                        d_early_eqsym[kHtSig1Rel], Hhdr52, H_htsig1);
+                    H_a_ptr = h0_ok ? H_htsig0 : Hhdr52;
+                    H_b_ptr = h1_ok ? H_htsig1 : Hhdr52;
+                    if (h0_ok || h1_ok) {
+                        USRP_LOG("[HTSIG_H_REESTIMATE] h0=%s h1=%s\n",
+                                 h0_ok ? "ok" : "fallback",
+                                 h1_ok ? "ok" : "fallback");
+                    }
+                    if (d_log_htsig_h52) {
+                        static int hhtsig_dump_counter = 0;
+                        if (hhtsig_dump_counter < 10) {
+                            char hhbuf[4096];
+                            int n = snprintf(hhbuf, sizeof(hhbuf),
+                                "[HTSIG_H52_DUMP] frame=%d |H_htsig0|=[",
+                                hhtsig_dump_counter);
+                            for (int i = 0; i < 52; i++)
+                                n += snprintf(hhbuf + n, sizeof(hhbuf) - n,
+                                    "%.3f,", std::abs(H_htsig0[i]));
+                            n += snprintf(hhbuf + n, sizeof(hhbuf) - n,
+                                "] |H_htsig1|=[");
+                            for (int i = 0; i < 52; i++)
+                                n += snprintf(hhbuf + n, sizeof(hhbuf) - n,
+                                    "%.3f,", std::abs(H_htsig1[i]));
+                            n += snprintf(hhbuf + n, sizeof(hhbuf) - n,
+                                "] ratio0=[");
+                            for (int i = 0; i < 52; i++) {
+                                float r = (std::abs(Hhdr52[i]) > 1e-3f)
+                                    ? std::abs(H_htsig0[i]) / std::abs(Hhdr52[i])
+                                    : 1.0f;
+                                n += snprintf(hhbuf + n, sizeof(hhbuf) - n,
+                                    "%.2f,", r);
+                            }
+                            n += snprintf(hhbuf + n, sizeof(hhbuf) - n, "]\n");
+                            USRP_LOG("%s", hhbuf);
+                            hhtsig_dump_counter++;
+                        }
+                    }
+                }
+
                 // Try all 4 rotations and 180 degree ambiguity on each symbol
                 for (int rot = 0; rot <= 3 && !found; rot++) {
                     gr_complex rot_htsig0[52];
@@ -4304,7 +4491,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             const char* cand_fail = "init";
                             bool decode_ok = decode_htsig_from_rotated(rot_htsig0,
                                                            rot_htsig1,
-                                                           Hhdr52,
+                                                           H_a_ptr,
+                                                           H_b_ptr,
                                                            inv_a != 0,
                                                            inv_b != 0,
                                                            parsed_len,
