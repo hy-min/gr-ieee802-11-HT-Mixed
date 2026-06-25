@@ -170,3 +170,143 @@ fixed first or the data never gets there.
 - [[project-p23-usrp-verification]] — earlier USRP verification
   attempts (X310 + UBX-160 confirmed at frame-detect layer)
 - [[project-status-overview]]
+
+## Phase 31b Update (2026-06-17) — Root Cause Found
+
+**The Phase 31a BLOCKED verdict is invalid.** Phase 31b systematic-debugging
+Phase 1 (root cause investigation) found that the test was launched with
+a **misconfigured USRP command line**, not a real air path failure.
+
+### The misconfiguration
+
+`test_usrp_minimal_loopback.py` accepts `--freq` and `--tx-gain` arguments,
+but uses these defaults:
+- `--freq 5180` (was actually wanted: 5890, per p28_ltf0_timing.py)
+- `--tx-gain 10` (was actually wanted: 20, per p28_ltf0_timing.py)
+
+`examples/test_lltf_timing_diagnostic.py` invoked the script with
+`--duration 30` and no other args, so the defaults were used. The Phase 31a
+run was therefore transmitting at 5180 MHz with 10 dB TX gain, ~13-20 dB
+weaker than the working Phase 28.2 configuration.
+
+### Working configuration (p28_ltf0_timing.py, 2026-06-16)
+
+```bash
+python p28_ltf0_timing.py \
+  --args addr=192.168.10.2 \
+  --rate 20 --freq 5890 --tx-gain 20 --rx-gain 20 \
+  --tx-subdev A:0 --rx-subdev A:0
+```
+
+This produced 32.3 dB L-SIG SNR, 40/48 matches (16.7% BER) on offline
+analysis (commit 38e64f5).
+
+### Recommended fix
+
+Invoke `test_usrp_minimal_loopback.py` with the working arguments:
+
+```bash
+unset LD_LIBRARY_PATH && LD_PRELOAD=./wrap_rpc2.so \
+  IEEE80211_LLTF_TIMING_DUMP=1 IEEE80211_LSIG_RATE_FORCE=0xD \
+  IEEE80211_SYNC_SHORT_BYPASS_ENERGY_GATE=1 \
+  PYTHONPATH=build/python/bindings:python:examples \
+  /home/hy/conda/envs/gnuradio/bin/python test_usrp_minimal_loopback.py \
+  --duration 30 --freq 5890 --tx-gain 20
+```
+
+(Or update `examples/test_lltf_timing_diagnostic.py` to pass these args.)
+
+### Re-test criteria (Phase 31a-2)
+
+Expected after fix:
+- sync_long correlation: 0.0036 → ≫ 0.1 (likely 0.3-0.5)
+- splitter energy at L-LTF0: 0.5 → > 2.0 (likely 5-20)
+- [SPLITTER] LTS0 dump lines: 0 → ≥ 30
+- [EQUALIZER] H52 compute dump lines: 0 → ≥ 30
+- TX underflow: 1/30s → 0/30s
+
+If these hold, the L-LTF0 timing hypothesis from Phase 30 can be tested
+with real e2e data. Phase 31a-2 supersedes the original Phase 31a verdict.
+
+### Status
+
+- Phase 1 (root cause investigation): **DONE**
+- Phase 2 (pattern analysis, configuration diff): **DONE**
+- Phase 3 (hypothesis testing): **PENDING** — apply fix and re-run
+- Phase 4 (implementation of L-LTF0 timing fix if confirmed): **BLOCKED**
+  on Phase 3
+
+See [[project-p31b-air-path-root-cause]] memory note for full evidence chain.
+
+## Phase 31c Update (2026-06-17) — K-Sweep REFUTES L-LTF0 Sample Offset Hypothesis
+
+The L-LTF0 timing fix was implemented and tested. The K-sweep **REFUTES**
+the hypothesis that L-LTF0 sample boundary is offset by 1-4 samples.
+
+### Implementation
+- Env-var: `IEEE80211_LLTF_OFFSET_CORRECT=K` (K ∈ [-4, +4], commit 03303f1)
+- 4 hook points in `lib/ht_symbol_splitter_impl.cc` (lines 339-342, 482-491, 683-686, 742-744, 778-780)
+- K=0 byte-identical to original (verified by software loopback OK=1)
+- K=1 deliberate misalignment causes OK=0 (env-var verified active)
+
+### K-Sweep Results (5 GHz A:0+A:0, 30s per K)
+
+| K | Sent | Recv | LSIG_EQ | viterbi_fail |
+|---|---:|---:|---:|---:|
+| -4 | 31 | 0 | 0 | 0 |
+| -3 | 31 | 0 | 128 | 64 |
+| -2 | 31 | 0 | 0 | 0 |
+| -1 | 31 | 0 | 160 | 72 |
+| **+0** | **31** | **0** | **160** | **64** |
+| +1 | 31 | 0 | 96 | 48 |
+| +2 | 31 | 0 | 16 | 8 |
+| +3 | 31 | 0 | 32 | 16 |
+| +4 | 31 | 0 | 0 | 0 |
+
+K=0 (no offset) is the best. K=-1 over-amplifies H52 5-10× at outlier
+SCs (e.g. 65.079, 91.431, 112.618 vs K=0's 0.893-7.002). K=-4, -2, +4
+have 0 L-SIG EQ (frames rejected at splitter energy gate).
+
+### What This Rules Out
+
+- **NOT** a 1-2 sample L-LTF0 offset (K-sweep ±4 would catch it)
+- **NOT** a 4-sample L-LTF0 offset (K=±4 still fails)
+- The offline Phase 28.2 analysis already confirmed L-LTF0 sample boundary
+  is correct for the manually-aligned path
+
+### What Remains
+
+The H52 corruption (random argH) is real, but its cause is NOT a sample
+boundary offset. Remaining candidates:
+
+1. **H52 estimator algorithm bug** — wrong sign, wrong phase reference,
+   wrong LTS0+LTS1 averaging
+2. **LTF template mismatch** — `LONG` template in sync_long.cc doesn't
+   match transmitted LTF (sign/scale/normalization)
+3. **Per-SC CFO+SFO compensation rotation** at line 2974-2977 — but this
+   only affects L-SIG data, not H52 itself
+4. **L-LTF1 (not L-LTF0) is offset** — averaging produces garbage H52
+
+### Architectural Question (3+ Fixes Failed)
+
+Per systematic-debugging Iron Law: 3+ fixes failed means question the
+architecture. The 3 fixes are:
+
+1. Air path config (--freq 5890 --tx-gain 20) — partial fix
+2. sync_long input dump — sync_long is a red herring
+3. IEEE80211_LLTF_OFFSET_CORRECT K-sweep — REFUTED
+
+The chain works through L-SIG EQ stage. 13 L-SIG EQ lines processed with
+avg_snr=12.91 (linear), 5 LSIG_PARSE_FAIL viterbi_fail. The H52 corruption
+cause must be in the H52 estimator itself, not the sample offset.
+
+### Next Steps
+
+Need to compare e2e H52 with offline H52 directly:
+- Capture raw USRP IQ to file (test_usrp_minimal_loopback.py --capture)
+- Use p28_ltf0_timing.py's `H = (F0a + F1a) / 2` to compute H52 offline
+- Compare with what frame_equalizer computes in e2e
+- If they match → issue is downstream (per-SC phase compensation)
+- If they differ → issue is in H52 estimator
+
+See [[project-p31c-k-sweep-refuted]] memory note for full evidence.

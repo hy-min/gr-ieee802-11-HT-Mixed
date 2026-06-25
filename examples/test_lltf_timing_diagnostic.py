@@ -33,6 +33,10 @@ ENV = os.environ.copy()
 ENV["IEEE80211_LLTF_TIMING_DUMP"] = "1"
 ENV["IEEE80211_SYNC_SHORT_BYPASS_ENERGY_GATE"] = "1"
 ENV["IEEE80211_LSIG_RATE_FORCE"] = "0xD"
+# Phase 31b (2026-06-17): dump L-SIG constellation to verify H-X2+H-X6
+# hypothesis. avg_snr_lsig=12.91 is inflated |eq|², not low SNR. Per-SC
+# phase error may be rotating BPSK symbols across decision boundary.
+ENV["IEEE80211_LSIG_EQ_DUMP"] = "1"
 
 def run_capture():
     if not os.path.isfile(LOOPBACK_SCRIPT):
@@ -42,6 +46,11 @@ def run_capture():
         "/home/hy/conda/envs/gnuradio/bin/python",
         LOOPBACK_SCRIPT,
         "--duration", str(DURATION),
+        # Phase 31b fix: use the working p28_ltf0_timing.py USRP config
+        # (5890 MHz, 20 dB TX gain) — defaults of test_usrp_minimal_loopback.py
+        # (5180 MHz, 10 dB) produce 13-20 dB weaker air signal and 0 frames.
+        "--freq", "5890",
+        "--tx-gain", "20",
     ]
     with open(RAW_LOG, "w") as f:
         proc = subprocess.Popen(cmd, env=ENV, stdout=f, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT)
