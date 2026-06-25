@@ -113,6 +113,16 @@ private:
     bool d_log_htsig_bin;
     bool d_log_htsig_pilot;
 
+    // Phase 38 Step 7: equalized HT-SIG0/1 constellation dump. Dumps
+    // d_early_eqsym[kHtSig0Rel/1Rel][i] / Hhdr52[i] for i=0..47 (data SCs)
+    // to see what the equalizer output actually looks like at viterbi
+    // input. If equalization is correct, expect QBPSK clusters on the
+    // IMAG axis (±j). If random scatter, the equalization/H52 itself is
+    // broken — which would explain why viterbi metrics are 12-17 (random)
+    // across all 16 candidates on USRP. Opt-in via
+    // IEEE80211_HTSIG_EQ_DUMP=1. Default OFF.
+    bool d_log_htsig_eq;
+
     // Phase 35 Task 7c: per-symbol pilot-aided CPE on HT-SIG0/HT-SIG1.
     // Cancels per-symbol phase drift that the Phase 34 δ correction cannot
     // reach (δ is constant per-frame; per-symbol drift varies between

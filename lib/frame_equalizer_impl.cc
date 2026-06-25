@@ -2624,8 +2624,10 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     // it back at the post-extract pre-rotation site.
     d_log_htsig_bin   = (std::getenv("IEEE80211_HTSIG_BIN_DUMP")   && std::getenv("IEEE80211_HTSIG_BIN_DUMP")[0]   == '1');
     d_log_htsig_pilot = (std::getenv("IEEE80211_HTSIG_PILOT_DUMP") && std::getenv("IEEE80211_HTSIG_PILOT_DUMP")[0] == '1');
+    d_log_htsig_eq    = (std::getenv("IEEE80211_HTSIG_EQ_DUMP")    && std::getenv("IEEE80211_HTSIG_EQ_DUMP")[0]    == '1');
     if (d_log_htsig_bin)   std::cout << "[FRAME_EQ] IEEE80211_HTSIG_BIN_DUMP=1\n";
     if (d_log_htsig_pilot) std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_DUMP=1\n";
+    if (d_log_htsig_eq)    std::cout << "[FRAME_EQ] IEEE80211_HTSIG_EQ_DUMP=1 (equalized HT-SIG0/1 constellation ENABLED)\n";
 
     // Phase 35 Task 7c: per-symbol pilot CPE on HT-SIG0/HT-SIG1.
     // Pilots at bins {48,49,50,51} (SCs {-21,-7,7,21}). Per-symbol,
@@ -4138,7 +4140,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Fires at counter=4 (HT-SIG1 captured) AFTER CFO+SFO+delta correction
                 // has been applied to d_early_eqsym[3] and d_early_eqsym[4].
                 // Dumps pre-rotation FFT bins and pilot phases for layer diagnosis.
-                if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot)) {
+                if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot || d_log_htsig_eq)) {
                     static int g_htsig_dump_counter = 0;
                     if (g_htsig_dump_counter < 10) {
                         if (d_log_htsig_bin && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
@@ -4192,6 +4194,88 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         // needed later, add it at the post-extract
                         // pre-rotation site (different memory, distinct
                         // dump semantics).
+                        // Phase 38 Step 7: NEW equalized-constellation dump.
+                        // Computes eq = d_early_eqsym / Hhdr52 for all 52
+                        // subcarriers of HT-SIG0 and HT-SIG1 and prints
+                        // them. If equalization is correct, expect QBPSK
+                        // clusters on the IMAG axis (±j) for data SCs and
+                        // pilots {j,j,j,-j}. If scatter, equalization is
+                        // broken. Counter still tied to 10-frame budget.
+                        if (d_log_htsig_eq) {
+                            char eqbuf[8192];
+                            int n = 0;
+                            // HT-SIG0 data SCs (0..47) and pilots (48..51)
+                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                "[HTSIG_EQ_DUMP] frame=%d htsig0_eq=[",
+                                g_htsig_dump_counter);
+                            for (int i = 0; i < 52; i++) {
+                                gr_complex h = Hhdr52[i];
+                                gr_complex eq;
+                                if (std::abs(h) < 1e-3f) {
+                                    eq = gr_complex(std::numeric_limits<float>::quiet_NaN(),
+                                                     std::numeric_limits<float>::quiet_NaN());
+                                } else {
+                                    eq = d_early_eqsym[3][i] / h;
+                                }
+                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                    "%.3f%+.3fi%c",
+                                    eq.real(), eq.imag(),
+                                    (i < 51) ? ',' : ']');
+                            }
+                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                " htsig1_eq=[");
+                            for (int i = 0; i < 52; i++) {
+                                gr_complex h = Hhdr52[i];
+                                gr_complex eq;
+                                if (std::abs(h) < 1e-3f) {
+                                    eq = gr_complex(std::numeric_limits<float>::quiet_NaN(),
+                                                     std::numeric_limits<float>::quiet_NaN());
+                                } else {
+                                    eq = d_early_eqsym[4][i] / h;
+                                }
+                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                    "%.3f%+.3fi%c",
+                                    eq.real(), eq.imag(),
+                                    (i < 51) ? ',' : ']');
+                            }
+                            // Summary: mean imag, std imag, |real|/|imag| ratio
+                            // for the 48 data SCs of each symbol.
+                            // QBPSK should give |real|/|imag| < 0.3.
+                            double sum_im_a = 0, sum_im2_a = 0, sum_re_a = 0;
+                            double sum_im_b = 0, sum_im2_b = 0, sum_re_b = 0;
+                            int cnt = 0;
+                            for (int i = 0; i < 48; i++) {
+                                gr_complex h = Hhdr52[i];
+                                if (std::abs(h) < 1e-3f) continue;
+                                gr_complex ea = d_early_eqsym[3][i] / h;
+                                gr_complex eb = d_early_eqsym[4][i] / h;
+                                sum_re_a += std::abs(ea.real());
+                                sum_im_a += ea.imag();
+                                sum_im2_a += (double)ea.imag() * ea.imag();
+                                sum_re_b += std::abs(eb.real());
+                                sum_im_b += eb.imag();
+                                sum_im2_b += (double)eb.imag() * eb.imag();
+                                cnt++;
+                            }
+                            if (cnt > 0) {
+                                double mean_re_a = sum_re_a / cnt;
+                                double mean_im_a = sum_im_a / cnt;
+                                double var_im_a = sum_im2_a / cnt - mean_im_a * mean_im_a;
+                                double std_im_a = (var_im_a > 0) ? std::sqrt(var_im_a) : 0.0;
+                                double mean_re_b = sum_re_b / cnt;
+                                double mean_im_b = sum_im_b / cnt;
+                                double var_im_b = sum_im2_b / cnt - mean_im_b * mean_im_b;
+                                double std_im_b = (var_im_b > 0) ? std::sqrt(var_im_b) : 0.0;
+                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                    " htsig0 mean|re|=%.3f mean_im=%.3f std_im=%.3f"
+                                    " htsig1 mean|re|=%.3f mean_im=%.3f std_im=%.3f\n",
+                                    mean_re_a, mean_im_a, std_im_a,
+                                    mean_re_b, mean_im_b, std_im_b);
+                            } else {
+                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n, "\n");
+                            }
+                            USRP_LOG("%s", eqbuf);
+                        }
                         g_htsig_dump_counter++;
                     }
                 }
