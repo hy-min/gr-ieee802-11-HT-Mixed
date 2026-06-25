@@ -1,0 +1,22 @@
+[PASS] test_viterbi_encode_decode_roundtrip: metric=0, len=24, all-match=True
+[PASS] test_make_known_htsig_bits_case_a: bits[0..7]=[0, 0, 0, 0, 0, 0, 0, 0], length_field=100, mcs=0, crc[0..3]=[0, 0, 1, 0]
+[PASS] test_make_known_htsig_bits_case_b: mcs=7 length=1000 agg=1 sgi=1 crc[0..3]=[1, 1, 0, 0]
+[PASS] test_make_known_htsig_bits_case_c: mcs=0 length=10 ldpc=1 crc[0..3]=[0, 0, 1, 0]
+[PASS] Layer1/A: CRC OK, metric=0, mcs=0, length=100, agg=0, sgi=0, ldpc=0
+[PASS] Layer1/B: CRC OK, metric=0, mcs=7, length=1000, agg=1, sgi=1, ldpc=0
+[PASS] Layer1/C: CRC OK, metric=0, mcs=0, length=10, agg=0, sgi=0, ldpc=1
+[PASS] Layer 1 clean: 3/3
+[INFO] Layer2/CFO=0Hz: 3/3
+[INFO] Layer2/CFO=100Hz: 3/3
+[INFO] Layer2/CFO=500Hz: 3/3
+[INFO] Layer2/CFO=1000Hz: 3/3
+[INFO] Layer2/CFO=5000Hz: 3/3
+[PASS] Layer 2 +CFO: 3/3 PASS at CFO <= 1 kHz. 5kHz result: 3/3
+[INFO] Layer3/SNR=20dB: 3/3
+[INFO] Layer3/SNR=15dB: 3/3
+[INFO] Layer3/SNR=12dB: 3/3
+[INFO] Layer3/SNR=9dB: 3/3
+[INFO] Layer3/SNR=6dB: 3/3
+[PASS] Layer 3 +AWGN: 3/3 PASS at SNR >= 12 dB. 9dB: 3/3, 6dB: 3/3
+
+Phase 37 Layer 1+2+3 tests passed.
