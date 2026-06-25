@@ -864,6 +864,28 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                         fprintf(stderr, "[SPLITTER_FFTPROBE] fft_out=%d rel_idx=%llu td_energy=%.1f first=%.4f%+.4fi\n",
                                 fft_out_count, (unsigned long long)rel_idx, (double)total_energy,
                                 d_buffer[0].real(), d_buffer[0].imag());
+
+                        // Phase 40: also fire here for the main emit path.
+                        // The carryover dump (above) only triggers when a
+                        // boundary was hit at end-of-call. The main path is
+                        // where most boundaries are emitted on loopback.
+                        if (g_htsig_timing_dump) {
+                            const char* label2 = "DATA";
+                            int expected_rel2 = (int)rel_idx;
+                            if (rel_idx == 63 + g_lltf_offset_correct) { label2 = "L-LTF0"; expected_rel2 = 63; }
+                            else if (rel_idx == 143 + g_lltf_offset_correct) { label2 = "L-LTF1"; expected_rel2 = 143; }
+                            else if (rel_idx == 223) { label2 = "L-SIG"; expected_rel2 = 223; }
+                            else if (rel_idx == 303) { label2 = "HT-SIG0"; expected_rel2 = 303; }
+                            else if (rel_idx == 383) { label2 = "HT-SIG1"; expected_rel2 = 383; }
+                            else if (rel_idx == 463) { label2 = "HT-STF"; expected_rel2 = 463; }
+                            else if (rel_idx == 543) { label2 = "HT-LTF"; expected_rel2 = 543; }
+                            char buf2[256];
+                            snprintf(buf2, sizeof(buf2),
+                                     "[HTSIG_TIMING] %s emitted rel_idx=%llu expected=%d K=%d delta=%lld\n",
+                                     label2, (unsigned long long)rel_idx, expected_rel2,
+                                     g_lltf_offset_correct, (long long)((long long)rel_idx - (long long)expected_rel2));
+                            fprintf(stderr, "%s", buf2);
+                        }
                     }
                 } else {
                     // Buffer filled at non-boundary position - DANGER!
