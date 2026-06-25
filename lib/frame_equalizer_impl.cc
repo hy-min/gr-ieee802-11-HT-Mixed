@@ -2707,6 +2707,16 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_TIMING_OFFSET_APPLY=1 (δ estimation+correction ENABLED)\n";
     }
 
+    // Phase 38 Step 2: per-symbol δ drift diagnostic. Independent flag — can
+    // be enabled without IEEE80211_TIMING_OFFSET_APPLY to test on the raw
+    // (pre-Phase-34) state. Most useful WITH the apply flag to compare
+    // per-symbol δ after correction (should all be ~0 if Phase 34 worked).
+    const char* env_dps = std::getenv("IEEE80211_DELTA_PER_SYMBOL_DUMP");
+    d_log_delta_per_symbol = (env_dps && env_dps[0] == '1');
+    if (d_log_delta_per_symbol) {
+        std::cout << "[FRAME_EQ] IEEE80211_DELTA_PER_SYMBOL_DUMP=1 (per-symbol δ drift diagnostic ENABLED)\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -3853,6 +3863,96 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         USRP_LOG("%s", delta_buf);
                         g_delta_dump_counter++;
                     }
+                }
+            }
+
+            // Phase 38 Step 2: per-symbol δ drift diagnostic. Estimate δ
+            // independently from each symbol's 4 pilots (SCs {-21,-7,7,21},
+            // bins {48,49,50,51}). argH_pilot[sc] ≈ -2π·sc·δ/64 + residual.
+            // Linear regression gives per-symbol δ. Runs at counter=4 (HT-SIG1
+            // time, after Phase 34 retroactive correction is applied to all
+            // three header symbols).
+            //
+            // Interpretation:
+            //   - If Phase 34 worked: per-symbol δ ≈ 0 for all three symbols,
+            //     confirming constant-per-frame δ is the dominant model.
+            //   - If per-symbol δ varies significantly across LSIG/HTSIG0/
+            //     HTSIG1 (>0.1 = 1/10 of 1/64 grid), per-symbol drift exists
+            //     and Phase 34's constant-per-frame model is insufficient.
+            //
+            // Atomic snprintf+USRP_LOG prevents sync_short stdout shredding
+            // (Phase 9 lesson). Flood-gated to 10 frames to keep log small.
+            if (d_log_delta_per_symbol) {
+                static int g_delta_per_symbol_counter = 0;
+                if (g_delta_per_symbol_counter < 10) {
+                    const int pilot_scs[4]  = {-21, -7, 7, 21};
+                    const int pilot_bins[4] = {48, 49, 50, 51};
+                    const int syms[3]       = {kLSigRel, kHtSig0Rel, kHtSig1Rel};
+                    const char* sym_n[3]    = {"LSIG", "HTSIG0", "HTSIG1"};
+
+                    char dps_buf[512];
+                    int off = snprintf(dps_buf, sizeof(dps_buf),
+                                       "[DELTA_PER_SYMBOL] sym=%d H52_delta=%.4f",
+                                       d_internal_symbol_counter,
+                                       d_timing_offset_per_frame);
+
+                    for (int s = 0; s < 3; s++) {
+                        int sym = syms[s];
+                        if (!d_early_eqsym_valid[sym]) {
+                            off += snprintf(dps_buf + off, sizeof(dps_buf) - off,
+                                            " %s_pilot=NA", sym_n[s]);
+                            continue;
+                        }
+                        // Weighted linear regression of arg(d_early_eqsym[sym][pilot_bin])
+                        // vs pilot SC index. Same algorithm as Phase 34 δ estimator.
+                        double sum_sc = 0.0, sum_sc2 = 0.0, sum_arg = 0.0, sum_sc_arg = 0.0;
+                        double sum_w = 0.0;
+                        for (int i = 0; i < 4; i++) {
+                            float a = std::arg(d_early_eqsym[sym][pilot_bins[i]]);
+                            int sc = pilot_scs[i];
+                            float w = std::abs(d_early_eqsym[sym][pilot_bins[i]]);
+                            sum_sc     += (double)sc * w;
+                            sum_sc2    += (double)sc * sc * w;
+                            sum_arg    += a * w;
+                            sum_sc_arg += (double)sc * a * w;
+                            sum_w      += w;
+                        }
+                        if (sum_w < 1e-9) {
+                            off += snprintf(dps_buf + off, sizeof(dps_buf) - off,
+                                            " %s_pilot=NA", sym_n[s]);
+                            continue;
+                        }
+                        double mean_sc = sum_sc / sum_w;
+                        double mean_arg = sum_arg / sum_w;
+                        double cov = 0.0, var = 0.0;
+                        for (int i = 0; i < 4; i++) {
+                            float a = std::arg(d_early_eqsym[sym][pilot_bins[i]]);
+                            int sc = pilot_scs[i];
+                            float w = std::abs(d_early_eqsym[sym][pilot_bins[i]]);
+                            double dsc = sc - mean_sc;
+                            cov += w * dsc * (a - mean_arg);
+                            var += w * dsc * dsc;
+                        }
+                        if (var < 1e-9) {
+                            off += snprintf(dps_buf + off, sizeof(dps_buf) - off,
+                                            " %s_pilot=NA", sym_n[s]);
+                            continue;
+                        }
+                        double b = cov / var;
+                        float delta_pilot = (float)(-b * 64.0 / (2.0 * M_PI));
+                        delta_pilot = delta_pilot - std::floor(delta_pilot);
+                        // Also dump mean pilot arg (residual constant phase) and
+                        // mean |bin| (signal quality).
+                        double mean_arg_pilot = sum_arg / sum_w;
+                        double mean_mag_pilot = sum_w / 4.0;
+                        off += snprintf(dps_buf + off, sizeof(dps_buf) - off,
+                                        " %s_delta=%.4f phi=%.3f |bin|=%.2f",
+                                        sym_n[s], delta_pilot,
+                                        mean_arg_pilot, mean_mag_pilot);
+                    }
+                    off += snprintf(dps_buf + off, sizeof(dps_buf) - off, "\n");
+                    USRP_LOG("%s", dps_buf);
+                    g_delta_per_symbol_counter++;
                 }
             }
 

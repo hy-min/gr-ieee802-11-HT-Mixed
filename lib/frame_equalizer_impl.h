@@ -199,6 +199,15 @@ private:
     bool  d_log_timing_offset_dump   = false;
     bool  d_apply_timing_offset      = false;
 
+    // Phase 38 Step 2: per-symbol δ drift diagnostic. After Phase 34 δ
+    // correction is applied retroactively to L-SIG (counter=2), HT-SIG0 (3),
+    // HT-SIG1 (4), estimate δ independently from each symbol's 4 pilots
+    // (SCs {-21,-7,7,21} via bins {48,49,50,51}). If post-correction δ differs
+    // across symbols by more than ~0.1 (=1/10 of 1/64 grid), per-symbol δ
+    // drift is the bottleneck and Phase 34's constant-per-frame assumption
+    // is wrong. Opt-in via IEEE80211_DELTA_PER_SYMBOL_DUMP=1. Default OFF.
+    bool  d_log_delta_per_symbol      = false;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
