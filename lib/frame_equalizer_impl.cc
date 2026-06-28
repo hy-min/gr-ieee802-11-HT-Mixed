@@ -704,6 +704,7 @@ bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site
 bool g_log_h52_input = false;     // Bridge from d_log_h52_input to call-site dump (Hhdr52 at equalizer input)
 bool g_log_frame_gain = false;    // Bridge from d_log_frame_gain to static extract_header52_from_sym64
 bool g_eq_lltf_timing_dump = false;  // Phase 31: bridge to H52 compute site dump in general_work
+bool g_htsig_llr_weight = false;     // Phase 43: bridge d_htsig_llr_weight to static decode_htsig_from_rotated
 
 static int g_extract_call_count = 0;
 
@@ -2140,6 +2141,64 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     // Do NOT apply additional CPE compensation here.
 
     // Extract bits from HT-SIG0 (rx52_a)
+    //
+    // Phase 43 Layer 2: per-SC H52 null-based hard-bit gating. Detects null
+    // SCs (|H[i]| < 0.3 * 90th_percentile(|H|)) and forces their hard bit to
+    // 0. 90th percentile is robust to low-SNR noise (vs Phase 42 median which
+    // collapsed under noise). Bit gating is applied AFTER the eq-imag ternary
+    // (NOT by zeroing eq, because the ternary uses >= which makes eq=0 yield
+    // bit=1, not bit=0 — see test 3 in test_htsig_null_injection.py).
+    //
+    // Reference is computed ONCE for HT-SIG0 and reused for HT-SIG1 (both
+    // share Hhdr52 conceptually, but to be safe we recompute for HT-SIG1
+    // because H52_a and H52_b may differ if HTSIG_H_REESTIMATE is on).
+    bool is_null_a[48];
+    bool is_null_b[48];
+    double ref_a = 0.0, ref_b = 0.0;
+    if (g_htsig_llr_weight) {
+        // Compute abs_H for HT-SIG0 data SCs
+        std::array<double, 48> abs_H_a{};
+        for (int i = 0; i < 48; i++) {
+            abs_H_a[i] = std::abs(H52_a[i]);
+        }
+        std::array<double, 48> sorted_a{};
+        for (int i = 0; i < 48; i++) sorted_a[i] = abs_H_a[i];
+        std::sort(sorted_a.begin(), sorted_a.end());
+        ref_a = sorted_a[43];  // 90th percentile of 48 = index 43
+        const double k_thr_a = 0.3 * ref_a;
+        for (int i = 0; i < 48; i++) {
+            is_null_a[i] = (ref_a > 1e-9) && (abs_H_a[i] < k_thr_a);
+        }
+
+        // Compute abs_H for HT-SIG1 data SCs (may differ from H52_a)
+        std::array<double, 48> abs_H_b{};
+        for (int i = 0; i < 48; i++) {
+            abs_H_b[i] = std::abs(H52_b[i]);
+        }
+        std::array<double, 48> sorted_b{};
+        for (int i = 0; i < 48; i++) sorted_b[i] = abs_H_b[i];
+        std::sort(sorted_b.begin(), sorted_b.end());
+        ref_b = sorted_b[43];
+        const double k_thr_b = 0.3 * ref_b;
+        for (int i = 0; i < 48; i++) {
+            is_null_b[i] = (ref_b > 1e-9) && (abs_H_b[i] < k_thr_b);
+        }
+
+        // Diagnostic dump (count only, atomic snprintf).
+        int n_null_a = 0, n_null_b = 0;
+        for (int i = 0; i < 48; i++) {
+            if (is_null_a[i]) n_null_a++;
+            if (is_null_b[i]) n_null_b++;
+        }
+        USRP_LOG("[HTSIG_LLR_GATE] ref_a=%.4f n_null_a=%d  ref_b=%.4f n_null_b=%d\n",
+                 ref_a, n_null_a, ref_b, n_null_b);
+    } else {
+        for (int i = 0; i < 48; i++) {
+            is_null_a[i] = false;
+            is_null_b[i] = false;
+        }
+    }
+
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52_a[i]);
         gr_complex eq;
@@ -2151,6 +2210,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
         eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+        // Phase 43 Layer 2: gate null SCs at the BIT level (post-extraction).
+        // IMPORTANT: do not zero eq (the >= ternary would yield bit=1).
+        if (is_null_a[i]) {
+            eqbits48_a[i] = 0;
+        }
     }
 
     // Phase 20 Task 5: Per-SC phase diagnostic dump. Re-encode HT-SIG0
@@ -2249,6 +2313,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         }
         // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
         eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+        // Phase 43 Layer 2: gate null SCs at the BIT level (post-extraction).
+        if (is_null_b[i]) {
+            eqbits48_b[i] = 0;
+        }
     }
 
     if (invert_a) {
@@ -2641,7 +2709,8 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_htsig0_rel(-1),
       d_htsig1_rel(-1),
       d_data_start_rel(kDataStartRel),
-      d_is_ht_frame(false)
+      d_is_ht_frame(false),
+      d_htsig_llr_weight(false)
 {
     d_bpsk = make_bpsk_constellation();
     d_qpsk = make_qpsk_constellation();
@@ -2775,6 +2844,21 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_log_htsig_h52 = (env_hhd && env_hhd[0] == '1');
     if (d_log_htsig_h52) {
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H52_DUMP=1\n";
+    }
+
+    // Phase 43 Layer 2: per-SC H52 null-based hard-bit gating for HT-SIG.
+    // Detects null SCs by 90th percentile of |H52[i]| (robust under low SNR
+    // where Phase 42 median-based detection failed catastrophically). For
+    // each null SC, forces the hard bit to 0 (avoids the eq=0 bit-sign pitfall:
+    // (eq.imag()=0) >= 0 evaluates to TRUE in the C++ ternary, so eq=0 would
+    // yield bit=1 instead of bit=0). Default OFF. Enable via
+    // IEEE80211_HTSIG_LLR_WEIGHT=1.
+    const char* env_llr = std::getenv("IEEE80211_HTSIG_LLR_WEIGHT");
+    d_htsig_llr_weight = (env_llr && env_llr[0] == '1');
+    g_htsig_llr_weight = d_htsig_llr_weight;  // propagate to file-static
+    if (d_htsig_llr_weight) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_LLR_WEIGHT=1 "
+                     "(90th-pctile H52 null gating ENABLED)\n";
     }
 
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
