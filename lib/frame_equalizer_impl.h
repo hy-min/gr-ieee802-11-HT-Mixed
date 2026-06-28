@@ -152,16 +152,6 @@ private:
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
     bool d_log_htsig_h52;
 
-    // Phase 43 Layer 2: per-SC H52 null-based hard-bit gating for HT-SIG
-    // viterbi. Detects null SCs (|H[i]| < 0.3 * 90th_percentile(|H|)) and
-    // forces their hard bit to 0 (deterministic — eq=0 would yield bit=1
-    // because the C++ ternary uses >=, not >). 90th percentile is HIGH-biased
-    // and robust to noise (vs Phase 42 Layer 1 median which failed under low
-    // SNR). Only modifies HT-SIG viterbi input — does not touch H52 (Layer 1
-    // REFUTED, so H52 stays as Hhdr52). Default OFF. Enable via
-    // IEEE80211_HTSIG_LLR_WEIGHT=1.
-    bool d_htsig_llr_weight;
-
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the
