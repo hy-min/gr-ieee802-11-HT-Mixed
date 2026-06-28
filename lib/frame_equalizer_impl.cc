@@ -991,51 +991,6 @@ static float estimate_timing_offset_from_h52(const gr_complex* H52)
     return delta;
 }
 
-// Phase 42 Layer 1: per-SC H52 null detection + frequency-domain interpolation.
-// Mirrors examples/test_h52_null_injection.py exactly (including even-N median
-// semantics: average of sorted[25] and sorted[26], matching np.median).
-static constexpr int kNsc52 = 52;
-
-static std::array<bool, kNsc52> estimate_h52_null_index(const gr_complex H52[kNsc52]) {
-    std::array<bool, kNsc52> is_null{};
-    std::array<double, kNsc52> abs_H{};
-    for (int i = 0; i < kNsc52; i++) abs_H[i] = std::abs(H52[i]);
-
-    // Compute median of |H|. For even-N=52, Python np.median() averages the two
-    // middle elements; we mirror that to keep Python/C++ bit-parity.
-    std::array<double, kNsc52> sorted = abs_H;
-    std::sort(sorted.begin(), sorted.end());
-    double median_abs = 0.5 * (sorted[kNsc52 / 2 - 1] + sorted[kNsc52 / 2]);
-
-    const double k_threshold = 0.3;
-    for (int i = 0; i < kNsc52; i++) {
-        is_null[i] = (abs_H[i] < k_threshold * median_abs);
-    }
-    return is_null;
-}
-
-static void interpolate_h52_nulls(gr_complex H52[kNsc52],
-                                  const std::array<bool, kNsc52>& is_null) {
-    int n_null = 0;
-    for (bool b : is_null) if (b) n_null++;
-    if (n_null == 0 || n_null == kNsc52) return;  // no-op
-
-    for (int i = 0; i < kNsc52; i++) {
-        if (!is_null[i]) continue;
-        int L = i - 1, R = i + 1;
-        while (L >= 0 && is_null[L]) L--;
-        while (R < kNsc52 && is_null[R]) R++;
-        if (L >= 0 && R < kNsc52) {
-            H52[i] = (H52[L] + H52[R]) * gr_complex(0.5f, 0.0f);
-        } else if (L >= 0) {
-            H52[i] = H52[L];
-        } else if (R < kNsc52) {
-            H52[i] = H52[R];
-        }
-        // else: all-null corner case, keep H52[i]
-    }
-}
-
 static float estimate_header_cpe_rad(const gr_complex* rx52,
                                      const gr_complex* H52,
                                      bool is_ht_sig)
@@ -2893,14 +2848,6 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_DELTA_PER_SYMBOL_DUMP=1 (per-symbol δ drift diagnostic ENABLED)\n";
     }
 
-    // Phase 42 Layer 1: per-SC H52 null detection + frequency-domain interpolation.
-    // Default OFF.
-    const char* env_hni = std::getenv("IEEE80211_H52_NULL_INTERPOLATE");
-    d_h52_null_interpolate = (env_hni && env_hni[0] == '1');
-    if (d_h52_null_interpolate) {
-        std::cout << "[FRAME_EQ] IEEE80211_H52_NULL_INTERPOLATE=1 (H52 null detection+interp ENABLED)\n";
-    }
-
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -3533,11 +3480,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 estimate_header_channel_from_lltf52(lltf_for_H,
                                                     lltf_for_H,  // arg2 is unused, pass same ptr
                                                     H52);
-                // Phase 42 Layer 1: null detection + interpolation on H52.
-                if (d_h52_null_interpolate) {
-                    auto is_null = estimate_h52_null_index(H52);
-                    interpolate_h52_nulls(H52, is_null);
-                }
                 // [H52_DUMP] Diagnostic: dump |H52[i]| and arg(H52[i]) for all
                 // 52 subcarriers per frame. Opt-in via IEEE80211_H52_DUMP=1.
                 // Atomic snprintf+USRP_LOG prevents sync_short stdout shredding
@@ -3900,11 +3842,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
             estimate_header_channel_from_lltf52(lltf_for_H2,
                                                 lltf_for_H2,
                                                 Hhdr52);
-            // Phase 42 Layer 1: null detection + interpolation on Hhdr52.
-            if (d_h52_null_interpolate) {
-                auto is_null = estimate_h52_null_index(Hhdr52);
-                interpolate_h52_nulls(Hhdr52, is_null);
-            }
             // [H52_EQ_INPUT_DUMP] Phase 10 diagnostic: dump |Hhdr52[i]| and
             // arg(Hhdr52[i]) for all 52 subcarriers per frame at the moment
             // Hhdr52 is finalized for L-SIG/HT-SIG equalization (BEFORE the

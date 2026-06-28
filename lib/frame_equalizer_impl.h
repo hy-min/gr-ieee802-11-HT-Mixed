@@ -232,13 +232,6 @@ private:
     // is wrong. Opt-in via IEEE80211_DELTA_PER_SYMBOL_DUMP=1. Default OFF.
     bool  d_log_delta_per_symbol      = false;
 
-    // Phase 42 Layer 1: per-SC H52 null detection + frequency-domain
-    // interpolation. Detects |H[i]| < 0.3*median(|H|) as null and fills via
-    // mean of two nearest non-null neighbors. Mirrors Python reference
-    // examples/test_h52_null_injection.py. Default OFF.
-    // Enable via IEEE80211_H52_NULL_INTERPOLATE=1.
-    bool  d_h52_null_interpolate      = false;
-
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
