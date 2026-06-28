@@ -102,6 +102,39 @@ static inline gr_complex safe_div(const gr_complex& a, const gr_complex& b)
     return a * std::conj(b) / d;
 }
 
+// Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
+// At strong SCs (|H|² >> N0): behaves like ZF. At null SCs (|H|² << N0):
+// returns ~0 instead of amplifying noise by 1/|H|². N0 is estimated as
+// the 25th percentile of |H|² over the 48 data SCs — robust to outlier
+// null SCs dragging the estimate down. Operates on the full 52-element
+// HT subcarrier vector (data SCs at [0..48), pilots at [48..52)).
+//   in[52]:  rx52 (post-rotation, post-δ-corrected)
+//   H[52]:   Hhdr52 (or H_htsig if Phase 39 re-estimation is enabled)
+//   out[48]: eq48 — imaginary axis carries QBPSK bit
+static void mmse_equalize_htsig(const gr_complex* in,
+                                const gr_complex* H,
+                                gr_complex* out)
+{
+    // 1. Compute |H|² over the 48 data SCs and find the 25th percentile as N0.
+    double h_sq[48];
+    for (int i = 0; i < 48; i++) {
+        h_sq[i] = std::norm(H[i]);  // |H[i]|²
+    }
+    std::array<double, 48> sorted_h_sq{};
+    for (int i = 0; i < 48; i++) sorted_h_sq[i] = h_sq[i];
+    std::sort(sorted_h_sq.begin(), sorted_h_sq.end());
+    // 25th percentile of 48 values: linear interp at index 11.5 → average
+    // of sorted[11] and sorted[12] for parity with numpy.percentile(25).
+    double N0 = 0.5 * (sorted_h_sq[11] + sorted_h_sq[12]);
+    if (N0 < 1e-9) N0 = 1e-9;  // floor to prevent division by zero
+
+    // 2. MMSE equalize all 48 data SCs.
+    for (int i = 0; i < 48; i++) {
+        gr_complex denom(h_sq[i] + N0, 0.0f);
+        out[i] = (gr_complex)std::conj(H[i]) * in[i] / denom;
+    }
+}
+
 // ============================================================
 // HT tables
 // ============================================================
@@ -2269,7 +2302,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        int rot = -1,
                                        int* out_vit_metric = nullptr,
                                        const char** out_fail_reason = nullptr,
-                                       bool use_soft_llr = false)
+                                       bool use_soft_llr = false,
+                                       bool use_mmse = false)
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -2290,6 +2324,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     // Extract bits from HT-SIG0 (rx52_a)
     // Phase 44: when use_soft_llr, also compute LLR = sign(eq.imag()) * |H|/max|H|
+    // Phase 46 AR5: when d_mmse_equalize, use MMSE equalization (conj(H)·rx/(|H|²+N0))
+    //               to bypass Phase 38's 50× noise amplification at Hhdr52 nulls.
     // Parallel computation so the per-SC phase diagnostic dump keeps working.
     {
         float max_h_a = 0.0f;
@@ -2300,11 +2336,18 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             }
             if (max_h_a < 1e-6f) max_h_a = 1e-6f;
         }
+        // Phase 46 AR5: precompute MMSE-equalized HT-SIG0 if env var is ON.
+        gr_complex eq_mmse_a[48];
+        if (use_mmse) {
+            mmse_equalize_htsig(rx52_a, H52_a, eq_mmse_a);
+        }
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_a[i]);
             gr_complex eq;
             if (h_mag < 0.001f) {
                 eq = gr_complex(0.0f, 0.0f);
+            } else if (use_mmse) {
+                eq = eq_mmse_a[i];
             } else {
                 eq = safe_div(rx52_a[i], H52_a[i]);
             }
@@ -2406,6 +2449,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     // Extract bits from HT-SIG1 (rx52_b)
     // Phase 44: also compute LLR for HT-SIG1 when use_soft_llr.
+    // Phase 46 AR5: when d_mmse_equalize, use MMSE equalization (conj(H)·rx/(|H|²+N0))
+    //               to bypass Phase 38's 50× noise amplification at Hhdr52 nulls.
     {
         float max_h_b = 0.0f;
         if (use_soft_llr) {
@@ -2415,11 +2460,24 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             }
             if (max_h_b < 1e-6f) max_h_b = 1e-6f;
         }
+        // Phase 46 AR5: precompute MMSE-equalized HT-SIG1 if env var is ON.
+        // NOTE: MMSE must be applied to rx52_b AFTER any upstream rotation
+        // (e.g., cpe_rot_b is identity by default since general_work already
+        // phase-compensates rx52_b). The current cpe_rot_b path is opt-in via
+        // IEEE80211_HT_PER_SYMBOL_CPE and rotates the *equalized* symbol.
+        // We follow the same structure: MMSE produces eq48_b, then we
+        // post-multiply by cpe_rot_b to stay compatible with that path.
+        gr_complex eq_mmse_b[48];
+        if (use_mmse) {
+            mmse_equalize_htsig(rx52_b, H52_b, eq_mmse_b);
+        }
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_b[i]);
             gr_complex eq;
             if (h_mag < 0.001f) {
                 eq = gr_complex(0.0f, 0.0f);
+            } else if (use_mmse) {
+                eq = eq_mmse_b[i] * cpe_rot_b;
             } else {
                 eq = safe_div(rx52_b[i], H52_b[i]) * cpe_rot_b;
             }
@@ -3071,6 +3129,19 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_use_soft_llr_viterbi = (env_sllr && env_sllr[0] == '1');
     if (d_use_soft_llr_viterbi) {
         std::cout << "[FRAME_EQ] IEEE80211_SOFT_LLR_VITERBI=1 (HT-SIG soft-LLR viterbi ENABLED)\n";
+    }
+
+    // Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
+    // Bypasses Phase 38's 50× noise amplification at Hhdr52 channel nulls by
+    // regularizing the denominator with a noise-floor estimate (25th percentile
+    // of |H|²). Applied ONLY to HT-SIG0/HT-SIG1 bit extraction; L-SIG and data
+    // symbols keep their existing safe_div path (Phase 34 δ correction already
+    // unblocked L-SIG on USRP). Default OFF. Enable via
+    // IEEE80211_MMSE_EQUALIZE=1.
+    const char* env_mmse = std::getenv("IEEE80211_MMSE_EQUALIZE");
+    d_mmse_equalize = (env_mmse && env_mmse[0] == '1');
+    if (d_mmse_equalize) {
+        std::cout << "[FRAME_EQ] IEEE80211_MMSE_EQUALIZE=1 (HT-SIG MMSE equalization ENABLED)\n";
     }
 
     set_algorithm(algo);
@@ -4728,7 +4799,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            rot,
                                                            &cand_metric,
                                                            &cand_fail,
-                                                           d_use_soft_llr_viterbi);
+                                                           d_use_soft_llr_viterbi,
+                                                           d_mmse_equalize);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).

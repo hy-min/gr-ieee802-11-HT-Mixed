@@ -242,6 +242,14 @@ private:
     // Enable via IEEE80211_SOFT_LLR_VITERBI=1.
     bool d_use_soft_llr_viterbi       = false;
 
+    // Phase 46 AR5: MMSE equalization for HT-SIG. When true, the HT-SIG0/1
+    // bit-extraction path uses eq = conj(H)·rx / (|H|² + N0) instead of
+    // safe_div(rx, H). Bypasses Phase 38's 50× noise amplification at
+    // Hhdr52 channel nulls. N0 = 25th percentile of |H|² over the 48 data
+    // SCs. Applied only to HT-SIG (L-SIG and data symbols keep safe_div).
+    // Default OFF. Enable via IEEE80211_MMSE_EQUALIZE=1.
+    bool d_mmse_equalize               = false;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
