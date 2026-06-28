@@ -232,6 +232,16 @@ private:
     // is wrong. Opt-in via IEEE80211_DELTA_PER_SYMBOL_DUMP=1. Default OFF.
     bool  d_log_delta_per_symbol      = false;
 
+    // Phase 44: soft-LLR viterbi for HT-SIG unblock. When true, the
+    // HT-SIG decoder feeds soft LLRs (sign(eq.imag()) * |H[i]|/max(|H|))
+    // to viterbi_decode_133_171_soft instead of hard bits to the original
+    // hard-bit viterbi. The branch metric is squared-error distance, so
+    // channel-null SCs (|H[i]| ~ 0) contribute ~0 to the path metric and
+    // don't poison the viterbi's choice. Hypothesis: bypasses Phase 41's
+    // 50x noise amplification at Hhdr52 nulls. Default OFF.
+    // Enable via IEEE80211_SOFT_LLR_VITERBI=1.
+    bool d_use_soft_llr_viterbi       = false;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase

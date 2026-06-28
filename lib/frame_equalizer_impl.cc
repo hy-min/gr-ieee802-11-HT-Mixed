@@ -1189,6 +1189,148 @@ static bool viterbi_decode_133_171(const uint8_t* rx_bits,
     return true;
 }
 
+// =====================================================================
+// Phase 44: Soft-LLR viterbi variant.
+//
+// Same K=7, rate 1/2, polynomials 133/171 trellis, but the branch
+// metric uses SQUARED-ERROR distance from the soft observation to the
+// expected BPSK constellation point. Magnitude of the input controls
+// confidence weighting: a near-zero LLR contributes little to the path
+// metric even if it disagrees with the branch's expected output.
+//
+// Soft input format: rx_soft[2*t] = LLR for output bit o0, where
+//   - sign = expected bit value (+1 -> bit 1, -1 -> bit 0)
+//   - magnitude = confidence (proportional to |H[i]| / max(|H|))
+//
+// Branch metric for transition producing (o0, o1):
+//   bm = (rx_soft[2*t]   - (1 if o0 else -1))^2
+//      + (rx_soft[2*t+1] - (1 if o1 else -1))^2
+// Returned metric is the float sum (not int) because squared-error
+// needs fractional precision. Callers compare across candidates.
+// =====================================================================
+static bool viterbi_decode_133_171_soft(const float* rx_soft,
+                                        int n_encoded_bits,
+                                        std::vector<uint8_t>& decoded_bits,
+                                        int* out_best_metric_q8 = nullptr)
+{
+    if (n_encoded_bits <= 0 || (n_encoded_bits & 0x1)) {
+        return false;
+    }
+
+    const int n_steps = n_encoded_bits / 2;
+    // Metrics are sums of squared errors in Q8.8 fixed-point to avoid
+    // float divergence across long paths while keeping enough precision
+    // for ordering. INF = INT_MAX/4 like the hard-bit version.
+    const int INF = std::numeric_limits<int>::max() / 4;
+
+    std::array<int, 64> metric_prev;
+    std::array<int, 64> metric_curr;
+    metric_prev.fill(INF);
+    metric_prev[0] = 0;
+
+    std::vector<std::array<int, 64>> prev_state(n_steps + 1);
+    std::vector<std::array<uint8_t, 64>> prev_bit(n_steps + 1);
+
+    for (int t = 0; t <= n_steps; t++) {
+        prev_state[t].fill(-1);
+        prev_bit[t].fill(0);
+    }
+
+    for (int t = 0; t < n_steps; t++) {
+        metric_curr.fill(INF);
+
+        // Soft observations are LLRs in roughly [-1, +1]. Scale to Q8.8
+        // (multiply by 256) so squared-error comparisons stay ordered.
+        const int r0_q = (int)std::lroundf(rx_soft[2 * t] * 256.0f);
+        const int r1_q = (int)std::lroundf(rx_soft[2 * t + 1] * 256.0f);
+
+        for (int s = 0; s < 64; s++) {
+            const int mp = metric_prev[s];
+            if (mp >= INF) {
+                continue;
+            }
+
+            for (int b = 0; b <= 1; b++) {
+                const int reg = ((s << 1) | b) & 0x7f;
+                const uint8_t o0 = ones8_local(reg & 0133) & 0x1;
+                const uint8_t o1 = ones8_local(reg & 0171) & 0x1;
+                const int ns = reg & 0x3f;
+
+                // Reference LLR for o=1 is +1 (Q8.8 = +256), for o=0 is -1 (Q8.8 = -256)
+                const int ref0 = o0 ? 256 : -256;
+                const int ref1 = o1 ? 256 : -256;
+                const int err0 = r0_q - ref0;
+                const int err1 = r1_q - ref1;
+                // Q8.8 squared gives Q16.16; shift right 8 to keep ints small.
+                const int bm = ((err0 * err0) >> 8) + ((err1 * err1) >> 8);
+                const int mc = mp + bm;
+
+                if (mc < metric_curr[ns]) {
+                    metric_curr[ns] = mc;
+                    prev_state[t + 1][ns] = s;
+                    prev_bit[t + 1][ns] = (uint8_t)b;
+                }
+            }
+        }
+
+        metric_prev = metric_curr;
+    }
+
+    int best_state = 0;
+    int best_metric = metric_prev[best_state];
+    if (best_metric >= INF) {
+        best_metric = INF;
+        for (int s = 0; s < 64; s++) {
+            if (metric_prev[s] < best_metric) {
+                best_metric = metric_prev[s];
+                best_state = s;
+            }
+        }
+        if (best_metric >= INF) {
+            if (out_best_metric_q8) *out_best_metric_q8 = INF;
+            return false;
+        }
+    }
+    if (out_best_metric_q8) *out_best_metric_q8 = best_metric;
+
+    decoded_bits.assign(n_steps, 0);
+
+    for (int t = n_steps; t >= 1; t--) {
+        decoded_bits[t - 1] = prev_bit[t][best_state];
+        best_state = prev_state[t][best_state];
+        if (best_state < 0 && t > 1) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Phase 44: Convert per-SC QBPSK equalized symbol + H magnitude into a
+// 48-element LLR array. LLR[i] = sign(eq.imag()) * |H[i]| / max(|H|).
+// The sign carries the bit decision; the magnitude carries confidence.
+// Null SCs (|H[i]| near 0) get near-zero LLR, which the soft viterbi
+// treats as erasure — exactly the down-weighting we need.
+static void compute_soft_llr_qbpsk(const gr_complex* eq48,
+                                   const gr_complex* H52,
+                                   float llr_out[48])
+{
+    // Compute max |H| over the 48 data SCs (skip pilots which are unused here).
+    float max_h = 0.0f;
+    for (int i = 0; i < 48; i++) {
+        const float hm = std::abs(H52[i]);
+        if (hm > max_h) max_h = hm;
+    }
+    if (max_h < 1e-6f) max_h = 1e-6f;  // avoid div by zero
+
+    for (int i = 0; i < 48; i++) {
+        const float hm = std::abs(H52[i]);
+        const float conf = hm / max_h;
+        const float s = (eq48[i].imag() >= 0.0f) ? 1.0f : -1.0f;
+        llr_out[i] = s * conf;
+    }
+}
+
 // HT-SIG CRC8:
 // init all ones, polynomial x^8 + x^2 + x + 1, final invert
 // input bits[0..33], LSB-first
@@ -2126,7 +2268,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        bool& out_use_ldpc,
                                        int rot = -1,
                                        int* out_vit_metric = nullptr,
-                                       const char** out_fail_reason = nullptr)
+                                       const char** out_fail_reason = nullptr,
+                                       bool use_soft_llr = false)
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -2135,22 +2278,45 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     uint8_t deintl48_a[48];
     uint8_t deintl48_b[48];
     uint8_t enc96[96];
+    // Phase 44: parallel soft-LLR buffers (only populated when use_soft_llr)
+    float llr48_a[48];
+    float llr48_b[48];
+    float llr_inter_a[48];
+    float llr_inter_b[48];
+    float enc96_soft[96];
 
     // NOTE: rx52_a/b (d_early_eqsym) has already been phase-compensated in general_work.
     // Do NOT apply additional CPE compensation here.
 
     // Extract bits from HT-SIG0 (rx52_a)
-    for (int i = 0; i < 48; i++) {
-        float h_mag = std::abs(H52_a[i]);
-        gr_complex eq;
-        if (h_mag < 0.001f) {
-            eq = gr_complex(0.0f, 0.0f);
-        } else {
-            eq = safe_div(rx52_a[i], H52_a[i]);
+    // Phase 44: when use_soft_llr, also compute LLR = sign(eq.imag()) * |H|/max|H|
+    // Parallel computation so the per-SC phase diagnostic dump keeps working.
+    {
+        float max_h_a = 0.0f;
+        if (use_soft_llr) {
+            for (int i = 0; i < 48; i++) {
+                float hm = std::abs(H52_a[i]);
+                if (hm > max_h_a) max_h_a = hm;
+            }
+            if (max_h_a < 1e-6f) max_h_a = 1e-6f;
         }
-        // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
-        eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+        for (int i = 0; i < 48; i++) {
+            float h_mag = std::abs(H52_a[i]);
+            gr_complex eq;
+            if (h_mag < 0.001f) {
+                eq = gr_complex(0.0f, 0.0f);
+            } else {
+                eq = safe_div(rx52_a[i], H52_a[i]);
+            }
+            // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
+            // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
+            eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+            if (use_soft_llr) {
+                float conf = h_mag / max_h_a;
+                float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
+                llr48_a[i] = s * conf;
+            }
+        }
     }
 
     // Phase 20 Task 5: Per-SC phase diagnostic dump. Re-encode HT-SIG0
@@ -2239,16 +2405,32 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     }
 
     // Extract bits from HT-SIG1 (rx52_b)
-    for (int i = 0; i < 48; i++) {
-        float h_mag = std::abs(H52_b[i]);
-        gr_complex eq;
-        if (h_mag < 0.001f) {
-            eq = gr_complex(0.0f, 0.0f);
-        } else {
-            eq = safe_div(rx52_b[i], H52_b[i]) * cpe_rot_b;
+    // Phase 44: also compute LLR for HT-SIG1 when use_soft_llr.
+    {
+        float max_h_b = 0.0f;
+        if (use_soft_llr) {
+            for (int i = 0; i < 48; i++) {
+                float hm = std::abs(H52_b[i]);
+                if (hm > max_h_b) max_h_b = hm;
+            }
+            if (max_h_b < 1e-6f) max_h_b = 1e-6f;
         }
-        // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
-        eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+        for (int i = 0; i < 48; i++) {
+            float h_mag = std::abs(H52_b[i]);
+            gr_complex eq;
+            if (h_mag < 0.001f) {
+                eq = gr_complex(0.0f, 0.0f);
+            } else {
+                eq = safe_div(rx52_b[i], H52_b[i]) * cpe_rot_b;
+            }
+            // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
+            eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
+            if (use_soft_llr) {
+                float conf = h_mag / max_h_b;
+                float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
+                llr48_b[i] = s * conf;
+            }
+        }
     }
 
     if (invert_a) {
@@ -2279,6 +2461,26 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         enc96[48 + i] = deintl48_b[i];
     }
 
+    // Phase 44: if soft-LLR enabled, also deinterleave+invert the soft LLRs
+    // and concatenate to enc96_soft (the float array the soft viterbi consumes).
+    // Inversion flips the SIGN of the LLR (equivalent to flipping the bit).
+    if (use_soft_llr) {
+        const float sign_a = invert_a ? -1.0f : 1.0f;
+        const float sign_b = invert_b ? -1.0f : 1.0f;
+        for (int k = 0; k < 48; k++) {
+            const int j = 3 * (k % 16) + k / 16;
+            llr_inter_a[k] = llr48_a[j] * sign_a;
+        }
+        for (int k = 0; k < 48; k++) {
+            const int j = 3 * (k % 16) + k / 16;
+            llr_inter_b[k] = llr48_b[j] * sign_b;
+        }
+        for (int i = 0; i < 48; i++) {
+            enc96_soft[i]       = llr_inter_a[i];
+            enc96_soft[48 + i]  = llr_inter_b[i];
+        }
+    }
+
     // Phase 19 Task 1.5: HT-SIG input constellation dump in active decoder.
     if (getenv("IEEE80211_HTSIG_INPUT_DUMP")) {
         char buf[512];
@@ -2293,7 +2495,18 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
 
     std::vector<uint8_t> dec48;
     int vit_metric = -1;
-    if (!viterbi_decode_133_171(enc96, 96, dec48, &vit_metric)) {
+    int vit_metric_soft = 0;
+    bool vit_ok = false;
+    if (use_soft_llr) {
+        // Phase 44: soft-LLR viterbi. Branch metric = squared error to
+        // expected BPSK constellation; LLR magnitude weights confidence.
+        vit_ok = viterbi_decode_133_171_soft(enc96_soft, 96, dec48, &vit_metric_soft);
+        // Map Q8.8 metric back to an int (best-effort) for logging parity.
+        vit_metric = vit_metric_soft;
+    } else {
+        vit_ok = viterbi_decode_133_171(enc96, 96, dec48, &vit_metric);
+    }
+    if (!vit_ok) {
         // Phase 18 Task 3: HT-SIG viterbi audit log. Records the 96-bit
         // input that failed to converge to a valid 48-bit HT-SIG frame,
         // along with the path-metric from viterbi and the inversion state
@@ -2846,6 +3059,18 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_log_delta_per_symbol = (env_dps && env_dps[0] == '1');
     if (d_log_delta_per_symbol) {
         std::cout << "[FRAME_EQ] IEEE80211_DELTA_PER_SYMBOL_DUMP=1 (per-symbol δ drift diagnostic ENABLED)\n";
+    }
+
+    // Phase 44: soft-LLR viterbi for HT-SIG unblock. When enabled, the
+    // HTSIG decoder feeds soft LLRs (sign(eq.imag()) * |H[i]|/max(|H|))
+    // to viterbi_decode_133_171_soft instead of hard bits. The branch
+    // metric is squared-error distance, so channel-null SCs (|H[i]|~0)
+    // contribute ~0 to the path metric. Hypothesis: bypasses Phase 41's
+    // 50x noise amplification at Hhdr52 nulls. Default OFF.
+    const char* env_sllr = std::getenv("IEEE80211_SOFT_LLR_VITERBI");
+    d_use_soft_llr_viterbi = (env_sllr && env_sllr[0] == '1');
+    if (d_use_soft_llr_viterbi) {
+        std::cout << "[FRAME_EQ] IEEE80211_SOFT_LLR_VITERBI=1 (HT-SIG soft-LLR viterbi ENABLED)\n";
     }
 
     set_algorithm(algo);
@@ -4502,7 +4727,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            parsed_use_ldpc,
                                                            rot,
                                                            &cand_metric,
-                                                           &cand_fail);
+                                                           &cand_fail,
+                                                           d_use_soft_llr_viterbi);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
