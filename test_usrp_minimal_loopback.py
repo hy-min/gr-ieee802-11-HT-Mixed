@@ -137,9 +137,18 @@ def internal_run(args):
             # USRP RX. Two configurations supported:
             # (1) Default: ch 0, A:0 subdev, RX2 port, same-board TDD. Per commit 515b543.
             # (2) --cross-board: ch 0, B:0 subdev, TX/RX port. Phase 52.
+            # Phase 58 Task 3: increase UHD recv buffer + num_recv_frames.
+            # Default 1MB / 32 frames yields 0% sample delivery at 20 MHz x 4B/complex = 80 MB/s
+            # (see /tmp/p58_t3_recv_buffer.log). 16MB / 256 frames absorbs USRP burst pressure
+            # and achieves 100.1% delivery. 64MB / 512 is no better — pick 16MB / 256 for memory.
             self.uhd_usrp_source = uhd.usrp_source(
                 device_addr="addr=192.168.10.2",
-                stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=[0]),
+                stream_args=uhd.stream_args(
+                    cpu_format="fc32",
+                    otw_format="sc16",
+                    args=uhd.device_addr("recv_buff_size=16777216,num_recv_frames=256"),
+                    channels=[0],
+                ),
             )
             rx_ch = 0
             if args.cross_board:
