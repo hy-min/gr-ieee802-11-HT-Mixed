@@ -204,7 +204,6 @@ def internal_run(args):
             self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.fcs, 'pdu'))
 
             print(f"[TEST] Config: freq={args.freq}MHz rate={args.rate}MHz tx_gain={args.tx_gain} rx_gain={args.rx_gain}")
-            print(f"[TEST] C-layer stderr redirected to /dev/null")
             # Phase 58: report current CPU governor + cpuset for verification
             try:
                 with open('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor') as f:
