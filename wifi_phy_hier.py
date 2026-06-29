@@ -75,9 +75,11 @@ class wifi_phy_hier(gr.hier_block2):
         ##################################################
 
         self.sync_short = ieee802_11.sync_short(sensitivity, 2, True, True)
-        self.sync_short.set_min_output_buffer(500000)
+        # Phase 58 Task 5: increased to 1M samples (8 MB) for USRP burst absorption
+        self.sync_short.set_min_output_buffer(1000000)
         self.sync_long = ieee802_11.sync_long(sync_length, True, True)
-        self.sync_long.set_min_output_buffer(500000)
+        # Phase 58 Task 5: increased to 1M samples (8 MB) for USRP burst absorption
+        self.sync_long.set_min_output_buffer(1000000)
         self.ieee802_11_mapper_0 = ieee802_11.mapper(encoding, False)
         self.ieee802_11_mapper_0.set_use_ldpc(use_ldpc)
         self.ieee802_11_frame_equalizer_0 = ieee802_11.frame_equalizer(chan_est, frequency, bandwidth, False, False)
@@ -123,11 +125,14 @@ class wifi_phy_hier(gr.hier_block2):
         self.blocks_tagged_stream_mux_0 = blocks.tagged_stream_mux(gr.sizeof_gr_complex*1, "packet_len", 2)
         self.blocks_tagged_stream_mux_0.set_min_output_buffer((max_symbols * 52 * 8))
         self.blocks_stream_to_vector_0 = blocks.stream_to_vector(gr.sizeof_gr_complex*1, 64)
-        self.blocks_stream_to_vector_0.set_min_output_buffer(500000)
+        # Phase 58 Task 5: increased to 1M samples (8 MB) for USRP burst absorption
+        self.blocks_stream_to_vector_0.set_min_output_buffer(1000000)
         self.sync_short_fused_0 = ieee802_11.sync_short_fused(sensitivity, 3.0, 1024)
-        self.sync_short_fused_0.set_min_output_buffer(500000)
+        # Phase 58 Task 5: increased to 1M samples (8 MB) for USRP burst absorption
+        self.sync_short_fused_0.set_min_output_buffer(1000000)
         self.blocks_delay_0 = blocks.delay(gr.sizeof_gr_complex*1, sync_length)
-        self.blocks_delay_0.set_min_output_buffer(500000)
+        # Phase 58 Task 5: increased to 1M samples (8 MB) for USRP burst absorption
+        self.blocks_delay_0.set_min_output_buffer(1000000)
 
 
         ##################################################
