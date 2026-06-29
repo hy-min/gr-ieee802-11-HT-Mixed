@@ -5053,6 +5053,26 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
 
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
+
+                    // Phase 59: detect + interpolate H52 nulls (only when env var ON).
+                    if (d_h52_null_interp_enabled) {
+                        auto nulls = detect_h52_nulls(d_H52_tx_order, d_h52_null_thresh);
+                        if (d_h52_null_dump_enabled) {
+                            char buf[512];
+                            int off = snprintf(buf, sizeof(buf),
+                                "[H52_NULL] n_nulls=%zu/%d thresh=%.3f radius=%d\n",
+                                nulls.size(), 52, d_h52_null_thresh, d_h52_interp_radius);
+                            for (size_t i = 0; i < nulls.size() && off < (int)sizeof(buf) - 32; i++) {
+                                off += snprintf(buf + off, sizeof(buf) - off,
+                                    "  [%d] |H|=%.3f arg=%.3f\n",
+                                    nulls[i], std::abs(d_H52_tx_order[nulls[i]]),
+                                    std::arg(d_H52_tx_order[nulls[i]]));
+                            }
+                            USRP_LOG("%s", buf);
+                        }
+                        interp_h52_nulls(d_H52_tx_order, nulls, d_h52_interp_radius);
+                    }
+
                     d_H52_tx_order_valid = true;
                 }
                 extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
