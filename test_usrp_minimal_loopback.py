@@ -212,10 +212,13 @@ def internal_run(args):
     tb = MinimalUSRPTest(args)
     tb.start()
 
-    # CRITICAL: Wait for LO to lock before sending data
-    print("\n[TEST] Waiting for LO to stabilize...")
-    time.sleep(1.0)
-    print("[TEST] LO should be locked now.")
+    # CRITICAL: Wait for USRP LO to lock + thermal stabilization before sending data
+    # Phase 58: --warmup default 60s. Phase 31b healthy baseline used fresh-reboot
+    # + cold caches. Subsequent runs (Phase 47+) saw progressive degradation as
+    # thermal state and UHD socket buffer state varied.
+    print(f"\n[TEST] Waiting for USRP warmup ({args.warmup}s: LO lock + thermal stab)...")
+    time.sleep(args.warmup)
+    print(f"[TEST] USRP warmup complete. LO should be locked and thermally stable.")
 
     print(f"\n[TEST] Running for {args.duration} seconds...")
     print(f"[TEST] Press Ctrl+C to stop early\n")
@@ -257,6 +260,7 @@ def main():
     parser.add_argument('--rate', type=float, default=20, help='Sample rate in MHz')
     parser.add_argument('--interval', type=int, default=1000, help='Frame interval ms')
     parser.add_argument('--duration', type=float, default=10, help='Test duration seconds')
+    parser.add_argument('--warmup', type=float, default=60.0, help='USRP warmup seconds (LO lock + thermal stab)')
     parser.add_argument('--len', type=int, default=10, help='Payload length bytes')
     parser.add_argument('--ldpc', action='store_true', help='Enable LDPC')
     parser.add_argument('--mcs', type=int, default=0, choices=range(9), help='MCS mode')
