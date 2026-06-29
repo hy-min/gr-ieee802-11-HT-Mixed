@@ -702,6 +702,54 @@ static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out
     }
 }
 
+// Phase 59: detect H52 channel nulls. Return indices where |H52[i]| < thresh.
+// Skip DC (i=0) since |H52[0]| is always 0 (no subcarrier at DC in 802.11n).
+// Mirrors Python detect_h52_nulls() in
+// examples/test_h52_null_interp_synthetic.py.
+static std::vector<int> detect_h52_nulls(const gr_complex* h52, float thresh)
+{
+    std::vector<int> nulls;
+    for (int i = 1; i < 52; i++) {  // skip DC
+        if (std::abs(h52[i]) < thresh) {
+            nulls.push_back(i);
+        }
+    }
+    return nulls;
+}
+
+// Phase 59: replace null SCs with mean of nearest non-null neighbors within
+// `radius` (left/right). Cluster nulls (no valid neighbors) are left
+// unchanged (don't make them worse than baseline).
+// Mirrors Python interp_h52_nulls() in
+// examples/test_h52_null_interp_synthetic.py.
+static void interp_h52_nulls(gr_complex* h52,
+                              const std::vector<int>& nulls,
+                              int radius)
+{
+    // Use set for O(1) membership test
+    std::set<int> null_set(nulls.begin(), nulls.end());
+    for (int null_idx : nulls) {
+        std::complex<float> sum(0.0f, 0.0f);
+        int count = 0;
+        for (int d = 1; d <= radius; d++) {
+            int left  = null_idx - d;
+            int right = null_idx + d;
+            if (left >= 0 && null_set.find(left) == null_set.end()) {
+                sum += h52[left];
+                count++;
+            }
+            if (right < 52 && null_set.find(right) == null_set.end()) {
+                sum += h52[right];
+                count++;
+            }
+        }
+        if (count > 0) {
+            h52[null_idx] = sum / static_cast<float>(count);
+        }
+        // else: cluster null -> keep original (no-op)
+    }
+}
+
 // legacy L-LTF known signs on the 48 data carriers above
 // These are just ±1 real values - used for sign check only
 static constexpr int kLltf48Sign[48] = {
@@ -3161,6 +3209,28 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     if (d_mmse_equalize) {
         std::cout << "[FRAME_EQ] IEEE80211_MMSE_N0_PERCENTILE=" << d_mmse_n0_percentile
                   << " (N0 = " << d_mmse_n0_percentile << "th percentile)\n";
+    }
+
+    // Phase 59: H52 null detect + 邻域插值. All default OFF (Phase 33/34/38/41 baseline).
+    const char* env_h52ni = std::getenv("IEEE80211_H52_NULL_INTERP");
+    d_h52_null_interp_enabled = (env_h52ni && env_h52ni[0] == '1');
+    const char* env_h52nt = std::getenv("IEEE80211_H52_NULL_THRESH");
+    if (env_h52nt && env_h52nt[0] != '\0') {
+        float t = std::atof(env_h52nt);
+        if (t > 0.0f && t < 1.0f) d_h52_null_thresh = t;
+    }
+    const char* env_h52ir = std::getenv("IEEE80211_H52_INTERP_RADIUS");
+    if (env_h52ir && env_h52ir[0] != '\0') {
+        int r = std::atoi(env_h52ir);
+        if (r >= 1 && r <= 5) d_h52_interp_radius = r;
+    }
+    const char* env_h52nd = std::getenv("IEEE80211_H52_NULL_DUMP");
+    d_h52_null_dump_enabled = (env_h52nd && env_h52nd[0] == '1');
+    if (d_h52_null_interp_enabled) {
+        std::cout << "[FRAME_EQ] IEEE80211_H52_NULL_INTERP=1 (H52 null interp ENABLED, "
+                  << "thresh=" << d_h52_null_thresh
+                  << ", radius=" << d_h52_interp_radius
+                  << ", dump=" << (d_h52_null_dump_enabled ? "ON" : "OFF") << ")\n";
     }
 
     set_algorithm(algo);

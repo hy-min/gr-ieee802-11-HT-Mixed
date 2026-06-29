@@ -261,6 +261,17 @@ private:
     gr_complex d_h52_stash[52]         = {};
     bool       d_h52_stash_valid       = false;
 
+    // Phase 59: per-SC H52 null detection + 邻域插值.
+    // Hypothesis: Hhdr52 channel nulls (|H|<0.15) cause 50x noise
+    // amplification in safe_div, putting equalized HT-SIG on REAL axis.
+    // Replace null SC |H| with mean of nearest non-null neighbors (radius=2)
+    // to recover equalization fidelity. Default OFF. Enable via
+    // IEEE80211_H52_NULL_INTERP=1.
+    bool  d_h52_null_interp_enabled = false;  // master enable
+    float d_h52_null_thresh         = 0.15f;  // |H[i]| < thresh -> null
+    int   d_h52_interp_radius       = 2;      // left/right neighbor window
+    bool  d_h52_null_dump_enabled   = false;  // diagnostic dump (default OFF)
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
