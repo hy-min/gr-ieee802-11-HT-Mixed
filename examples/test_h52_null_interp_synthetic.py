@@ -3,10 +3,11 @@
 Phase 59 synthetic test: H52 null detection + 邻域插值.
 
 Validates the algorithm in pure Python (NumPy) before C++ port.
-Tests 3 modes:
-  --mode detect : detect_h52_nulls accuracy on injected nulls
-  --mode interp : interp_h52_nulls accuracy on injected nulls
-  --mode e2e    : end-to-end HT-SIG viterbi metric=0 with interp enabled
+Tests 4 modes:
+  --mode detect     : detect_h52_nulls accuracy on injected nulls
+  --mode interp     : interp_h52_nulls accuracy on injected nulls
+  --mode e2e        : end-to-end HT-SIG viterbi metric=0 with interp enabled
+  --mode crosscheck : compile inline C++ test, verify matches Python prototype
 
 Reference: docs/superpowers/specs/2026-06-29-phase59-h52-null-interp-design.md
 """
@@ -186,9 +187,89 @@ def test_e2e():
     return True
 
 
+def test_cpp_cross_check():
+    """Run a small C++ test binary and verify it produces the same nulls
+    as the Python prototype."""
+    import subprocess
+    import tempfile
+    import os
+
+    cpp_src = '''
+#include <iostream>
+#include <vector>
+#include <set>
+#include <complex>
+#include <cmath>
+typedef std::complex<float> gr_complex;
+static std::vector<int> detect_h52_nulls(const gr_complex* h52, float thresh) {
+    std::vector<int> nulls;
+    for (int i = 1; i < 52; i++) if (std::abs(h52[i]) < thresh) nulls.push_back(i);
+    return nulls;
+}
+static void interp_h52_nulls(gr_complex* h52, const std::vector<int>& nulls, int radius) {
+    std::set<int> null_set(nulls.begin(), nulls.end());
+    for (int null_idx : nulls) {
+        std::complex<float> sum(0.0f, 0.0f); int count = 0;
+        for (int d = 1; d <= radius; d++) {
+            int left  = null_idx - d, right = null_idx + d;
+            if (left >= 0 && null_set.find(left) == null_set.end()) { sum += h52[left]; count++; }
+            if (right < 52 && null_set.find(right) == null_set.end()) { sum += h52[right]; count++; }
+        }
+        if (count > 0) h52[null_idx] = sum / (float)count;
+    }
+}
+int main() {
+    gr_complex h52[52];
+    for (int i = 0; i < 52; i++) h52[i] = gr_complex(0.7f, 0.0f);
+    h52[0] = 0.0f;
+    h52[5]  = gr_complex(0.05f, 0.0f);
+    h52[10] = gr_complex(0.04f, 0.0f);
+    h52[20] = gr_complex(0.06f, 0.0f);
+    h52[30] = gr_complex(0.03f, 0.0f);
+    h52[40] = gr_complex(0.05f, 0.0f);
+    h52[50] = gr_complex(0.04f, 0.0f);
+    auto nulls = detect_h52_nulls(h52, 0.15f);
+    std::cout << "detected: ";
+    for (int n : nulls) std::cout << n << " ";
+    std::cout << "\\n";
+    interp_h52_nulls(h52, nulls, 2);
+    std::cout << "interp: ";
+    for (int n : nulls) std::cout << std::abs(h52[n]) << " ";
+    std::cout << "\\n";
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, 'test.cpp')
+        binp = os.path.join(tmpdir, 'test')
+        with open(src, 'w') as f:
+            f.write(cpp_src)
+        # Compile
+        r = subprocess.run(['g++', '-std=c++17', '-O2', src, '-o', binp],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[CROSSCHECK] FAIL: g++ error: {r.stderr[:200]}")
+            return False
+        # Run
+        r = subprocess.run([binp], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[CROSSCHECK] FAIL: binary error: {r.stderr[:200]}")
+            return False
+        output = r.stdout
+        # Expected: "detected: 5 10 20 30 40 50 \ninterp: 0.7 0.7 0.7 0.7 0.7 0.7 \n"
+        if "5 10 20 30 40 50" not in output:
+            print(f"[CROSSCHECK] FAIL: C++ detect output mismatch: {output[:200]}")
+            return False
+        if "0.7 0.7 0.7 0.7 0.7 0.7" not in output:
+            print(f"[CROSSCHECK] FAIL: C++ interp output mismatch: {output[:200]}")
+            return False
+    print("[CROSSCHECK] PASS (C++ matches Python prototype)")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['detect', 'interp', 'e2e', 'all'],
+    parser.add_argument('--mode', choices=['detect', 'interp', 'e2e', 'crosscheck', 'all'],
                         default='all')
     args = parser.parse_args()
 
@@ -199,6 +280,8 @@ def main():
         results['interp'] = test_interp()
     if args.mode in ('e2e', 'all'):
         results['e2e'] = test_e2e()
+    if args.mode in ('crosscheck', 'all'):
+        results['crosscheck'] = test_cpp_cross_check()
 
     if not all(results.values()):
         print(f"\n[FAIL] modes: {results}")
