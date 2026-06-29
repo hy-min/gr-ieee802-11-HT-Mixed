@@ -116,43 +116,73 @@ def test_interp():
 
 
 def test_e2e():
-    """End-to-end: with interp enabled, HT-SIG viterbi metric=0 on ideal signal."""
+    """End-to-end: verify interpolation reduces noise amplification at null SCs.
+
+    The bug being fixed: when H52 has channel nulls (|H|~0), equalizing
+    rx/h52 amplifies noise by ~50x at those SCs, putting equalized HT-SIG
+    on REAL axis where QBPSK detection fails. The algorithm replaces nulls
+    with neighbor means, so rx/h52_interp has well-behaved errors at null
+    SCs. This test verifies that improvement.
+    """
     # Build a synthetic H52 with 6 nulls
     h52, _ = make_synthetic_h52(n_nulls=6, null_seed=42)
     nulls = detect_h52_nulls(h52, thresh=0.15)
     h52_interp = interp_h52_nulls(h52, nulls, radius=2)
 
-    # Build synthetic rx52 (TX signal * H52).
-    # Use the *interpolated* H52 as the "true" channel model: this simulates
-    # the post-fix scenario where the equalizer sees a clean (interpolated)
-    # channel estimate. The pre-interp H52 with nulls would have attenuated
-    # rx, so dividing by h52_interp could not recover tx (the information is
-    # already lost in the channel). Here we verify the equalizer works given
-    # a corrected channel.
+    # Simulate the actual channel: rx = tx * h52 (true channel has nulls)
     rng = np.random.default_rng(123)
     tx = np.zeros(52, dtype=np.complex64)
     for i in range(52):
         # QBPSK on imag axis: 0 -> +j, 1 -> -j
         bit = rng.integers(0, 2)
         tx[i] = 1j * (1.0 if bit == 0 else -1.0)
-    rx = tx * h52_interp  # channel effect (interpolated, no nulls)
+    rx = tx * h52  # channel with nulls (this is the air path)
 
-    # Equalize: eq = rx / h52_interp -> should recover tx exactly.
-    # Note: h52_interp[0] = 0 (DC), so division yields inf/nan at i=0, which
-    # is expected (DC is unused for equalization). Suppress the warning.
+    # Add noise comparable to |tx*h52_null| to make the noise-amplification
+    # effect dominant at null SCs (matches USRP Phase 38 finding: 50x noise
+    # amplification at Hhdr52 nulls in practice). At noise_std=0.5:
+    #   signal at null SCs: |tx*h52_null| = 1.0 * 0.05 = 0.05
+    #   noise term after baseline division: 0.5 / 0.05 = 10x amplified
+    #   signal recovered to ~1.0 (perfect division since rx = tx*h52)
+    #   so baseline err at null SCs is dominated by 10x noise (~5-10).
+    # After interpolation (|h52_interp| ~ 0.7):
+    #   noise term: 0.5 / 0.7 ~ 0.7
+    #   so interp err at null SCs is dominated by ~0.7 noise.
+    # Expected ratio: ~10-15x improvement.
+    noise = (rng.standard_normal(52) + 1j * rng.standard_normal(52)) * 0.5
+    rx = rx + noise
+
+    # BASELINE: equalize with the nulled H52 (the current behavior)
+    # DC (i=0) has h=0, so division yields inf/nan. Suppress.
     with np.errstate(invalid='ignore', divide='ignore'):
-        eq_with_interp = rx / h52_interp  # tx recovered (no null SCs to corrupt)
+        eq_with_nulls = rx / h52  # massive errors at null SCs
 
-    # For each null SC, eq_with_interp should be near tx (BPSK/QBPSK clean)
-    err_nulls = 0
+    # INTERP: equalize with the interpolated H52 (the algorithm output)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        eq_with_interp = rx / h52_interp  # well-behaved
+
+    # Measure error at null SCs for both
+    err_with_nulls = []
+    err_with_interp = []
     for null_idx in nulls:
-        err_with_interp = abs(eq_with_interp[null_idx] - tx[null_idx])
-        if err_with_interp > 0.01:  # exact recovery (within float precision)
-            err_nulls += 1
-    if err_nulls > 0:
-        print(f"[E2E] FAIL: {err_nulls} null SCs still have equalization error after interp")
+        err_with_nulls.append(abs(eq_with_nulls[null_idx] - tx[null_idx]))
+        err_with_interp.append(abs(eq_with_interp[null_idx] - tx[null_idx]))
+    avg_err_nulls = sum(err_with_nulls) / len(err_with_nulls)
+    avg_err_interp = sum(err_with_interp) / len(err_with_interp)
+
+    print(f"[E2E] avg error at null SCs:")
+    print(f"  baseline (rx/h52):       {avg_err_nulls:.3f}")
+    print(f"  with interp (rx/h52_int): {avg_err_interp:.3f}")
+
+    # Pass: interpolation must reduce error significantly at null SCs.
+    # A factor of 10x improvement is the threshold: |H_null|=0.05 vs
+    # |H_strong|=0.7 means 14x amplification factor (1/0.05 / 1/0.7 = 14).
+    if avg_err_interp >= avg_err_nulls / 10:
+        print(f"[E2E] FAIL: interpolation did not reduce error by 10x "
+              f"({avg_err_interp:.3f} vs baseline {avg_err_nulls:.3f})")
         return False
-    print(f"[E2E] PASS (no null SCs corrupted by equalization after interp)")
+    print(f"[E2E] PASS (interpolation reduced null-SC error "
+          f"{avg_err_nulls/avg_err_interp:.1f}x)")
     return True
 
 
