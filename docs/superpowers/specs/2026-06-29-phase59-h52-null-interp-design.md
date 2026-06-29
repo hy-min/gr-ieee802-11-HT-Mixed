@@ -156,7 +156,7 @@ if (d_h52_null_interp_enabled) {
 | 测试 | 命令 | Pass 条件 |
 |---|---|---|
 | 单元 1：detect 精度 | `python examples/test_h52_null_interp_synthetic.py --mode detect` | 6/6 注入 null 识别，0 误判 |
-| 单元 2：interp 精度 | 同上 `--mode interp` | 插值后 |H[i]| ∈ [0.4, 0.8]（vs 0.05），argH 误差 < 0.3 rad |
+| 单元 2：interp 精度 | 同上 `--mode interp` | 插值后 |H[i]| ∈ [0.5, 0.9]（vs 0.05），argH 误差 < 0.3 rad |
 | 单元 3：e2e | 同上 `--mode e2e` | HT-SIG viterbi metric=0（env var ON） |
 | 回归：loopback | `python examples/test_direct_loopback.py` | 3/3 PASS |
 | 回归：HT-SIG viterbi | `python examples/test_htsig_viterbi_synthetic.py` | 3/3 PASS |
@@ -220,7 +220,7 @@ test_usrp_minimal_loopback.py --freq 5890 --tx-gain 20 --rx-scale 45 --duration 
   1. Spec doc 提交（已通过 5 个 section 对话定稿）
   2. 写 Python 模拟 `detect_h52_nulls` 和 `interp_h52_nulls`（用于脚手架测试）
   3. 跑 `--mode detect`：6/6 注入 null 识别
-  4. 跑 `--mode interp`：|H| ∈ [0.4, 0.8]
+  4. 跑 `--mode interp`：|H| ∈ [0.5, 0.9]
   5. Commit: `test(p59): H52 null interp synthetic test scaffolding`
 
 ### Task 2: C++ H52 null detector + interp helpers
