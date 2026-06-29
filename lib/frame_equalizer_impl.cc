@@ -5058,7 +5058,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     if (d_h52_null_interp_enabled) {
                         auto nulls = detect_h52_nulls(d_H52_tx_order, d_h52_null_thresh);
                         if (d_h52_null_dump_enabled) {
-                            char buf[512];
+                            // 52 nulls × ~30 chars/entry + ~64 char header = ~1624 bytes.
+                            // 2048 leaves headroom for safety.
+                            char buf[2048];
                             int off = snprintf(buf, sizeof(buf),
                                 "[H52_NULL] n_nulls=%zu/%d thresh=%.3f radius=%d\n",
                                 nulls.size(), 52, d_h52_null_thresh, d_h52_interp_radius);

@@ -71,6 +71,11 @@ if (use_direct_tx_order) {
 `d_is_ht = true` is set only inside `set_ht_frame_params_from_mcs_len()`
 (line 3458), which is called only after a successful HT-SIG viterbi decode.
 
+Note: the gate at line 5018 uses `d_is_ht` (set at line 3458 only on
+HT-SIG viterbi success); the cited `is_ht_frame=0` log entries
+corroborate the upstream HT-SIG failure but are not the direct gate
+field.
+
 On USRP, **all 8 logged `HT_SIG_PARSE_FAIL` entries show `is_ht_frame=0`**.
 The HT-SIG detector currently never sets `is_ht_frame=1` for any frame in
 this 35s run, so the equalizer's HT-data code path is never entered and
