@@ -4,194 +4,211 @@ Minimal USRP loopback test - NO GUI, NO DEBUG LOGS
 Disables C-layer stderr to eliminate fprintf flood.
 Captures: sent count, recv count, FCS status
 Usage: python test_usrp_minimal_loopback.py --duration 10
+
+Phase 52: Cross-board support via subprocess stderr suppression
+(lifts pattern from test_usrp_air_loopback.py)
 """
 import argparse
 import os
 import sys
 import time
 import signal
+import subprocess as sp
 
-# Disable ALL debug output from C layer
-# DEBUG: Temporarily disabled to see C-layer logs
-# orig_stderr_fd = os.dup(2)
-# with open('/dev/null', 'w') as devnull:
-#     os.dup2(devnull.fileno(), 2)
-
-os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
-os.environ['GR_RPC_ENABLE'] = 'False'
-
-from gnuradio import gr, blocks, uhd
-import pmt
-import ieee802_11
-
-sys.path.insert(0, '/home/hy/gr-ieee802-11')
-sys.path.insert(0, '/home/hy/gr-ieee802-11/examples')
-from wifi_phy_hier import wifi_phy_hier
+# === Subprocess wrapper REMOVED in Phase 53 ===
+# Phase 52 used a subprocess+stderr wrapper (lifted from test_usrp_air_loopback.py)
+# to suppress C-layer fprintf noise. Phase 53 testing revealed this approach
+# BREAKS UHD streaming on cross-board and same-board: when stderr is redirected
+# (to /dev/null OR to a file), the RX chain produces 0 HT_SIG_CAND events
+# vs 16 events with direct stdout/stderr. The stderr redirection somehow
+# starves the UHD async stream.
+#
+# Phase 53: Run test directly, accept stderr noise. Use `2>/dev/null` shell
+# redirect if you want to suppress.
+# Note: --internal-run flag is preserved for backward compatibility with
+# legacy scripts that may invoke this script as a subprocess.
 
 
-class MinimalUSRPTest(gr.top_block):
-    def __init__(self, args):
-        gr.top_block.__init__(self, "Minimal USRP Loopback")
-        self.args = args
-        
-        # TX PHY
-        self.wifi_phy_tx = wifi_phy_hier(
-            bandwidth=10e6,
-            chan_est=ieee802_11.LS,
-            encoding=ieee802_11.BPSK_1_2,
-            frequency=5.89e9,
-            sensitivity=0.01
-        )
-        self.wifi_phy_tx.set_use_ldpc(args.ldpc)
-        
-        # RX PHY (separate instance)
-        self.wifi_phy_rx = wifi_phy_hier(
-            bandwidth=10e6,
-            chan_est=ieee802_11.LS,
-            encoding=ieee802_11.BPSK_1_2,
-            frequency=5.89e9,
-            sensitivity=0.01
-        )
-        
-        # Message strobe: send frames periodically
-        self.msg_strobe = blocks.message_strobe(
-            pmt.intern("x" * args.len), args.interval
-        )
-        
-        # MAC
-        self.mac = ieee802_11.mac(
-            [0x23, 0x23, 0x23, 0x23, 0x23, 0x23],
-            [0x42, 0x42, 0x42, 0x42, 0x42, 0x42],
-            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
-        )
-        
-        # Debug counters
-        self.msg_debug_mac = blocks.message_debug()
-        self.msg_debug_rx = blocks.message_debug()
+def internal_run(args):
+    """Actual test logic - runs in subprocess with stderr suppressed.
+    All gnuradio imports and class definitions scoped to this function.
+    """
+    os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
+    os.environ['GR_RPC_ENABLE'] = 'False'
 
-        # FCS logger: counts PDUs by crc metadata (Phase 34 e2e verification).
-        # Mirrors examples/test_direct_loopback.py:18-33. Note: decode_mac sets
-        # crc=1 in FCS-OK publish path (fixed in Phase 22).
-        class FcsLogger(gr.basic_block):
-            def __init__(self):
-                gr.basic_block.__init__(self, name="fcs", in_sig=None, out_sig=None)
-                self.message_port_register_in(pmt.intern("pdu"))
-                self.set_msg_handler(pmt.intern("pdu"), self.handle)
-                self.ok = 0
-                self.fail = 0
+    from gnuradio import gr, blocks, uhd
+    import pmt
+    import ieee802_11
 
-            def handle(self, msg):
-                meta = pmt.car(msg)
-                crc = pmt.to_long(pmt.dict_ref(meta, pmt.intern('crc'), pmt.from_long(0)))
-                if crc:
-                    self.ok += 1
-                    print("*** FCS OK ***")
-                else:
-                    self.fail += 1
+    sys.path.insert(0, '/home/hy/gr-ieee802-11')
+    sys.path.insert(0, '/home/hy/gr-ieee802-11/examples')
+    from wifi_phy_hier import wifi_phy_hier
 
-        self.fcs = FcsLogger()
-        
-        # Encoding stripper
-        class encoding_stripper(gr.basic_block):
-            def __init__(self):
-                gr.basic_block.__init__(self, name="encoding_stripper",
-                                        in_sig=None, out_sig=None)
-                self.message_port_register_in(pmt.intern("pdu"))
-                self.message_port_register_out(pmt.intern("pdu"))
-                self.set_msg_handler(pmt.intern("pdu"), self.handle_pdu)
-            def handle_pdu(self, msg):
-                meta = pmt.car(msg)
-                data = pmt.cdr(msg)
-                meta = pmt.dict_delete(meta, pmt.mp("encoding"))
-                meta = pmt.dict_delete(meta, pmt.mp("mcs"))
-                self.message_port_pub(pmt.intern("pdu"), pmt.cons(meta, data))
-        
-        self.encoding_stripper = encoding_stripper()
-        
-        # USRP TX (Radio 0, TX/RX port)
-        self.uhd_usrp_sink = uhd.usrp_sink(
-            device_addr="addr=192.168.10.2",
-            stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
-        )
-        self.uhd_usrp_sink.set_samp_rate(args.rate * 1e6)
-        self.uhd_usrp_sink.set_center_freq(args.freq * 1e6, 0)
-        self.uhd_usrp_sink.set_gain(args.tx_gain, 0)
-        self.uhd_usrp_sink.set_antenna("TX/RX", 0)
-        self.uhd_usrp_sink.set_subdev_spec("A:0", 0)
-        
-        # USRP RX (Radio 0, RX2 port - same board TDD)
-        self.uhd_usrp_source = uhd.usrp_source(
-            device_addr="addr=192.168.10.2",
-            stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
-        )
-        self.uhd_usrp_source.set_samp_rate(args.rate * 1e6)
-        self.uhd_usrp_source.set_center_freq(args.freq * 1e6, 0)
-        self.uhd_usrp_source.set_gain(args.rx_gain, 0)
-        self.uhd_usrp_source.set_antenna("RX2", 0)
-        self.uhd_usrp_source.set_subdev_spec("A:0", 0)
-        self.uhd_usrp_source.set_bandwidth(args.rate * 1e6, 0)
-        
-        # RX Buffer
-        self.rx_buffer = blocks.copy(gr.sizeof_gr_complex)
-        self.rx_buffer.set_min_output_buffer(5000000)
+    class MinimalUSRPTest(gr.top_block):
+        def __init__(self, args):
+            gr.top_block.__init__(self, "Minimal USRP Loopback")
+            self.args = args
 
-        # RX software gain: amplify low-amplitude USRP signal to ~1.0
-        # Observed USRP RX amplitude ~0.0265, need ~40x gain to reach ~1.06
-        self.rx_gain_block = blocks.multiply_const_cc(args.rx_scale)
-        
-        # File sink for raw IQ (optional)
-        if args.capture:
-            nsamples = int(args.duration * args.rate * 1e6)
-            self.head = blocks.head(gr.sizeof_gr_complex, nsamples)
-            self.file_sink = blocks.file_sink(gr.sizeof_gr_complex, args.capture, False)
-        
-        # Null sources/sinks
-        self.null_src = blocks.null_source(gr.sizeof_gr_complex)
-        self.null_sink = blocks.null_sink(gr.sizeof_gr_complex)
-        
-        # ===== Connections =====
-        # TX path
-        self.msg_connect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
-        self.msg_connect((self.mac, 'phy out'), (self.encoding_stripper, 'pdu'))
-        self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy_tx, 'mac_in'))
-        self.msg_connect((self.mac, 'phy out'), (self.msg_debug_mac, 'store'))
-        
-        self.connect((self.null_src, 0), (self.wifi_phy_tx, 0))
-        self.connect((self.wifi_phy_tx, 0), (self.uhd_usrp_sink, 0))
-        
-        # RX path
-        self.connect((self.uhd_usrp_source, 0), (self.rx_buffer, 0))
-        self.connect((self.rx_buffer, 0), (self.rx_gain_block, 0))
-        if args.capture:
-            self.connect((self.rx_gain_block, 0), (self.head, 0))
-            self.connect((self.head, 0), (self.file_sink, 0))
-        self.connect((self.rx_gain_block, 0), (self.wifi_phy_rx, 0))
-        self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
-        
-        self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
-        self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.fcs, 'pdu'))
-        
-        print(f"[TEST] Config: freq={args.freq}MHz rate={args.rate}MHz tx_gain={args.tx_gain} rx_gain={args.rx_gain}")
-        print(f"[TEST] C-layer stderr redirected to /dev/null")
-        if args.capture:
-            print(f"[TEST] Raw IQ capture enabled: {args.capture}")
+            # TX PHY
+            self.wifi_phy_tx = wifi_phy_hier(
+                bandwidth=10e6,
+                chan_est=ieee802_11.LS,
+                encoding=ieee802_11.BPSK_1_2,
+                frequency=5.89e9,
+                sensitivity=0.01
+            )
+            self.wifi_phy_tx.set_use_ldpc(args.ldpc)
 
+            # RX PHY (separate instance)
+            self.wifi_phy_rx = wifi_phy_hier(
+                bandwidth=10e6,
+                chan_est=ieee802_11.LS,
+                encoding=ieee802_11.BPSK_1_2,
+                frequency=5.89e9,
+                sensitivity=0.01
+            )
 
-def main():
-    parser = argparse.ArgumentParser(description='Minimal USRP Loopback Test (No GUI)')
-    parser.add_argument('--freq', type=float, default=5890, help='Center frequency in MHz')
-    parser.add_argument('--tx-gain', type=float, default=20, help='TX gain dB')
-    parser.add_argument('--rx-gain', type=float, default=20, help='RX gain dB')
-    parser.add_argument('--rate', type=float, default=20, help='Sample rate in MHz')
-    parser.add_argument('--interval', type=int, default=1000, help='Frame interval ms')
-    parser.add_argument('--duration', type=float, default=10, help='Test duration seconds')
-    parser.add_argument('--len', type=int, default=10, help='Payload length bytes')
-    parser.add_argument('--ldpc', action='store_true', help='Enable LDPC')
-    parser.add_argument('--mcs', type=int, default=0, choices=range(9), help='MCS mode')
-    parser.add_argument('--rx-scale', type=float, default=40.0, help='RX software gain (multiplier)')
-    parser.add_argument('--capture', type=str, default='', help='Capture raw IQ to file')
-    args = parser.parse_args()
-    
+            # Message strobe: send frames periodically
+            self.msg_strobe = blocks.message_strobe(
+                pmt.intern("x" * args.len), args.interval
+            )
+
+            # MAC
+            self.mac = ieee802_11.mac(
+                [0x23, 0x23, 0x23, 0x23, 0x23, 0x23],
+                [0x42, 0x42, 0x42, 0x42, 0x42, 0x42],
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+            )
+
+            # Debug counters
+            self.msg_debug_mac = blocks.message_debug()
+            self.msg_debug_rx = blocks.message_debug()
+
+            # FCS logger: counts PDUs by crc metadata (Phase 34 e2e verification).
+            class FcsLogger(gr.basic_block):
+                def __init__(self):
+                    gr.basic_block.__init__(self, name="fcs", in_sig=None, out_sig=None)
+                    self.message_port_register_in(pmt.intern("pdu"))
+                    self.set_msg_handler(pmt.intern("pdu"), self.handle)
+                    self.ok = 0
+                    self.fail = 0
+
+                def handle(self, msg):
+                    meta = pmt.car(msg)
+                    crc = pmt.to_long(pmt.dict_ref(meta, pmt.intern('crc'), pmt.from_long(0)))
+                    if crc:
+                        self.ok += 1
+                        print("*** FCS OK ***")
+                    else:
+                        self.fail += 1
+
+            self.fcs = FcsLogger()
+
+            # Encoding stripper
+            class encoding_stripper(gr.basic_block):
+                def __init__(self):
+                    gr.basic_block.__init__(self, name="encoding_stripper",
+                                            in_sig=None, out_sig=None)
+                    self.message_port_register_in(pmt.intern("pdu"))
+                    self.message_port_register_out(pmt.intern("pdu"))
+                    self.set_msg_handler(pmt.intern("pdu"), self.handle_pdu)
+                def handle_pdu(self, msg):
+                    meta = pmt.car(msg)
+                    data = pmt.cdr(msg)
+                    meta = pmt.dict_delete(meta, pmt.mp("encoding"))
+                    meta = pmt.dict_delete(meta, pmt.mp("mcs"))
+                    self.message_port_pub(pmt.intern("pdu"), pmt.cons(meta, data))
+
+            self.encoding_stripper = encoding_stripper()
+
+            # USRP TX. Channel 0 = A:0 subdev (slot A, subdev 0).
+            # USRP X310 has 2 daughterboard slots: A and B. Each has its own UBX-160.
+            # Per UHD RFNoC mapping: ch 0 -> A:0, ch 1 -> B:0.
+            self.uhd_usrp_sink = uhd.usrp_sink(
+                device_addr="addr=192.168.10.2",
+                stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
+            )
+            self.uhd_usrp_sink.set_samp_rate(args.rate * 1e6)
+            self.uhd_usrp_sink.set_center_freq(args.freq * 1e6, 0)
+            self.uhd_usrp_sink.set_gain(args.tx_gain, 0)
+            self.uhd_usrp_sink.set_antenna("TX/RX", 0)
+            self.uhd_usrp_sink.set_subdev_spec("A:0", 0)
+
+            # USRP RX. Two configurations supported:
+            # (1) Default: ch 0, A:0 subdev, RX2 port, same-board TDD. Per commit 515b543.
+            # (2) --cross-board: ch 0, B:0 subdev, TX/RX port. Phase 52.
+            self.uhd_usrp_source = uhd.usrp_source(
+                device_addr="addr=192.168.10.2",
+                stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=[0]),
+            )
+            rx_ch = 0
+            if args.cross_board:
+                self.uhd_usrp_source.set_subdev_spec("B:0", rx_ch)
+                self.uhd_usrp_source.set_antenna("TX/RX", rx_ch)
+            else:
+                self.uhd_usrp_source.set_antenna("RX2", rx_ch)
+                self.uhd_usrp_source.set_subdev_spec(args.rx_subdev, rx_ch)
+            self.uhd_usrp_source.set_gain(args.rx_gain, rx_ch)
+            self.uhd_usrp_source.set_center_freq(args.freq * 1e6, rx_ch)
+            self.uhd_usrp_source.set_bandwidth(args.rate * 1e6, rx_ch)
+
+            # Phase 52: Diagnostic print of cross-board wiring
+            print(f"[TEST] RX subdev_spec: {self.uhd_usrp_source.get_subdev_spec(rx_ch)}")
+            print(f"[TEST] RX antenna: {self.uhd_usrp_source.get_antenna(rx_ch)}")
+            print(f"[TEST] TX subdev_spec: {self.uhd_usrp_sink.get_subdev_spec(0)}")
+            print(f"[TEST] TX antenna: {self.uhd_usrp_sink.get_antenna(0)}")
+
+            # RX Buffer (Phase 52: 20MB absorbs USRP burst pressure)
+            self.rx_buffer = blocks.copy(gr.sizeof_gr_complex)
+            self.rx_buffer.set_min_output_buffer(20000000)
+
+            # RX software gain: amplify low-amplitude USRP signal to ~1.0
+            # Observed USRP RX amplitude ~0.0265, need ~40x gain to reach ~1.06
+            self.rx_gain_block = blocks.multiply_const_cc(args.rx_scale)
+
+            # Phase 52: Second buffer absorbs downstream burst pressure
+            self.rx_buffer2 = blocks.copy(gr.sizeof_gr_complex)
+            self.rx_buffer2.set_min_output_buffer(10000000)
+
+            # File sink for raw IQ (optional)
+            if args.capture:
+                nsamples = int(args.duration * args.rate * 1e6)
+                self.head = blocks.head(gr.sizeof_gr_complex, nsamples)
+                self.file_sink = blocks.file_sink(gr.sizeof_gr_complex, args.capture, False)
+
+            # Null sources/sinks
+            self.null_src = blocks.null_source(gr.sizeof_gr_complex)
+            self.null_sink = blocks.null_sink(gr.sizeof_gr_complex)
+
+            # ===== Connections =====
+            # TX path
+            self.msg_connect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
+            self.msg_connect((self.mac, 'phy out'), (self.encoding_stripper, 'pdu'))
+            self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy_tx, 'mac_in'))
+            self.msg_connect((self.mac, 'phy out'), (self.msg_debug_mac, 'store'))
+
+            self.connect((self.null_src, 0), (self.wifi_phy_tx, 0))
+            self.connect((self.wifi_phy_tx, 0), (self.uhd_usrp_sink, 0))
+
+            # RX path (Phase 52: rx_buffer2 inserted between rx_gain_block and wifi_phy_rx)
+            self.connect((self.uhd_usrp_source, 0), (self.rx_buffer, 0))
+            self.connect((self.rx_buffer, 0), (self.rx_gain_block, 0))
+            self.connect((self.rx_gain_block, 0), (self.rx_buffer2, 0))
+            if args.capture:
+                self.connect((self.rx_buffer2, 0), (self.head, 0))
+                self.connect((self.head, 0), (self.file_sink, 0))
+            self.connect((self.rx_buffer2, 0), (self.wifi_phy_rx, 0))
+            self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
+
+            self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
+            self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.fcs, 'pdu'))
+
+            print(f"[TEST] Config: freq={args.freq}MHz rate={args.rate}MHz tx_gain={args.tx_gain} rx_gain={args.rx_gain}")
+            print(f"[TEST] C-layer stderr redirected to /dev/null")
+            if args.capture:
+                print(f"[TEST] Raw IQ capture enabled: {args.capture}")
+
+    # ===== Test loop body =====
     tb = MinimalUSRPTest(args)
     tb.start()
 
@@ -199,10 +216,6 @@ def main():
     print("\n[TEST] Waiting for LO to stabilize...")
     time.sleep(1.0)
     print("[TEST] LO should be locked now.")
-
-    # Restore stderr for Python print output
-    # os.dup2(orig_stderr_fd, 2)
-    # os.close(orig_stderr_fd)
 
     print(f"\n[TEST] Running for {args.duration} seconds...")
     print(f"[TEST] Press Ctrl+C to stop early\n")
@@ -218,11 +231,11 @@ def main():
             time.sleep(0.5)
     except KeyboardInterrupt:
         pass
-    
+
     print()
     tb.stop()
     tb.wait()
-    
+
     sent = tb.msg_debug_mac.num_messages()
     recv = tb.msg_debug_rx.num_messages()
     print(f"\n[TEST] ===== RESULTS =====")
@@ -230,10 +243,33 @@ def main():
     print(f"[TEST] Recv: {recv}")
     print(f"[TEST] Success Rate: {recv/max(1,sent)*100:.1f}%")
     print(f"[TEST] FCS_OK={tb.fcs.ok} FCS_FAIL={tb.fcs.fail}")
-    
+
     if args.capture and os.path.exists(args.capture):
         size = os.path.getsize(args.capture)
         print(f"[TEST] Capture file: {args.capture} ({size} bytes)")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Minimal USRP Loopback Test (No GUI)')
+    parser.add_argument('--freq', type=float, default=5890, help='Center frequency in MHz')
+    parser.add_argument('--tx-gain', type=float, default=20, help='TX gain dB')
+    parser.add_argument('--rx-gain', type=float, default=20, help='RX gain dB')
+    parser.add_argument('--rate', type=float, default=20, help='Sample rate in MHz')
+    parser.add_argument('--interval', type=int, default=1000, help='Frame interval ms')
+    parser.add_argument('--duration', type=float, default=10, help='Test duration seconds')
+    parser.add_argument('--len', type=int, default=10, help='Payload length bytes')
+    parser.add_argument('--ldpc', action='store_true', help='Enable LDPC')
+    parser.add_argument('--mcs', type=int, default=0, choices=range(9), help='MCS mode')
+    parser.add_argument('--rx-scale', type=float, default=40.0, help='RX software gain (multiplier)')
+    parser.add_argument('--capture', type=str, default='', help='Capture raw IQ to file')
+    parser.add_argument('--cross-board', action='store_true', help='Use A:0 TX -> B:0 RX (cross-daughterboard, no internal leak)')
+    parser.add_argument('--rx-subdev', type=str, default='A:0', help='RX subdev spec (default A:0, use B:0 for cross-board)')
+    parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    # Phase 53: always run internal_run directly. Subprocess wrapper removed.
+    sys.exit(internal_run(args))
+
 
 if __name__ == '__main__':
     main()
