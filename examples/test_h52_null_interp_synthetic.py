@@ -245,8 +245,12 @@ int main() {
         with open(src, 'w') as f:
             f.write(cpp_src)
         # Compile
-        r = subprocess.run(['g++', '-std=c++17', '-O2', src, '-o', binp],
-                           capture_output=True, text=True)
+        try:
+            r = subprocess.run(['g++', '-std=c++17', '-O2', src, '-o', binp],
+                               capture_output=True, text=True)
+        except FileNotFoundError:
+            print("[CROSSCHECK] FAIL: g++ not found on PATH")
+            return False
         if r.returncode != 0:
             print(f"[CROSSCHECK] FAIL: g++ error: {r.stderr[:200]}")
             return False
@@ -256,12 +260,23 @@ int main() {
             print(f"[CROSSCHECK] FAIL: binary error: {r.stderr[:200]}")
             return False
         output = r.stdout
-        # Expected: "detected: 5 10 20 30 40 50 \ninterp: 0.7 0.7 0.7 0.7 0.7 0.7 \n"
-        if "5 10 20 30 40 50" not in output:
-            print(f"[CROSSCHECK] FAIL: C++ detect output mismatch: {output[:200]}")
+        # Parse labelled lines: "detected: N1 N2 ..." and "interp: M1 M2 ..."
+        detected_line = next((ln for ln in output.splitlines()
+                              if ln.startswith("detected:")), "")
+        interp_line = next((ln for ln in output.splitlines()
+                            if ln.startswith("interp:")), "")
+        detected = list(map(int, detected_line.split()[1:])) if detected_line else []
+        interp_mags = list(map(float, interp_line.split()[1:])) if interp_line else []
+        expected_detected = [5, 10, 20, 30, 40, 50]
+        expected_mags = [0.7] * 6
+        if detected != expected_detected:
+            print(f"[CROSSCHECK] FAIL: C++ detect = {detected}, "
+                  f"expected {expected_detected}")
             return False
-        if "0.7 0.7 0.7 0.7 0.7 0.7" not in output:
-            print(f"[CROSSCHECK] FAIL: C++ interp output mismatch: {output[:200]}")
+        if (len(interp_mags) != len(expected_mags) or
+                any(abs(m - 0.7) > 1e-6 for m in interp_mags)):
+            print(f"[CROSSCHECK] FAIL: C++ interp mags = {interp_mags}, "
+                  f"expected ~[0.7]*6")
             return False
     print("[CROSSCHECK] PASS (C++ matches Python prototype)")
     return True
