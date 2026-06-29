@@ -250,6 +250,17 @@ private:
     // Default OFF. Enable via IEEE80211_MMSE_EQUALIZE=1.
     bool d_mmse_equalize               = false;
 
+    // Phase 47: N0 percentile for MMSE (1-100, default 25). 25th = robust
+    // to a few nulls. 10 = more aggressive. 50+ behaves like median
+    // (Phase 42 REFUTED, do not use). Read once at constructor.
+    int  d_mmse_n0_percentile          = 25;
+
+    // Phase 47: stash of H52 from L-LTF estimate, used to apply MMSE to
+    // data symbols (which are equalized downstream after H52 leaves scope).
+    // Set in general_work, read in data symbol override.
+    gr_complex d_h52_stash[52]         = {};
+    bool       d_h52_stash_valid       = false;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase

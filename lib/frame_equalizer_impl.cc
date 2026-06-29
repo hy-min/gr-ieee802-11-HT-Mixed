@@ -113,9 +113,10 @@ static inline gr_complex safe_div(const gr_complex& a, const gr_complex& b)
 //   out[48]: eq48 — imaginary axis carries QBPSK bit
 static void mmse_equalize_htsig(const gr_complex* in,
                                 const gr_complex* H,
-                                gr_complex* out)
+                                gr_complex* out,
+                                int n0_percentile = 25)
 {
-    // 1. Compute |H|² over the 48 data SCs and find the 25th percentile as N0.
+    // 1. Compute |H|² over the 48 data SCs and find the requested percentile as N0.
     double h_sq[48];
     for (int i = 0; i < 48; i++) {
         h_sq[i] = std::norm(H[i]);  // |H[i]|²
@@ -123,9 +124,16 @@ static void mmse_equalize_htsig(const gr_complex* in,
     std::array<double, 48> sorted_h_sq{};
     for (int i = 0; i < 48; i++) sorted_h_sq[i] = h_sq[i];
     std::sort(sorted_h_sq.begin(), sorted_h_sq.end());
-    // 25th percentile of 48 values: linear interp at index 11.5 → average
-    // of sorted[11] and sorted[12] for parity with numpy.percentile(25).
-    double N0 = 0.5 * (sorted_h_sq[11] + sorted_h_sq[12]);
+    // Map percentile P in [1,49] to linear-interp index in [0, 47].
+    // For P=25, idx = 0.25 * 47 = 11.75 → average of sorted[11] and sorted[12].
+    if (n0_percentile < 1) n0_percentile = 1;
+    if (n0_percentile > 49) n0_percentile = 49;
+    double idx_d = (n0_percentile / 100.0) * 47.0;
+    int idx_lo = (int)idx_d;
+    int idx_hi = idx_lo + 1;
+    if (idx_hi > 47) idx_hi = 47;
+    double frac = idx_d - idx_lo;
+    double N0 = sorted_h_sq[idx_lo] * (1.0 - frac) + sorted_h_sq[idx_hi] * frac;
     if (N0 < 1e-9) N0 = 1e-9;  // floor to prevent division by zero
 
     // 2. MMSE equalize all 48 data SCs.
@@ -2303,7 +2311,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        int* out_vit_metric = nullptr,
                                        const char** out_fail_reason = nullptr,
                                        bool use_soft_llr = false,
-                                       bool use_mmse = false)
+                                       int  n0_percentile = 0)  // Phase 47: 0=disabled, 1-49=enabled
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -2338,15 +2346,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         }
         // Phase 46 AR5: precompute MMSE-equalized HT-SIG0 if env var is ON.
         gr_complex eq_mmse_a[48];
-        if (use_mmse) {
-            mmse_equalize_htsig(rx52_a, H52_a, eq_mmse_a);
+        if (n0_percentile > 0) {
+            mmse_equalize_htsig(rx52_a, H52_a, eq_mmse_a, n0_percentile);
         }
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_a[i]);
             gr_complex eq;
             if (h_mag < 0.001f) {
                 eq = gr_complex(0.0f, 0.0f);
-            } else if (use_mmse) {
+            } else if (n0_percentile > 0) {
                 eq = eq_mmse_a[i];
             } else {
                 eq = safe_div(rx52_a[i], H52_a[i]);
@@ -2468,15 +2476,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         // We follow the same structure: MMSE produces eq48_b, then we
         // post-multiply by cpe_rot_b to stay compatible with that path.
         gr_complex eq_mmse_b[48];
-        if (use_mmse) {
-            mmse_equalize_htsig(rx52_b, H52_b, eq_mmse_b);
+        if (n0_percentile > 0) {
+            mmse_equalize_htsig(rx52_b, H52_b, eq_mmse_b, n0_percentile);
         }
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_b[i]);
             gr_complex eq;
             if (h_mag < 0.001f) {
                 eq = gr_complex(0.0f, 0.0f);
-            } else if (use_mmse) {
+            } else if (n0_percentile > 0) {
                 eq = eq_mmse_b[i] * cpe_rot_b;
             } else {
                 eq = safe_div(rx52_b[i], H52_b[i]) * cpe_rot_b;
@@ -3142,6 +3150,17 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_mmse_equalize = (env_mmse && env_mmse[0] == '1');
     if (d_mmse_equalize) {
         std::cout << "[FRAME_EQ] IEEE80211_MMSE_EQUALIZE=1 (HT-SIG MMSE equalization ENABLED)\n";
+    }
+    // Phase 47: N0 percentile. Default 25. Range [1, 49]. 50+ behaves like
+    // median and is fragile (Phase 42 REFUTED).
+    const char* env_pct = std::getenv("IEEE80211_MMSE_N0_PERCENTILE");
+    if (env_pct && env_pct[0] != '\0') {
+        int p = std::atoi(env_pct);
+        if (p >= 1 && p <= 49) d_mmse_n0_percentile = p;
+    }
+    if (d_mmse_equalize) {
+        std::cout << "[FRAME_EQ] IEEE80211_MMSE_N0_PERCENTILE=" << d_mmse_n0_percentile
+                  << " (N0 = " << d_mmse_n0_percentile << "th percentile)\n";
     }
 
     set_algorithm(algo);
@@ -3884,6 +3903,14 @@ int frame_equalizer_impl::general_work(int noutput_items,
                          d_ltf_compensated_valid[0] ? 1 : 0,
                          d_ltf_compensated_valid[1] ? 1 : 0);
 
+                // Phase 47: stash H52 (still in scope here) for the
+                // downstream data-symbol MMSE override, which runs after H52
+                // leaves scope. Replaces gr::digital ZF output.
+                if (d_mmse_equalize) {
+                    std::memcpy(d_h52_stash, H52, sizeof(H52));
+                    d_h52_stash_valid = true;
+                }
+
                 USRP_LOG("[H_DIAG] lltf0[0]=(%.3f%+.3fi) lltf0[25]=(%.3f%+.3fi) "
                          "lsig[0]=(%.3f%+.3fi) lsig[25]=(%.3f%+.3fi) "
                          "H[0]=(%.3f%+.3fi) H[25]=(%.3f%+.3fi) d_phase_diff_valid=%d\n",
@@ -4070,6 +4097,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
             USRP_LOG("[CFO_COMP_DATA] sym_idx=%d sym_offset=%d phase=%.4f rad\n",
                      d_sym_idx, sym_offset, cfo_phase);
+        }
+
+        // Phase 47: MMSE override for data symbols. Replaces gr::digital
+        // ZF equalizer output (raw_eq52) with conj(H)·rx/(|H|²+N0) when env
+        // var is ON. H52 was stashed to d_h52_stash before this scope.
+        // Approximate rx ≈ raw_eq52 * H52 (since raw_eq52 = rx / H52 from
+        // gr::digital ZF). Bypasses the same 50× null-SC noise amplification.
+        if (d_mmse_equalize && d_h52_stash_valid) {
+            gr_complex rx52_from_eq[52];
+            for (int k = 0; k < 52; k++) {
+                if (std::abs(d_h52_stash[k]) > 1e-6f) {
+                    rx52_from_eq[k] = raw_eq52[k] * d_h52_stash[k];
+                } else {
+                    rx52_from_eq[k] = gr_complex(0.0f, 0.0f);
+                }
+            }
+            for (int k = 0; k < 48; k++) {
+                double h_sq_k = std::norm(d_h52_stash[k]);
+                gr_complex denom(h_sq_k + 1e-9, 0.0f);
+                raw_eq52[k] = std::conj(d_h52_stash[k]) * rx52_from_eq[k] / denom;
+            }
+            // Pilots 48-51 untouched (channel tracking).
         }
 
         int nonzero_cnt = 0;
@@ -4800,7 +4849,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            &cand_metric,
                                                            &cand_fail,
                                                            d_use_soft_llr_viterbi,
-                                                           d_mmse_equalize);
+                                                           d_mmse_equalize ? d_mmse_n0_percentile : 0);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
