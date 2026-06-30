@@ -4283,6 +4283,81 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     ? d_ltf_compensated[0]
                     : d_early_eqsym[kLltf0Rel];
             }
+            // [LTF_SOURCE_PER_FRAME] Phase 67 Task 3: localize the Hhdr52
+            // frozen-input bug to one of three layers. Phase 67 T2
+            // (HHDR52_PER_FRAME_DUMP) showed Hhdr52 is bit-identical across
+            // 8 USRP frames, so the freeze is upstream of the median filter
+            // at line 4346-4348. This dump captures the 4 candidate L-LTF
+            // source values AT THE MOMENT they are read in lines 4278-4284
+            // (before estimate_header_channel_from_lltf52() is called at
+            // line 4286). Sentinel SCs match the HHDR52_PER_FRAME format for
+            // direct cross-frame comparison.
+            //
+            // Decision tree (Phase 67 T3):
+            //   (A) L-LTF source IDENTICAL across frames -> bug is in
+            //       sync_short / sync_long / H estimator feed (UPSTREAM of
+            //       frame_equalizer; Phase 68 must attack sync_short L-LTF0
+            //       FFT window alignment).
+            //   (B) L-LTF source VARIES but Hhdr52 IDENTICAL -> bug is in
+            //       estimate_header_channel_from_lltf52() (line 4286-4288;
+            //       Phase 68 inspects accumulator / cached state).
+            //   (C) Both vary -> Phase 67 T1/T2 measurements were
+            //       artifacts (early-exit / short-circuit); pivot to LSIG
+            //       viterbi candidate search (Phase 67 #1).
+            //
+            // Also reports d_ltf_compensated_valid[0/1] and
+            // d_use_lltf1_for_h so we can detect (i) a stale latched
+            // compensated buffer that never re-runs, or (ii) source branch
+            // selection drift between frames. Opt-in via
+            // IEEE80211_LTF_SOURCE_PER_FRAME_DUMP=1. Thread-safe snprintf +
+            // USRP_LOG per commit e90e3f5. Counter separate from
+            // HHDR52_PER_FRAME so the two dumps cannot shadow each other.
+            if (getenv("IEEE80211_LTF_SOURCE_PER_FRAME_DUMP") &&
+                getenv("IEEE80211_LTF_SOURCE_PER_FRAME_DUMP")[0] == '1') {
+                static int ltf_src_counter = 0;
+                ltf_src_counter++;
+                const gr_complex* s0 = d_early_eqsym[kLltf0Rel];
+                const gr_complex* s1 = d_early_eqsym[kLltf1Rel];
+                const gr_complex* c0 = d_ltf_compensated[0];
+                const gr_complex* c1 = d_ltf_compensated[1];
+                char lsrcbuf[1024];
+                snprintf(lsrcbuf, sizeof(lsrcbuf),
+                    "[LTF_SOURCE_PER_FRAME] cnt=%d frame_sym=%d "
+                    "use_lltf1=%d ltf_comp_valid=[%d,%d] "
+                    "early[0][0]=%.3f+%.3fj early[0][10]=%.3f+%.3fj "
+                    "early[0][20]=%.3f+%.3fj early[0][30]=%.3f+%.3fj early[0][40]=%.3f+%.3fj "
+                    "early[1][0]=%.3f+%.3fj early[1][10]=%.3f+%.3fj "
+                    "early[1][20]=%.3f+%.3fj early[1][30]=%.3f+%.3fj early[1][40]=%.3f+%.3fj "
+                    "comp[0][0]=%.3f+%.3fj comp[0][10]=%.3f+%.3fj "
+                    "comp[0][20]=%.3f+%.3fj comp[0][30]=%.3f+%.3fj comp[0][40]=%.3f+%.3fj "
+                    "comp[1][0]=%.3f+%.3fj comp[1][10]=%.3f+%.3fj "
+                    "comp[1][20]=%.3f+%.3fj comp[1][30]=%.3f+%.3fj comp[1][40]=%.3f+%.3fj\n",
+                    ltf_src_counter, d_internal_symbol_counter,
+                    d_use_lltf1_for_h ? 1 : 0,
+                    d_ltf_compensated_valid[0] ? 1 : 0,
+                    d_ltf_compensated_valid[1] ? 1 : 0,
+                    s0[0].real(), s0[0].imag(),
+                    s0[10].real(), s0[10].imag(),
+                    s0[20].real(), s0[20].imag(),
+                    s0[30].real(), s0[30].imag(),
+                    s0[40].real(), s0[40].imag(),
+                    s1[0].real(), s1[0].imag(),
+                    s1[10].real(), s1[10].imag(),
+                    s1[20].real(), s1[20].imag(),
+                    s1[30].real(), s1[30].imag(),
+                    s1[40].real(), s1[40].imag(),
+                    c0[0].real(), c0[0].imag(),
+                    c0[10].real(), c0[10].imag(),
+                    c0[20].real(), c0[20].imag(),
+                    c0[30].real(), c0[30].imag(),
+                    c0[40].real(), c0[40].imag(),
+                    c1[0].real(), c1[0].imag(),
+                    c1[10].real(), c1[10].imag(),
+                    c1[20].real(), c1[20].imag(),
+                    c1[30].real(), c1[30].imag(),
+                    c1[40].real(), c1[40].imag());
+                USRP_LOG("%s", lsrcbuf);
+            }
             estimate_header_channel_from_lltf52(lltf_for_H2,
                                                 lltf_for_H2,
                                                 Hhdr52);
