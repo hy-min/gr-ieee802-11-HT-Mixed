@@ -4412,6 +4412,33 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
 
+            // Phase 60: pre-clean Hhdr52 BEFORE HT-SIG equalization. Phase 59's call
+            // site (line 5058) is gated by d_is_ht=true, which never sets on USRP
+            // because HT-SIG viterbi fails first. This call site runs inside the
+            // ht_parse_condition block (already validated), so it fires for all
+            // frames reaching HT-SIG. Breaks the deadlock: previously HT-SIG needed
+            // to succeed to run null detection; now null detection helps HT-SIG
+            // succeed. Phase 34 δ correction has already run above, so δ estimation
+            // is preserved.
+            if (d_h52_null_interp_enabled) {
+                auto nulls = detect_h52_nulls(Hhdr52, d_h52_null_thresh);
+                if (d_h52_null_dump_enabled) {
+                    // 2048-byte buffer (per Phase 59 fix) holds 52 entries + header
+                    char buf[2048];
+                    int off = snprintf(buf, sizeof(buf),
+                        "[H60_NULL] n_nulls=%zu/%d thresh=%.3f radius=%d\n",
+                        nulls.size(), 52, d_h52_null_thresh, d_h52_interp_radius);
+                    for (size_t i = 0; i < nulls.size() && off < (int)sizeof(buf) - 32; i++) {
+                        off += snprintf(buf + off, sizeof(buf) - off,
+                            "  [%d] |H|=%.3f arg=%.3f\n",
+                            nulls[i], std::abs(Hhdr52[nulls[i]]),
+                            std::arg(Hhdr52[nulls[i]]));
+                    }
+                    USRP_LOG("%s", buf);
+                }
+                interp_h52_nulls(Hhdr52, nulls, d_h52_interp_radius);
+            }
+
             // Phase 38 Step 2: per-symbol δ drift diagnostic. Estimate δ
             // independently from each symbol's 4 pilots (SCs {-21,-7,7,21},
             // bins {48,49,50,51}). argH_pilot[sc] ≈ -2π·sc·δ/64 + residual.
