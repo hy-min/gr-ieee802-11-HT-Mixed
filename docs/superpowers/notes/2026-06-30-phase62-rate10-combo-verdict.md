@@ -32,7 +32,7 @@ IEEE80211_TIMING_OFFSET_APPLY=1`.
 
 ### Comparison Table (verbatim from /tmp/p62_metrics_summary.txt)
 
-| Condition | --rate | env var | Sent | OK | FAIL | H60_NULL | avg_snr N |
+| Condition | --rate | env var | Sent | OK | FAIL | H60 banner | avg_snr N |
 |---|---|---|---:|---:|---:|---:|---:|
 | 1: rate20 baseline | 20e6 | none | 70 | 0 | 0 | 0 | 0 |
 | 2: rate10 baseline | 10e6 | none | 70 | 0 | 0 | 0 | 0 |
@@ -40,13 +40,20 @@ IEEE80211_TIMING_OFFSET_APPLY=1`.
 | 4A: rate10 + COMBO | 10e6 | H52_NULL_COMBO=1 | 70 | 0 | 0 | 2 | 0 |
 | 4B: rate10 + COMBO rep | 10e6 | H52_NULL_COMBO=1 | 70 | 0 | 0 | 2 | 0 |
 
+*Clarification: The `H60 banner` column counts `[FRAME_EQ] IEEE80211_H52_NULL_INTERP=1` / `H52_NULL_COMBO=1` startup banner occurrences only, NOT actual `[H60_NULL]` event lines. Phase 62 ran with the default `dump=OFF` for H52 null diagnostics, so no `[H60_NULL]` event lines were ever logged in any of the 5 conditions — the value=2 in conditions 3-5 reflects two startup banners (one per `frame_equalizer` instantiation in the flowgraph).*
+
 **Key finding**: All 5 conditions produce identical Sent=70 / OK=0 /
-FAIL=0 trajectories across all 35 seconds. The H60_NULL=2 fires in
-conditions 3-5 are diagnostic-call-site probes (do NOT indicate the
-pre-clean produced an FCS_OK result). They are an internal Phase 60
-debug-counter that fires per L-LTF observe, regardless of whether
-viterbi succeeded downstream. Conditions 1-2 (no env var) produce
-H60_NULL=0 because the call site is gated on the env var being ON.
+FAIL=0 trajectories across all 35 seconds. The `H60 banner`=2 in
+conditions 3-5 are startup banner occurrences (do NOT indicate the
+pre-clean produced an FCS_OK result). They appear because two
+`frame_equalizer` blocks are instantiated in the flowgraph when the env
+var is ON, and each instantiation logs the `[FRAME_EQ]
+IEEE80211_H52_NULL_INTERP=1` (or `H52_NULL_COMBO=1`) banner. Conditions
+1-2 (no env var) produce `H60 banner`=0 because the env-var-gated
+banner is not printed. The Phase 62 runs used default `dump=OFF` for
+the H52 null diagnostic, so no `[H60_NULL]` event lines were ever
+emitted — this column cannot be compared directly to Phase 60's
+H60_NULL=8 (which used `dump=ON` and counted actual call-site fires).
 
 CV analysis (Phase 58 method): N_avg=0 across all 5 conditions → CV
 **undefined**. The avg_snr dump never fires because the RX chain stalls
@@ -63,27 +70,33 @@ All 5 conditions produce identical Sent progression: starts at t=10s
 2 frames/sec cadence of `test_usrp_tdd_ratematch.py`. The TX path is
 healthy across all conditions — the failure is downstream of TX.
 
-### Phase 60 verdict REFUTED on test_usrp_tdd_ratematch.py
+### Phase 60 verdict NOT REPRODUCED on test_usrp_tdd_ratematch.py
 
-Phase 60 verdict claimed `IEEE80211_H52_NULL_INTERP=1` produced
-H60_NULL=8 events and HT_SIG_CAND jumped 0→32 on the same env vars at
-`--rate 20`. Phase 62 Task 4 ran the same env vars (`H52_NULL_INTERP=1`
-at `--rate 10`) and observed H60_NULL=2 and HT_SIG_CAND=0 — and crucially
-zero FCS_OK across all 5 conditions.
+Phase 60 verdict (commits `70e84a1`, `9771fb1`) claimed
+`IEEE80211_H52_NULL_INTERP=1` produced H60_NULL=8 events and HT_SIG_CAND
+jumped 0→32 on the same env vars at `--rate 20`. That Phase 60 run used
+the project-root script `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py`
+(NOT `examples/test_usrp_tdd_ratematch.py`) and ran with
+`IEEE80211_H52_NULL_INTERP=1 ... dump=ON`, so the H60_NULL=8 figure
+counts actual `[H60_NULL]` event lines.
 
-Even if Phase 60's H60_NULL=8 number were accurate (vs Phase 62's 2),
-HT_SIG_CAND=0 and FCS_OK=0 across all Phase 62 conditions still shows
-the call site does not advance the RX chain to FCS. The Phase 60 claim
-that the call site unblocks L-SIG viterbi downstream is **not
-reproduced on test_usrp_tdd_ratematch.py**.
+Phase 62 Task 4 ran the same env vars (`H52_NULL_INTERP=1` at `--rate 10`)
+on `examples/test_usrp_tdd_ratematch.py` and observed HT_SIG_CAND=0
+and FCS_OK=0 — crucially zero across all 5 conditions. The Phase 62
+runs used default `dump=OFF` for H52 null diagnostics, so no
+`[H60_NULL]` event lines were emitted at all in any condition.
 
-This implies either:
-- (a) Phase 60 used a different test script than test_usrp_tdd_ratematch.py, OR
-- (b) Phase 60's RX chain reached a path that no longer exists in the
-      current code (Phase 61 commits `84d1323`, `b61bdd0` modified
-      `frame_equalizer_impl.cc` and may have changed reachability), OR
+This implies:
+- (a) Phase 60 used `test_usrp_minimal_loopback.py` (project root), NOT
+      `examples/test_usrp_tdd_ratematch.py`. The two scripts route
+      through different RX paths. Per the project's HARD CONSTRAINT,
+      Phase 63 must re-run Phase 62 conditions on the project-root
+      script Phase 60 actually used.
+- (b) Phase 62 ran with `dump=OFF` (default), so its banner-only
+      column cannot be compared numerically to Phase 60's H60_NULL=8.
 - (c) test_usrp_tdd_ratematch.py is the wrong test script for Phase 60
-      metrics and should not be used for HARD CONSTRAINT validation.
+      metrics and should not be used for HARD CONSTRAINT validation of
+      the pre-clean claim.
 
 ### LLTF_OFFSET_CORRECT=14 silently clamped to 4
 
@@ -110,11 +123,15 @@ L-SIG viterbi before any HT_SIG_EQ event fires.
 **Three concrete upstream issues block Phase 62 conditions:**
 
 1. **Test script mismatch**: Phase 60 verdict validated `IEEE80211_H52_NULL_INTERP=1`
-   on some test script that reached H60_NULL=8 / HT_SIG_CAND=32. Phase 62
-   used `test_usrp_tdd_ratematch.py` and saw H60_NULL=2 / HT_SIG_CAND=0 /
-   FCS_OK=0. The two test scripts probably route through different RX
-   paths. The HARD CONSTRAINT requires real-time USRP validation, so
-   Phase 63 must identify and use the same test script Phase 60 used.
+   on `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py` (project
+   root), reaching H60_NULL=8 / HT_SIG_CAND=32 with `dump=ON`. Phase 62
+   used `examples/test_usrp_tdd_ratematch.py` and saw H60_NULL banner=2
+   (no event lines, `dump=OFF`) / HT_SIG_CAND=0 / FCS_OK=0. The two test
+   scripts route through different RX paths. The HARD CONSTRAINT requires
+   real-time USRP validation, so Phase 63 must use the project-root
+   `test_usrp_minimal_loopback.py` script Phase 60 actually used, with
+   `IEEE80211_H52_NULL_DUMP=1` to capture actual `[H60_NULL]` event
+   lines.
 
 2. **LLTF_OFFSET_CORRECT silently clamped**: The standard config's `=14`
    never takes effect due to code clamp at K ∈ [-4, +4]. Either lift the
@@ -123,10 +140,15 @@ L-SIG viterbi before any HT_SIG_EQ event fires.
 
 3. **Phase 60's call site may not exist in test_usrp_tdd_ratematch.py's RX path**:
    The H60_NULL log fires from a specific call site in
-   `frame_equalizer_impl.cc:4413`. If this call site is not reached on
-   test_usrp_tdd_ratematch.py's RX path, no env var toggle will produce
-   HT_SIG_CAND events. Phase 63 must validate the call site is reached
-   AND that downstream viterbi fires.
+   `frame_equalizer_impl.cc:4413`. Phase 60 used
+   `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py` (project
+   root), which has a different RX path than
+   `examples/test_usrp_tdd_ratematch.py`. If the call site is not
+   reached on `test_usrp_tdd_ratematch.py`'s RX path, no env var
+   toggle will produce HT_SIG_CAND events. Phase 63 must validate the
+   call site is reached on the project-root script AND that downstream
+   viterbi fires, with `IEEE80211_H52_NULL_DUMP=1` set so `[H60_NULL]`
+   event lines actually log.
 
 ## What This Validates
 
@@ -144,8 +166,10 @@ L-SIG viterbi before any HT_SIG_EQ event fires.
 - USRP realtime `FCS_OK ≥ Sent/N` (still 0 across all 5 conditions)
 - avg_snr recovery at `--rate 10` (Phase 56 hypothesis not testable because
   RX stalls before HT_SIG_EQ)
-- Phase 60 H60_NULL=8 / HT_SIG_CAND=32 behavior (refuted on
-  test_usrp_tdd_ratematch.py, may still hold on the script Phase 60 used)
+- Phase 60 H60_NULL=8 / HT_SIG_CAND=32 behavior (NOT REPRODUCED on
+  `test_usrp_tdd_ratematch.py`; behavior was observed on the
+  project-root `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py`
+  with `IEEE80211_H52_NULL_DUMP=1`)
 - Phase 35 per-symbol pilot CPE (combo env var confirmed ON but call
   site downstream of L-SIG viterbi unreachable)
 
@@ -156,9 +180,12 @@ L-SIG viterbi before any HT_SIG_EQ event fires.
   code behavior) OR the code clamp should be lifted to ≥14.
 - **Phase 60/61 env vars remain opt-in** — no promotion yet (no observable
   FCS_OK on this test script at any --rate/env combination).
-- **`test_usrp_tdd_ratematch.py` may be the wrong test script for HARD
-  CONSTRAINT** — Phase 63 must identify what test script Phase 60 used
-  and re-run Phase 62 conditions on it.
+- **`test_usrp_tdd_ratematch.py` is the wrong test script for HARD
+  CONSTRAINT validation of the Phase 60/61 pre-clean claim** — Phase 60
+  used `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py` (project
+  root) with `IEEE80211_H52_NULL_DUMP=1`. Phase 63 must re-run Phase 62
+  conditions on that project-root script (with `dump=ON`) to validate
+  the upstream-attack.
 - **Phase 55 SNR instability hypothesis remains in force** —
   realtime avg_snr cannot be trusted. The off-line median from
   Phase 55 (10.4 dB) remains the ceiling until UHD streaming is fixed.
@@ -185,14 +212,23 @@ Per CLAUDE.md HARD CONSTRAINT, the next phase MUST attack upstream of
 the L-SIG viterbi block. Three concrete candidates (must investigate
 ALL, not pick one):
 
-1. **Identify Phase 60's test script** (PRIORITY — do FIRST).
-   Read Phase 60 verdict
-   `docs/superpowers/notes/2026-06-30-phase60-pre-clean-h52-verdict.md`
-   end-to-end. Determine which test script Phase 60 used to observe
-   H60_NULL=8 / HT_SIG_CAND=32. If it was NOT `test_usrp_tdd_ratematch.py`,
-   redo Phase 62 conditions on the Phase 60 script BEFORE any other
-   work. Per Phase 59 prior history, Phase 60 likely used
-   `test_usrp_minimal_loopback.py` which has a different RX path.
+1. **Identify and use Phase 60's test script** (PRIORITY — do FIRST).
+   Phase 60 used the project-root script
+   `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py` (NOT
+   `examples/test_usrp_tdd_ratematch.py`), as evidenced by Phase 60's
+   `/tmp/p60_e2e.log` startup banner showing
+   `[FRAME_EQ] IEEE80211_H52_NULL_INTERP=1 (..., dump=ON)`. Phase 63
+   must:
+   - Re-run all 5 Phase 62 conditions on
+     `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py` (the
+     project-root script).
+   - Set `IEEE80211_H52_NULL_DUMP=1` env var to enable `[H60_NULL]`
+     event logging. Phase 60 used `dump=ON`; Phase 62 used default
+     `dump=OFF` and captured no event lines, which is why its
+     `H60 banner` column shows only startup banners, not actual
+     call-site fires.
+   - Compare the resulting H60_NULL event counts and HT_SIG_CAND
+     counts to Phase 60's H60_NULL=8 / HT_SIG_CAND=32 baseline.
 
 2. **Fix LLTF_OFFSET_CORRECT clamp**.
    `lib/ht_symbol_splitter_impl.cc:111-113` clamps K to ±4. Either:
@@ -207,12 +243,15 @@ ALL, not pick one):
 3. **Validate H60_NULL call site reachability**.
    Add a debug log line at the ungated call site
    `frame_equalizer_impl.cc:4413` (Phase 60 fix) that fires on EVERY
-   frame, not gated on `d_is_ht` or `use_direct_tx_order`. Run a single
-   35s test, count "calls per frame". If count >> Sent N (e.g. 4x to 8x),
-   the call site is reachable AND downstream viterbi should be able to
-   use pre-cleaned H. If count ≈ Sent N (1x), the call site fires
-   exactly once per frame and any downstream progress is independent
-   of pre-clean. If count = 0, there is a deeper upstream gate.
+   frame, not gated on `d_is_ht` or `use_direct_tx_order`. Set
+   `IEEE80211_H52_NULL_DUMP=1` env var so `[H60_NULL]` event lines
+   actually log (Phase 60 used `dump=ON`; default is `dump=OFF`).
+   Run a single 35s test, count "calls per frame". If count >> Sent N
+   (e.g. 4x to 8x), the call site is reachable AND downstream viterbi
+   should be able to use pre-cleaned H. If count ≈ Sent N (1x), the
+   call site fires exactly once per frame and any downstream progress
+   is independent of pre-clean. If count = 0, there is a deeper
+   upstream gate.
 
 **Critical Phase 63 prioritization**: Do (1) FIRST (read Phase 60
 verdict end-to-end to find the test script). If that script is NOT
@@ -238,8 +277,18 @@ be attempted, then (3).
    upstream of HT_SIG_EQ. The off-line median from Phase 55 (10.4 dB)
    remains the ceiling until upstream gates are resolved.
 
-4. **H60_NULL is a per-L-LTF diagnostic, not a per-FCS counter**.
-   Phase 62 saw H60_NULL=2 in three INTERP/COMBO conditions while
-   FCS_OK=0 in all three. So H60_NULL=2 means "the pre-clean call site
-   fired 2 times" — not "the pre-clean unblocked 2 frames". The naming
-   was misleading; future phases must distinguish.
+4. **The `H60_NULL` metric has TWO distinct meanings depending on `dump`
+   state**, and the column header in the comparison table confused them:
+   - With `IEEE80211_H52_NULL_DUMP=1` (Phase 60 default): `[H60_NULL]`
+     event lines are emitted per L-LTF observe, counting actual call-site
+     fires. Phase 60 saw H60_NULL=8 on
+     `/home/hy/gr-ieee802-11/test_usrp_minimal_loopback.py` with
+     `dump=ON`.
+   - With default `dump=OFF` (Phase 62 default): NO `[H60_NULL]` event
+     lines are emitted. The "H60_NULL=2" in Phase 62's table counts only
+     startup banner occurrences (`[FRAME_EQ]
+     IEEE80211_H52_NULL_INTERP=1`), not call-site fires. The two
+     columns are NOT directly comparable.
+   - Future phases must report both the dump state and the event count
+     explicitly. The column header was misleading; fixed to `H60 banner`
+     in this verdict to clarify it counts banner occurrences only.
