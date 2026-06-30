@@ -103,14 +103,14 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
         g_htsig_timing_inited = true;
     }
 
-    // Phase 31 Task 7 / Phase 64: L-LTF0 sample boundary correction (env-var gated, default 0)
-    // Parses IEEE80211_LLTF_OFFSET_CORRECT, clamps to [-16, +16], and stores
+    // Phase 31 Task 7: L-LTF0 sample boundary correction (env-var gated, default 0)
+    // Parses IEEE80211_LLTF_OFFSET_CORRECT, clamps to [-4, +4], and stores
     // the offset. K=0 (default) preserves current behavior exactly.
     if (!g_lltf_offset_correct_inited) {
         if (getenv("IEEE80211_LLTF_OFFSET_CORRECT") && getenv("IEEE80211_LLTF_OFFSET_CORRECT")[0] != '\0') {
             int K = atoi(getenv("IEEE80211_LLTF_OFFSET_CORRECT"));
-            if (K < -16) K = -16;
-            if (K >  16) K =  16;
+            if (K < -4) K = -4;
+            if (K >  4) K =  4;
             g_lltf_offset_correct = K;
             fprintf(stderr, "[SPLITTER] IEEE80211_LLTF_OFFSET_CORRECT=%d (L-LTF0 offset shifted by %d samples)\n", K, K);
         }
