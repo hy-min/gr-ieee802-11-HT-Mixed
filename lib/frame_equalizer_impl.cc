@@ -4465,6 +4465,24 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
                     USRP_LOG("%s", buf);
                 }
+                // Phase 67 Task 1: per-frame n_nulls disambiguation. Phase 66 found
+                // n_nulls frozen at 24/52 across all 8 USRP frames — suspiciously
+                // uniform. Two hypotheses: (a) channel static for 35s same-board
+                // cable run, (b) frozen counter bug or detect_h52_nulls() returning
+                // a constant dummy. This ONE-LINE dump per frame (independent of
+                // H60_NULL above) lets us count distinct n_nulls values across
+                // frames. If all identical -> (b) likely. If varied -> (a). Opt-in.
+                if (getenv("IEEE80211_H60_NULL_PER_FRAME_DUMP") &&
+                    getenv("IEEE80211_H60_NULL_PER_FRAME_DUMP")[0] == '1') {
+                    char h60pbuf[256];
+                    snprintf(h60pbuf, sizeof(h60pbuf),
+                        "[H60_NULL_PER_FRAME] frame_sym=%d n_nulls=%zu/%d "
+                        "thresh=%.3f radius=%d is_ht=%d\n",
+                        d_internal_symbol_counter, nulls.size(), 52,
+                        d_h52_null_thresh, d_h52_interp_radius,
+                        d_is_ht ? 1 : 0);
+                    USRP_LOG("%s", h60pbuf);
+                }
                 interp_h52_nulls(Hhdr52, nulls, d_h52_interp_radius);
             }
 
