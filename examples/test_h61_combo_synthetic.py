@@ -36,15 +36,23 @@ def test_combo_reduces_null_count():
       - Wider radius (2 -> 3) means clustered nulls get better
         interpolation values.
 
-    To exercise the combo lever in synthetic, force a 5-SC cluster of
-    nulls [24..28]. radius=2 leaves the center SC at 0.05 (no usable
-    neighbor at ±2, all cluster nulls); radius=3 sees non-null SCs 22/23
-    and 29/30 and recovers the center SC to ~0.7.
+    To exercise the combo lever in synthetic, force:
+      - 5-SC cluster of hard nulls [24..28] (radius lever: center SC 26
+        has no usable neighbor at ±2; at ±3 it sees non-null SCs).
+      - 3 borderline SCs [18, 19, 20] with |H| in [0.10, 0.15]
+        (threshold lever: detected as nulls at thresh=0.15 → interpolated;
+        treated as non-nulls at thresh=0.10 → raw value used).
+    The borderline SCs simulate the 9 borderline SCs in Phase 60 USRP data.
     """
     h52_dirty, _ = phase59.make_synthetic_h52(n_nulls=6, null_seed=42)
-    # Force 5-SC cluster null
+    # Force 5-SC hard null cluster
     for sc in [24, 25, 26, 27, 28]:
         h52_dirty[sc] = 0.05
+    # Force 3 borderline SCs (|H| in [0.10, 0.15])
+    borderline_scs = [18, 19, 20]
+    borderline_mags = [0.12, 0.13, 0.11]
+    for sc, mag in zip(borderline_scs, borderline_mags):
+        h52_dirty[sc] = mag
 
     # Phase 60: detect+interp at default settings (thresh=0.15, radius=2)
     nulls_p60 = phase59.detect_h52_nulls(h52_dirty, thresh=0.15)
@@ -53,21 +61,43 @@ def test_combo_reduces_null_count():
     nulls_p61 = phase59.detect_h52_nulls(h52_dirty, thresh=0.10)
     h61_clean = phase59.interp_h52_nulls(h52_dirty, nulls_p61, radius=3)
 
+    # Count how many of the borderline SCs were flagged as nulls
+    # by each threshold
+    borderline_p60 = [sc for sc in borderline_scs if sc in nulls_p60]
+    borderline_p61 = [sc for sc in borderline_scs if sc in nulls_p61]
+
     # Count residual nulls (SCs still <0.10 after interp, excluding DC)
     residual_p60 = sum(1 for i in range(1, 52) if abs(h60_clean[i]) < 0.10)
     residual_p61 = sum(1 for i in range(1, 52) if abs(h61_clean[i]) < 0.10)
 
     print(f"[COMBO_NULL_COUNT] raw nulls P60 (thresh=0.15): {len(nulls_p60)}/52")
     print(f"[COMBO_NULL_COUNT] raw nulls P61 (thresh=0.10): {len(nulls_p61)}/52")
+    print(f"[COMBO_NULL_COUNT] borderline SCs (|H| in [0.10, 0.15]): "
+          f"{len(borderline_scs)} at SCs {borderline_scs}")
+    print(f"[COMBO_NULL_COUNT] borderline nulls P60: {len(borderline_p60)}/"
+          f"{len(borderline_scs)} (treated as nulls, interpolated)")
+    print(f"[COMBO_NULL_COUNT] borderline nulls P61: {len(borderline_p61)}/"
+          f"{len(borderline_scs)} (treated as non-nulls, raw value used)")
     print(f"[COMBO_NULL_COUNT] residual nulls P60 (radius=2): {residual_p60}/52")
     print(f"[COMBO_NULL_COUNT] residual nulls P61 (radius=3): {residual_p61}/52")
     print(f"  residual reduction: {residual_p60 - residual_p61} SCs")
+    print(f"  borderline null reduction: "
+          f"{len(borderline_p60) - len(borderline_p61)} SCs")
 
-    if residual_p61 >= residual_p60:
-        print(f"[COMBO_NULL_COUNT] FAIL: combo should reduce residual nulls")
+    # Threshold lever check: P61 must detect FEWER borderline nulls than P60
+    if len(borderline_p61) >= len(borderline_p60):
+        print(f"[COMBO_NULL_COUNT] FAIL: thresh=0.10 should detect fewer "
+              f"borderline nulls than thresh=0.15")
         return False
-    print(f"[COMBO_NULL_COUNT] PASS (combo reduces residual nulls by "
-          f"{residual_p60 - residual_p61} SCs)")
+    # Radius lever check: P61 must leave FEWER residual nulls than P60
+    if residual_p61 >= residual_p60:
+        print(f"[COMBO_NULL_COUNT] FAIL: radius=3 should leave fewer "
+              f"residual nulls than radius=2")
+        return False
+    print(f"[COMBO_NULL_COUNT] PASS (thresh lever: "
+          f"{len(borderline_p60) - len(borderline_p61)} borderline SCs "
+          f"kept raw; radius lever: {residual_p60 - residual_p61} SCs "
+          f"residual reduction)")
     return True
 
 
@@ -143,7 +173,10 @@ def test_per_symbol_pilot_cpe_reduces_phase_error():
     pilot_bins = [48, 49, 50, 51]
     pilot_args = [np.angle(eq_no_cpe[p]) for p in pilot_bins]
     phi_est = np.median(pilot_args) - np.pi / 2  # remove known pilot phase
-    eq_with_cpe = eq_no_cpe * np.exp(-1j * phi_est)
+    # DC bin (i=0) has h52_clean[0]=0 → eq_no_cpe[0]=NaN. It's excluded
+    # from data_bins below, so suppress the cosmetic multiply warning.
+    with np.errstate(invalid='ignore'):
+        eq_with_cpe = eq_no_cpe * np.exp(-1j * phi_est)
 
     # Compare error at data SCs (not pilots, not DC at i=0 which has h52=0)
     data_bins = [i for i in range(1, 48) if i not in pilot_bins]
