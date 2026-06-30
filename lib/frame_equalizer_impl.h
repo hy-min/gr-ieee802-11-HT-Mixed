@@ -271,7 +271,16 @@ private:
     float d_h52_null_thresh         = 0.15f;  // |H[i]| < thresh -> null
     int   d_h52_interp_radius       = 2;      // left/right neighbor window
     bool  d_h52_null_dump_enabled   = false;  // diagnostic dump (default OFF)
-    bool  d_h52_null_combo_enabled  = false;  // Phase 61: combo (thresh=0.10, radius=3, +pilot CPE)
+    bool  d_h52_null_combo_enabled  = false;  // Phase 61: combo (thresh=0.10, radius=3, +pilot CPE).
+                                              // Diagnostic-only field — read in no production code path.
+                                              // Indicates the activation source: true means
+                                              // IEEE80211_H52_NULL_COMBO=1 was set (which also
+                                              // flipped d_h52_null_interp_enabled=true and
+                                              // d_apply_htsig_pilot_cpe=true with combo-fixed
+                                              // parameters); false means the individual sub-flags
+                                              // were set directly. Reserved for future logging
+                                              // or telemetry that distinguishes combo vs manual
+                                              // activation. Cost is 1 bool — kept for traceability.
 
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and

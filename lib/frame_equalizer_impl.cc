@@ -3240,6 +3240,19 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     const char* env_h52nc = std::getenv("IEEE80211_H52_NULL_COMBO");
     d_h52_null_combo_enabled = (env_h52nc && env_h52nc[0] == '1');
     if (d_h52_null_combo_enabled) {
+        // Warn if user explicitly set individual knobs that combo will override.
+        // Silent override would mask misconfig (e.g. user spent time tuning
+        // IEEE80211_H52_NULL_THRESH only to find combo silently ignored it).
+        // Use std::cerr to match project convention for env-var override warnings.
+        if (std::getenv("IEEE80211_H52_NULL_THRESH") && std::getenv("IEEE80211_H52_NULL_THRESH")[0] != '\0') {
+            std::cerr << "[FRAME_EQ] WARNING: IEEE80211_H52_NULL_COMBO overrides IEEE80211_H52_NULL_THRESH=0.10\n";
+        }
+        if (std::getenv("IEEE80211_H52_INTERP_RADIUS") && std::getenv("IEEE80211_H52_INTERP_RADIUS")[0] != '\0') {
+            std::cerr << "[FRAME_EQ] WARNING: IEEE80211_H52_NULL_COMBO overrides IEEE80211_H52_INTERP_RADIUS=3\n";
+        }
+        if (std::getenv("IEEE80211_HTSIG_PILOT_CPE") && std::getenv("IEEE80211_HTSIG_PILOT_CPE")[0] == '1') {
+            std::cerr << "[FRAME_EQ] WARNING: IEEE80211_H52_NULL_COMBO overrides IEEE80211_HTSIG_PILOT_CPE=1\n";
+        }
         d_h52_null_interp_enabled = true;
         d_h52_null_thresh = 0.10f;   // tighter than default 0.15
         d_h52_interp_radius = 3;     // wider than default 2
