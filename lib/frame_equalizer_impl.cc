@@ -3233,6 +3233,22 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                   << ", dump=" << (d_h52_null_dump_enabled ? "ON" : "OFF") << ")\n";
     }
 
+    // Phase 61: combo env var. Enables Phase 60 pre-clean with combo
+    // parameters (thresh=0.10, radius=3) AND Phase 35 per-symbol pilot CPE.
+    // Single opt-in knob that turns on the 3 sub-flags. Default OFF.
+    // Enable via IEEE80211_H52_NULL_COMBO=1.
+    const char* env_h52nc = std::getenv("IEEE80211_H52_NULL_COMBO");
+    d_h52_null_combo_enabled = (env_h52nc && env_h52nc[0] == '1');
+    if (d_h52_null_combo_enabled) {
+        d_h52_null_interp_enabled = true;
+        d_h52_null_thresh = 0.10f;   // tighter than default 0.15
+        d_h52_interp_radius = 3;     // wider than default 2
+        d_apply_htsig_pilot_cpe = true;
+        std::cout << "[FRAME_EQ] IEEE80211_H52_NULL_COMBO=1 "
+                  << "(H52 null interp ENABLED with thresh=0.10 radius=3, "
+                  << "AND HT-SIG pilot CPE ENABLED)\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
