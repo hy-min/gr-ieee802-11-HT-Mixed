@@ -42,8 +42,9 @@ equalization. The HT-SIG viterbi now benefits from null-cleaned H52.
 | HT_SIG_CAND | 16-32 | 0 | **32** |
 | H60_NULL frames | 0 | 0 | **8** |
 | H52_NULL frames | 0 | 0 | 0 |
-| HT_SIG_PARSE_FAIL with is_ht_frame=1 | 8/8 | 8/8 | **2/8 (8/8 actually is_ht_frame=1)** |
-| HT_SIG_PARSE_FAIL with is_ht_frame=0 | 8/8 | 8/8 | **0** |
+| HT_SIG_PARSE_FAIL logged / total | 8/8 | 8/8 | 2/8 |
+| ... of which is_ht_frame=1 | 0/8 | 0/8 | 2/2 (100%) |
+| ... of which is_ht_frame=0 | 8/8 | 8/8 | 0/2 |
 
 ### Retry (thresh=0.20, radius=1)
 

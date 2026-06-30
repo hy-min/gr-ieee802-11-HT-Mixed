@@ -6,6 +6,12 @@ Validates that running detect_h52_nulls + interp_h52_nulls on H52 BEFORE
 HT-SIG equalization produces a well-formed equalized HT-SIG constellation
 on synthetic data with H52 channel nulls (|H|<0.15 at ~6/52 SCs).
 
+SCOPE: This test validates the pre-clean algorithm in isolation on
+synthetic data with adversarially constructed nulls. It does NOT
+reproduce the USRP end-to-end pipeline (channel impulse response, UHD
+streaming instability, RF impairments). End-to-end USRP validation
+is in docs/superpowers/notes/2026-06-30-phase60-pre-clean-h52-verdict.md.
+
 Reference: docs/superpowers/plans/2026-06-30-phase60-pre-clean-h52-before-htsig.md
 """
 import argparse
