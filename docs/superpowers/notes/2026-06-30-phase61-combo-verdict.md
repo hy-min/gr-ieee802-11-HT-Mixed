@@ -2,7 +2,7 @@
 
 **Date**: 2026-06-30
 **Branch**: TEST1
-**Status**: **PARTIAL** — combo algorithm validated (n_nulls 21→2), L-SIG viterbi is the new upstream gate
+**Status**: **PARTIAL** — combo algorithm validated (n_nulls 21→4 combo / 21→2 retry), L-SIG viterbi is the new upstream gate
 **Commits**: 8b881c3, caa2c0d, 84d1323, b61bdd0
 
 ## Goal
@@ -43,7 +43,15 @@ Phase 61 combines 3 levers in a single opt-in env var:
 | H60_NULL frames | 0 | 8 | 8 | 8 |
 | Avg n_nulls | N/A | 21.0 | 4.0 | 2.0 |
 | avg_snr in fail | - | - | 3.18 | 8.50 |
-| HTSIG_PILOT_CPE applied | 0 | 0 | 0 | 0 |
+| HTSIG_PILOT_CPE applied | 0 | 0 | 0 | 0 | [^pilot-cpe] |
+
+[^pilot-cpe]: The "0" value here means the C++ call site never fired,
+    not that the C++ code is broken. L-SIG viterbi blocks HT-SIG
+    processing entirely (`is_ht_frame=0` on every USRP frame), so the
+    per-symbol pilot CPE helper at HT-SIG EQ is unreachable. The C++
+    change is verified by synthetic tests (3/3 PASS) and remains in
+    place for future activation when HT-SIG processing becomes
+    reachable (see "What works" below).
 
 ### 30-min soak
 NOT RUN — no PASS to soak. Per decision tree, pivot to Phase 62.
@@ -80,7 +88,8 @@ NOT RUN — no PASS to soak. Per decision tree, pivot to Phase 62.
 ## Implications
 
 - **Code kept in place**: opt-in env var `IEEE80211_H52_NULL_COMBO=1`
-  remains available. n_nulls 21→2 is a permanent algorithmic gain.
+  remains available. n_nulls 21→4 (combo) / 21→2 (retry) is a permanent
+  algorithmic gain.
 - **Standard USRP test config unchanged**: no promotion (FCS_OK=0).
 - **Phase 62 needed**: pivot to L-SIG viterbi SNR investigation.
   Per Phase 55 verdict, this is NOT an equalizer-side fix.
@@ -112,7 +121,7 @@ NOT RUN — no PASS to soak. Per decision tree, pivot to Phase 62.
 ## What This Validates
 
 - Combo env var (thresh=0.10, radius=3, +pilot CPE) reduces n_nulls from
-  21 to 4 in USRP conditions (5x algorithmic improvement)
+  21 to 4 (combo) / 2 (retry) in USRP conditions (5-10x algorithmic improvement)
 - Phase 35 per-symbol pilot CPE C++ code is in place and ready for
   activation when HT-SIG processing becomes reachable
 - Regression suite preserved (loopback 3/3, all synthetic tests pass)
@@ -133,5 +142,5 @@ NOT RUN — no PASS to soak. Per decision tree, pivot to Phase 62.
    viterbi fails at "low SNR" (3-8 dB), first suspect is UHD streaming
    instability, not air path.
 3. **Algorithmic improvements are permanent** even if upstream gate
-   blocks end-to-end: n_nulls 21→2 is a real gain that will pay off
-   when L-SIG SNR is restored.
+   blocks end-to-end: n_nulls 21→4 (combo) / 21→2 (retry) is a real
+   gain that will pay off when L-SIG SNR is restored.
