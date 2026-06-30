@@ -42,8 +42,11 @@ hierarchy applies:
   `snprintf` + `USRP_LOG("%s", buf)` per commit `e90e3f5`.
 - **env vars default OFF**: all new env vars opt-in to preserve baseline.
 - **Standard USRP test config** (preserved across all phases):
-  `IEEE80211_LSIG_RATE_FORCE=0xD IEEE80211_LLTF_OFFSET_CORRECT=14
-  IEEE80211_TIMING_OFFSET_APPLY=1 --freq 5890 --tx-gain 20`
+  `IEEE80211_LSIG_RATE_FORCE=0xD IEEE80211_TIMING_OFFSET_APPLY=1
+  --freq 5890 --tx-gain 20`
+  (Phase 65: removed `IEEE80211_LLTF_OFFSET_CORRECT=14` — 14-sample shift
+  already correctly applied at `sync_long.cc FRAME_START_BASE 160→174`;
+  re-shifting at splitter is the wrong axis per Phase 64 verdict.)
 - **Same-board default**: `A:0` TX → `A:0` RX2 (per Phase 53 verdict,
   cross-board is 2.4x weaker).
 - **禁止 `--rate 5`** (Phase 58 REFUTED, 48× more overflows than `--rate 20`).
