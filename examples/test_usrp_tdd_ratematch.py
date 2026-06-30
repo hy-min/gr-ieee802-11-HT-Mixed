@@ -140,9 +140,9 @@ class TDDTestTop(gr.top_block):
 
 def main():
     tb = TDDTestTop()
-    print(f"\n=== Running {int(args.duration)}s ===")
+    print(f"\n=== Running {args.duration:g}s ===")
     tb.start()
-    for i in range(int(args.duration)):
+    for i in range(int(round(args.duration))):
         time.sleep(1)
         sent = tb.sent_debug.num_messages()
         print(f"[{i+1:2d}s] Sent={sent}  FCS {tb.fcs.report()}")
