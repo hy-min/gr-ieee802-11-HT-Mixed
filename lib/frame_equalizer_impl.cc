@@ -3736,6 +3736,57 @@ int frame_equalizer_impl::general_work(int noutput_items,
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
 
+            // [LTF_WRITE_PER_FRAME] Phase 68 Task 1: capture d_early_eqsym[] at
+            // the WRITE site (line 3736), immediately after extract_header52_from_sym64
+            // fills it from sym64, BEFORE any CFO/SFO/delta compensation at lines
+            // 3745-3766. Phase 67 T3 (LTF_SOURCE_PER_FRAME_DUMP, line 4286) showed
+            // the READ site sees bit-identical d_early_eqsym[kLltf0Rel] and
+            // d_early_eqsym[kLltf1Rel] across 8 USRP frames. If the WRITE site
+            // also sees bit-identical values, the gating condition (this block)
+            // is never re-entered with fresh sym64 — every frame writes the same
+            // memory because (a) sym64 aliasing, (b) d_internal_symbol_counter
+            // never advances, or (c) the wifi_start/d_in_frame path doesn't
+            // reset state, causing the L-LTF extraction to re-fire on stale
+            // buffers. If WRITE site VARIES but READ site is IDENTICAL, the bug
+            // is downstream (extract_header52_from_sym64 writes to one buffer,
+            // but the read uses a different/stale buffer). Sentinel SCs match
+            // HHDR52_PER_FRAME / LTF_SOURCE_PER_FRAME formats for direct
+            // cross-frame comparison. Opt-in via
+            // IEEE80211_LTF_WRITE_PER_FRAME_DUMP=1. Thread-safe snprintf +
+            // USRP_LOG per commit e90e3f5. Separate counter so this dump
+            // cannot shadow LTF_SOURCE_PER_FRAME. Only emits for counter==0
+            // (L-LTF0) and counter==1 (L-LTF1) to keep log size manageable;
+            // the bug is specific to L-LTF extraction.
+            if ((d_internal_symbol_counter == kLltf0Rel ||
+                 d_internal_symbol_counter == kLltf1Rel) &&
+                getenv("IEEE80211_LTF_WRITE_PER_FRAME_DUMP") &&
+                getenv("IEEE80211_LTF_WRITE_PER_FRAME_DUMP")[0] == '1') {
+                static int ltf_write_counter = 0;
+                ltf_write_counter++;
+                const int rel = d_internal_symbol_counter;
+                const gr_complex* w = d_early_eqsym[rel];
+                char lwbuf[1024];
+                snprintf(lwbuf, sizeof(lwbuf),
+                    "[LTF_WRITE_PER_FRAME] cnt=%d frame_sym=%d rel=%d "
+                    "in_frame=%d d_have_header=%d "
+                    "early[%d][0]=%.3f+%.3fj early[%d][10]=%.3f+%.3fj "
+                    "early[%d][20]=%.3f+%.3fj early[%d][30]=%.3f+%.3fj "
+                    "early[%d][40]=%.3f+%.3fj "
+                    "early[%d][48]=%.3f+%.3fj early[%d][50]=%.3f+%.3fj "
+                    "abs_in_off=%llu\n",
+                    ltf_write_counter, d_internal_symbol_counter, rel,
+                    d_in_frame ? 1 : 0, d_have_header ? 1 : 0,
+                    rel, w[0].real(), w[0].imag(),
+                    rel, w[10].real(), w[10].imag(),
+                    rel, w[20].real(), w[20].imag(),
+                    rel, w[30].real(), w[30].imag(),
+                    rel, w[40].real(), w[40].imag(),
+                    rel, w[48].real(), w[48].imag(),
+                    rel, w[50].real(), w[50].imag(),
+                    (unsigned long long)abs_in_off);
+                USRP_LOG("%s", lwbuf);
+            }
+
             // Apply CFO+SFO compensation to header symbols (L-SIG, HT-SIG0, HT-SIG1).
             // L-LTF0 (counter=0) is the H reference — do NOT compensate it.
             // L-LTF1 (counter=1) is used for CFO/SFO estimation — do NOT compensate it.
