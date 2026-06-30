@@ -4575,6 +4575,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
             int  htsig_last_rot        = -1;
             int  htsig_last_inv_a      = -1;
             int  htsig_last_inv_b      = -1;
+            // Phase 66: per-candidate HT-SIG viterbi diagnostic (opt-in).
+            // Track best (lowest) metric across all 16 candidates so a
+            // summary line can show whether ALL candidates are saturated
+            // (random-like, equalizer still the wall) vs only some fail.
+            int  htsig_best_metric     = INT_MAX;
+            int  htsig_best_rot        = -1;
+            int  htsig_best_inv_a      = -1;
+            int  htsig_best_inv_b      = -1;
+            const char* htsig_best_fail = "none";
 
             // Average SNR of equalized L-SIG/HT-SIG symbols (BPSK/QBPSK). Computed once
             // for diagnostic use from the equalized L-SIG (no CPE) and HT-SIG0.
@@ -4984,6 +4993,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                      d_internal_symbol_counter,
                                      rot, inv_a, inv_b,
                                      cand_metric, cand_fail);
+                            // Phase 66: track best (lowest) viterbi metric across
+                            // all 16 candidates for the per-frame summary. Negative
+                            // cand_metric means viterbi did not run (e.g. early
+                            // sanity-check fail); skip those — we only care about
+                            // metrics that actually came out of the decoder.
+                            if (cand_metric >= 0 && cand_metric < htsig_best_metric) {
+                                htsig_best_metric = cand_metric;
+                                htsig_best_rot    = rot;
+                                htsig_best_inv_a  = inv_a;
+                                htsig_best_inv_b  = inv_b;
+                                htsig_best_fail   = cand_fail;
+                            }
                             if (!decode_ok) {
                                 continue;
                             }
@@ -5003,6 +5024,38 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
                 }
                 }
+            }
+
+            // Phase 66: per-candidate HT-SIG viterbi summary. Opt-in via
+            // IEEE80211_HTSIG_VITERBI_DIAG=1. Prints ONE line per frame
+            // after the candidate search completes (found or not), with
+            // the best viterbi metric across all 16 candidates and which
+            // (rot, inv_a, inv_b) tuple produced it. Use to distinguish:
+            //   - ALL candidates fail with metric ~INT_MAX/4 (saturation,
+            //     equalizer is the wall — Phase 41 verdict still holds)
+            //   - Best metric is moderate but CRC still fails (decoder
+            //     sensitivity issue, not channel-physics)
+            // Thread-safe: snprintf into local buf + USRP_LOG("%s", buf).
+            // Default OFF; env var gate matches IEEE80211_H52_NULL_DUMP style.
+            static const char* env_htsig_vit_diag =
+                std::getenv("IEEE80211_HTSIG_VITERBI_DIAG");
+            if (env_htsig_vit_diag && env_htsig_vit_diag[0] != '\0') {
+                char vitdiag_buf[512];
+                int n = 0;
+                n += snprintf(vitdiag_buf + n, sizeof(vitdiag_buf) - n,
+                              "[HTSIG_VITERBI_DIAG] frame_sym=%d n_candidates=%d "
+                              "found=%d best_metric=%d best_rot=%d best_inv_a=%d "
+                              "best_inv_b=%d best_fail=%s avg_snr_lsig=%.2f "
+                              "avg_snr_htsig=%.2f is_ht_frame=%d\n",
+                              d_internal_symbol_counter,
+                              htsig_candidates_tried,
+                              found ? 1 : 0,
+                              (htsig_best_metric == INT_MAX) ? -1 : htsig_best_metric,
+                              htsig_best_rot, htsig_best_inv_a, htsig_best_inv_b,
+                              htsig_best_fail,
+                              avg_snr_lsig, avg_snr_htsig,
+                              d_is_ht_frame ? 1 : 0);
+                USRP_LOG("%s", vitdiag_buf);
             }
 
             if (!found) {
