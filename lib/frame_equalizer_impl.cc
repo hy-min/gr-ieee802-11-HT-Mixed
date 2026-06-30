@@ -4396,6 +4396,35 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 USRP_LOG("%s", h52_dump);
             }
 
+            // [HHDR52_PER_FRAME] Phase 67 Task 2: trace Hhdr52 from allocation
+            // (line 4275) to detect_h52_nulls input (line 4453). Phase 66
+            // found n_nulls=24/52 frozen across 8 frames; H52_NULL_DUMP shows
+            // bit-identical |H| and argH. Either (a) Hhdr52 is genuinely
+            // frozen upstream, (b) detect_h52_nulls is frozen. This dump
+            // distinguishes them by printing 5 sentinel SCs per frame. If
+            // sentinel values vary frame-to-frame -> Hhdr52 healthy, bug is
+            // in detect_h52_nulls. If sentinels are bit-identical -> bug is
+            // upstream of the dump (extractor pathway / cached L-LTF / static
+            // routing). Opt-in via IEEE80211_HHDR52_PER_FRAME_DUMP=1. Inserts
+            // AFTER the median filter (line 4346-4348) so the printed Hhdr52
+            // matches what detect_h52_nulls will see. Thread-safe snprintf
+            // + USRP_LOG per commit e90e3f5.
+            if (getenv("IEEE80211_HHDR52_PER_FRAME_DUMP") &&
+                getenv("IEEE80211_HHDR52_PER_FRAME_DUMP")[0] == '1') {
+                char hdrbuf[512];
+                snprintf(hdrbuf, sizeof(hdrbuf),
+                    "[HHDR52_PER_FRAME] frame_sym=%d "
+                    "H[0]=%.3f+%.3fj H[10]=%.3f+%.3fj H[20]=%.3f+%.3fj "
+                    "H[30]=%.3f+%.3fj H[40]=%.3f+%.3fj\n",
+                    d_internal_symbol_counter,
+                    Hhdr52[0].real(), Hhdr52[0].imag(),
+                    Hhdr52[10].real(), Hhdr52[10].imag(),
+                    Hhdr52[20].real(), Hhdr52[20].imag(),
+                    Hhdr52[30].real(), Hhdr52[30].imag(),
+                    Hhdr52[40].real(), Hhdr52[40].imag());
+                USRP_LOG("%s", hdrbuf);
+            }
+
             // Phase 34: estimate per-frame sub-sample timing offset δ from Hhdr52
             // (final H used for L-SIG/HT-SIG viterbi) and apply retroactive
             // correction to d_early_eqsym[c] for c = kLSigRel..kHtSig1Rel.
