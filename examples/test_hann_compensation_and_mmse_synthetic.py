@@ -45,7 +45,6 @@ def generate_l_ltf64_time_domain(num_samples=64, snr_db=20.0, cfo_offset_bins=0.
         time_samples: 64 complex time-domain samples.
     """
     rng = np.random.default_rng(seed)
-    t = np.arange(num_samples)
     # Build frequency-domain LTF: 52 active subcarriers at random QPSK symbols
     ltf_freq = np.zeros(num_samples, dtype=np.complex64)
     active_bins = list(range(1, 27)) + list(range(38, 64))  # 52 active SCs
@@ -187,10 +186,12 @@ def test_mmse_beats_zf_at_null_scs():
     rx0_time_noisy = rx0_time + noise
     # FFT
     rx0_fft = np.fft.fft(rx0_time_noisy)
-    # Build rx52 (48 data SCs only, in h52[0..47] order = SC -26..-1, +1..+26)
+    # Build rx52 (48 data SCs, in h52[0..47] order = SC -26..-1, +1..+22)
     rx52 = np.zeros(48, dtype=np.complex64)
-    for i, b in enumerate(range(38, 64)):  # SC -26..-1
+    for i, b in enumerate(range(38, 64)):  # SC -26..-1 → rx52[0..25]
         rx52[i] = rx0_fft[b]
+    for i, b in enumerate(range(1, 23)):  # SC +1..+22 → rx52[26..47]
+        rx52[26 + i] = rx0_fft[b]
     # H52 from known channel
     h52 = h_chan
     # ZF equalize
@@ -199,8 +200,10 @@ def test_mmse_beats_zf_at_null_scs():
     eq_mmse = mmse_equalize(rx52, h52, n0_percentile=25)
     # Expected symbols (BPSK on real axis, sign from original LTF)
     expected = np.zeros(48, dtype=np.complex64)
-    for i, b in enumerate(range(38, 64)):
+    for i, b in enumerate(range(38, 64)):  # SC -26..-1
         expected[i] = ltf_freq[b]
+    for i, b in enumerate(range(1, 23)):  # SC +1..+22
+        expected[26 + i] = ltf_freq[b]
     zf_metrics = equalized_quality_metrics(eq_zf, expected)
     mmse_metrics = equalized_quality_metrics(eq_mmse, expected)
     print(f"[NULL_SC_TEST] ZF:    mse={zf_metrics['mse']:.4f} max_err={zf_metrics['max_err']:.4f} n_wrong_sign={zf_metrics['n_wrong_sign']}")
@@ -246,7 +249,7 @@ def test_hann_compensation_restores_magnitude():
     mag_hann_comp = float(np.mean(np.abs(h52_hann_comp)))
     print(f"[HANN_COMP] Rect mag={mag_rect:.4f}, Hann mag={mag_hann:.4f}, Hann+comp mag={mag_hann_comp:.4f}")
     # Hann should be ~0.5x of rect
-    assert mag_hann < mag_rect * 0.7, f"Hann did not reduce magnitude: rect={mag_rect:.4f} hann={mag_hann:.4f}"
+    assert mag_hann < mag_rect * 0.6, f"Hann did not reduce magnitude: rect={mag_rect:.4f} hann={mag_hann:.4f}"
     # Hann + comp should be ~equal to rect
     assert abs(mag_hann_comp - mag_rect) / mag_rect < 0.3, \
         f"Hann compensation did not restore magnitude: rect={mag_rect:.4f} hann+comp={mag_hann_comp:.4f}"
@@ -278,14 +281,18 @@ def test_mmse_helps_at_low_snr():
     rx0_time_noisy = rx0_time + noise
     rx0_fft = np.fft.fft(rx0_time_noisy)
     rx52 = np.zeros(48, dtype=np.complex64)
-    for i, b in enumerate(range(38, 64)):
+    for i, b in enumerate(range(38, 64)):  # SC -26..-1 → rx52[0..25]
         rx52[i] = rx0_fft[b]
+    for i, b in enumerate(range(1, 23)):  # SC +1..+22 → rx52[26..47]
+        rx52[26 + i] = rx0_fft[b]
     h52 = h_chan
     eq_zf = zf_equalize(rx52, h52)
     eq_mmse = mmse_equalize(rx52, h52, n0_percentile=25)
     expected = np.zeros(48, dtype=np.complex64)
     for i, b in enumerate(range(38, 64)):
         expected[i] = ltf_freq[b]
+    for i, b in enumerate(range(1, 23)):
+        expected[26 + i] = ltf_freq[b]
     zf_metrics = equalized_quality_metrics(eq_zf, expected)
     mmse_metrics = equalized_quality_metrics(eq_mmse, expected)
     print(f"[LOW_SNR_TEST] ZF:    mse={zf_metrics['mse']:.4f} n_wrong_sign={zf_metrics['n_wrong_sign']}")
