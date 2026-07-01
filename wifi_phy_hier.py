@@ -54,6 +54,18 @@ class wifi_phy_hier(gr.hier_block2):
         self.sensitivity = sensitivity
         self.use_ldpc = use_ldpc
 
+        # Phase 71: RX FFT window selection. Default OFF (rectangular) preserves
+        # current behavior. Set IEEE80211_RX_FFT_WINDOW=hann to apply Hann window
+        # before RX FFT, reducing spectral leakage from -13 dB to -31 dB sidelobes.
+        # Other options: blackmanharris, hamming, blackman (GNU Radio fft.window).
+        rx_window_type = os.environ.get('IEEE80211_RX_FFT_WINDOW', 'rectangular').lower()
+        valid_windows = ('rectangular', 'hann', 'hamming', 'blackman', 'blackmanharris',
+                         'kaiser', 'bartlett', 'flattop', 'nuttall', 'welch')
+        if rx_window_type not in valid_windows:
+            print(f"[WARN] Unknown RX FFT window '{rx_window_type}', falling back to rectangular", file=sys.stderr)
+            rx_window_type = 'rectangular'
+        self._rx_window_type = rx_window_type
+
         ##################################################
         # Variables
         ##################################################
@@ -94,7 +106,28 @@ class wifi_phy_hier(gr.hier_block2):
         # ht_header_tagged generates L-SIG + HT-SIG header from encoding
         self.ht_header_tagged_0 = ieee802_11.ht_header_tagged(13, True, 'psdu_len', 'encoding', 'packet_len')
         # RX FFT: shift=False for natural order (matches kHeader48Bin in frame_equalizer)
-        self.fft_vxx_0_1 = fft.fft_vcc(64, True, window.rectangular(64), False, 1)
+        # Phase 71: use env-var-selected window (default rectangular = no change)
+        if self._rx_window_type == 'rectangular':
+            rx_window = window.rectangular(64)
+        elif self._rx_window_type == 'hann':
+            rx_window = window.hann(64)
+        elif self._rx_window_type == 'hamming':
+            rx_window = window.hamming(64)
+        elif self._rx_window_type == 'blackman':
+            rx_window = window.blackman(64)
+        elif self._rx_window_type == 'blackmanharris':
+            rx_window = window.blackmanharris(64)
+        elif self._rx_window_type == 'kaiser':
+            rx_window = window.kaiser(64, 14.0)  # beta=14 ~80 dB sidelobes
+        elif self._rx_window_type == 'bartlett':
+            rx_window = window.bartlett(64)
+        elif self._rx_window_type == 'flattop':
+            rx_window = window.flattop(64)
+        elif self._rx_window_type == 'nuttall':
+            rx_window = window.nuttall(64)
+        elif self._rx_window_type == 'welch':
+            rx_window = window.welch(64)
+        self.fft_vxx_0_1 = fft.fft_vcc(64, True, rx_window, False, 1)
         self.fft_vxx_0_1.set_min_output_buffer((max_symbols * 64 * 8))
         # TX IFFT: shift=False, window normalizes by 1/sqrt(52)
         self.fft_vxx_0_0 = fft.fft_vcc(64, False, tuple([1/52**.5] * 64), False, 1)
