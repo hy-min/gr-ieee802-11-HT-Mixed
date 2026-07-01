@@ -4818,6 +4818,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
             int lsig_best_len = 0;
             int lsig_best_rate_field = -1;
             int lsig_best_parity_ok = -1;
+            // Phase 70 T3: guard against the post-loop promotion block
+            // re-firing after `goto lsig_body_entry;` returns control to
+            // the body and control falls back through here. Without this
+            // flag, the promotion block (and its goto) would repeat,
+            // yielding an infinite loop. Set true BEFORE the goto and
+            // checked as part of the condition below.
+            bool lsig_promoted = false;
 
             // L-SIG invert brute-force (with optional rot candidate expansion)
             // Phase 70: declare local variables and loop indices in outer
@@ -5270,7 +5277,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // times across all (rot, inv) pairs. The HT-SIG body was skipped
             // for every candidate in candidate mode (continue above), so we
             // promote the best candidate here and replay the body once.
-            if (n_rot > 1 && lsig_best_metric < INT_MAX) {
+            if (n_rot > 1 && lsig_best_metric < INT_MAX && !lsig_promoted) {
                 // Promote the best candidate to the local variables
                 // used by the rest of the function.
                 lsig_enc = lsig_best_enc;
@@ -5287,6 +5294,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     lsig_best_enc, lsig_best_len, lsig_best_rate_field,
                     lsig_best_parity_ok);
                 USRP_LOG("%s", candbuf);
+                // CRITICAL: Mark promoted BEFORE the goto. Otherwise, when
+                // the body completes (found=true, continue, or natural exit)
+                // and control falls back through the closing braces of the
+                // loops into this block, the condition would still hold
+                // (n_rot>1, best_metric<INT_MAX) and we'd re-enter the body
+                // forever — infinite loop.
+                lsig_promoted = true;
                 // The HT-SIG body was skipped for every candidate while we
                 // searched. Run it ONCE now with the best candidate's values.
                 // The body uses the same `lsig_*` locals and `htsig_lsig_enc`
