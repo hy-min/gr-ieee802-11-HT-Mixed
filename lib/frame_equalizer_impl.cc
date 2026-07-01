@@ -4804,14 +4804,36 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
 
-            // L-SIG invert brute-force
-            for (int inv_lsig = 0; inv_lsig <= 1 && !found; inv_lsig++) {
-                int lsig_enc = -1;
-                int lsig_len = 0;
-                int lsig_rate_field = -1;
-                int lsig_parity_ok_int = -1;
+            // Phase 70: 8-candidate L-SIG viterbi search.
+            // When IEEE80211_LSIG_VITERBI_CANDIDATE=1, try 4 phase rotations
+            // × 2 inversions = 8 candidates. Pick the one with the lowest
+            // structural-validity cost (HT_SIG_CAND pattern from Phase 66).
+            // Default OFF: only the existing 2-attempt (inv=0,1) loop runs.
+            const int n_rot = (getenv("IEEE80211_LSIG_VITERBI_CANDIDATE") &&
+                               getenv("IEEE80211_LSIG_VITERBI_CANDIDATE")[0] != '\0') ? 4 : 1;
+            int lsig_best_metric = INT_MAX;
+            int lsig_best_rot = -1;
+            int lsig_best_inv = -1;
+            int lsig_best_enc = -1;
+            int lsig_best_len = 0;
+            int lsig_best_rate_field = -1;
+            int lsig_best_parity_ok = -1;
 
-                bool lsig_ok = decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
+            // L-SIG invert brute-force (with optional rot candidate expansion)
+            // Phase 70: declare local variables and loop indices in outer
+            // scope so the goto (lsig_body_entry) after candidate promotion
+            // can land in the body without jumping over their initialization.
+            int lsig_enc = -1;
+            int lsig_len = 0;
+            int lsig_rate_field = -1;
+            int lsig_parity_ok_int = -1;
+            bool lsig_ok = false;
+            int rot_lsig = 0;
+            int inv_lsig = 0;
+            for (rot_lsig = 0; rot_lsig < n_rot && !found; rot_lsig++) {
+              for (inv_lsig = 0; inv_lsig <= 1 && !found; inv_lsig++) {
+
+                lsig_ok = decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
                                                                  Hhdr52,
                                                                  inv_lsig != 0,
                                                                  lsig_enc,
@@ -4821,13 +4843,36 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                                  &lsig_parity_ok_int,
                                                                  nullptr,
                                                                  nullptr,
-                                                                 /* rot_idx = */ 0);
+                                                                 /* rot_idx = */ rot_lsig);
                 if (lsig_ok) {
                     lsig_decode_calls++;
                     lsig_last_inv       = inv_lsig;
                     lsig_last_rate      = lsig_rate_field;
                     lsig_last_len       = lsig_len;
                     lsig_last_parity_ok = lsig_parity_ok_int;
+                    // Phase 70: in candidate-search mode, only accept the
+                    // best (lowest-metric) candidate across all rot×inv combos.
+                    if (n_rot > 1) {
+                        // Estimate metric from decoded bits: structural validity cost
+                        // (rate must be 0xD, length > 0, parity must match, tail must be 0).
+                        // The viterbi's actual branch metric isn't exposed, so we use
+                        // structural-validity cost as a proxy. Lower = better.
+                        int approx_metric = 0;
+                        if (lsig_rate_field != 0xD) approx_metric += 8;
+                        if (lsig_len <= 0 || lsig_len > 4096) approx_metric += 4;
+                        if (lsig_parity_ok_int != 1) approx_metric += 4;
+                        if (approx_metric < lsig_best_metric) {
+                            lsig_best_metric = approx_metric;
+                            lsig_best_rot = rot_lsig;
+                            lsig_best_inv = inv_lsig;
+                            lsig_best_enc = lsig_enc;
+                            lsig_best_len = lsig_len;
+                            lsig_best_rate_field = lsig_rate_field;
+                            lsig_best_parity_ok = lsig_parity_ok_int;
+                        }
+                        // Don't accept yet — wait for all candidates to be tried.
+                        // Fall through to the !lsig_ok check below to skip to next candidate.
+                    }
                 } else {
                     // viterbi-decode failure means we never extracted rate/len/parity
                     // (we still want to distinguish viterbi fail from "rate/length wrong")
@@ -4839,6 +4884,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     continue;
                 }
 
+                // Phase 70: in candidate-search mode, don't run the HT-SIG
+                // body on the current candidate. We have not yet tried all
+                // (rot, inv) pairs, so we cannot pick the best L-SIG candidate
+                // yet. The body is replayed once with the winning candidate
+                // after the outer rot_lsig loop closes (see goto below).
+                if (n_rot > 1) {
+                    continue;
+                }
+
+            lsig_body_entry:  // Phase 70: target of goto after candidate promotion.
                 if (lsig_enc != 0 && !getenv("IEEE80211_FORCE_HTSIG")) {
                     // L-SIG succeeded with non-BPSK 1/2 rate - skip and try other inv
                     continue;
@@ -5207,6 +5262,36 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
                 }
                 }
+            }
+            }  // close outer rot_lsig loop (Phase 70 4-rot candidate search)
+
+            // When n_rot==1 (default), the inner inv_lsig loop above ran twice
+            // (rot_lsig fixed at 0). When n_rot==4 (env var ON), it ran 8
+            // times across all (rot, inv) pairs. The HT-SIG body was skipped
+            // for every candidate in candidate mode (continue above), so we
+            // promote the best candidate here and replay the body once.
+            if (n_rot > 1 && lsig_best_metric < INT_MAX) {
+                // Promote the best candidate to the local variables
+                // used by the rest of the function.
+                lsig_enc = lsig_best_enc;
+                lsig_len = lsig_best_len;
+                lsig_rate_field = lsig_best_rate_field;
+                lsig_parity_ok_int = lsig_best_parity_ok;
+                lsig_ok = true;  // We found a valid L-SIG.
+                // Log the candidate-search winner (thread-safe snprintf+USRP_LOG).
+                char candbuf[256];
+                snprintf(candbuf, sizeof(candbuf),
+                    "[LSIG_CANDIDATE_WIN] rot=%d inv=%d approx_metric=%d "
+                    "enc=%d len=%d rate_field=0x%X parity_ok=%d\n",
+                    lsig_best_rot, lsig_best_inv, lsig_best_metric,
+                    lsig_best_enc, lsig_best_len, lsig_best_rate_field,
+                    lsig_best_parity_ok);
+                USRP_LOG("%s", candbuf);
+                // The HT-SIG body was skipped for every candidate while we
+                // searched. Run it ONCE now with the best candidate's values.
+                // The body uses the same `lsig_*` locals and `htsig_lsig_enc`
+                // assignment, so a single manual entry is sufficient.
+                goto lsig_body_entry;
             }
 
             // Phase 66: per-candidate HT-SIG viterbi summary. Opt-in via
