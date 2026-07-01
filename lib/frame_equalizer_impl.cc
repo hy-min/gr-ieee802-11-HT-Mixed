@@ -143,6 +143,30 @@ static void mmse_equalize_htsig(const gr_complex* in,
     }
 }
 
+// Phase 72: MMSE N0 estimation for header equalization (L-SIG and HT-SIG).
+// Computes the n0_percentile-th percentile of |H|² over the 48 data SCs.
+// Returns the value (floored at 1e-9 to prevent division by zero).
+static double estimate_mmse_n0(const gr_complex* H52, int n0_percentile)
+{
+    double h_sq[48];
+    for (int i = 0; i < 48; i++) {
+        h_sq[i] = std::norm(H52[i]);
+    }
+    std::array<double, 48> sorted_h_sq{};
+    for (int i = 0; i < 48; i++) sorted_h_sq[i] = h_sq[i];
+    std::sort(sorted_h_sq.begin(), sorted_h_sq.end());
+    if (n0_percentile < 1) n0_percentile = 1;
+    if (n0_percentile > 49) n0_percentile = 49;
+    double idx_d = (n0_percentile / 100.0) * 47.0;
+    int idx_lo = (int)idx_d;
+    int idx_hi = idx_lo + 1;
+    if (idx_hi > 47) idx_hi = 47;
+    double frac = idx_d - idx_lo;
+    double N0 = sorted_h_sq[idx_lo] * (1.0 - frac) + sorted_h_sq[idx_hi] * frac;
+    if (N0 < 1e-9) N0 = 1e-9;
+    return N0;
+}
+
 // ============================================================
 // HT tables
 // ============================================================
@@ -1134,12 +1158,40 @@ static void equalize_header52_to_eq48_and_bits(const gr_complex* rx52,
     // Do NOT apply additional CPE compensation here.
     (void)is_ht_sig; // unused
 
+    // Phase 72: opt-in MMSE equalization. Default OFF (ZF) preserves
+    // existing behavior. When ON, eq = conj(H)*rx / (|H|² + N0) where
+    // N0 is the n0_percentile-th percentile of |H|² over the 48 data SCs.
+    // This regularizes the noise amplification at H52 nulls identified
+    // in Phase 27/30/38/41 as the root cause of viterbi failures.
+    static bool mmse_cached = false;
+    static bool mmse_enabled = false;
+    static int  n0_percentile = 25;
+    if (!mmse_cached) {
+        const char* env_mmse = getenv("IEEE80211_MMSE_EQUALIZE");
+        mmse_enabled = (env_mmse && env_mmse[0] != '\0' && env_mmse[0] != '0');
+        const char* env_pct = getenv("IEEE80211_MMSE_N0_PERCENTILE");
+        if (env_pct) {
+            n0_percentile = atoi(env_pct);
+        }
+        mmse_cached = true;
+    }
+
+    double N0 = 0.0;
+    if (mmse_enabled) {
+        N0 = estimate_mmse_n0(H52, n0_percentile);
+    }
+
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
         if (h_mag < 0.001f) {
             eq = gr_complex(0.0f, 0.0f);
+        } else if (mmse_enabled) {
+            // MMSE: conj(H) * rx / (|H|² + N0)
+            double denom = (double)h_mag * (double)h_mag + N0;
+            eq = std::conj(H52[i]) * rx52[i] / (gr_complex)denom;
         } else {
+            // ZF (default)
             eq = safe_div(rx52[i], H52[i]);
         }
         out_eq48[i] = eq;
