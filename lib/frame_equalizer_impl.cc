@@ -1060,56 +1060,6 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
             H52[48 + i] = lltf0;
         }
     }
-
-    // Phase 72: Hann window envelope compensation.
-    // When L-LTF RX FFT uses a Hann window (IEEE80211_RX_FFT_WINDOW=hann),
-    // the FFT output is scaled by Hann's main-lobe gain (0.5 at DC).
-    // This shows up as a 2x magnitude reduction in H52, which the viterbi
-    // interprets as a 2x channel attenuation. Compensate by multiplying
-    // H52 by 1/0.5 = 2.0 to restore the magnitude scale.
-    //
-    // This is a FIRST-ORDER correction (only DC gain). Full 3-tap
-    // deconvolution (correcting leakage between adjacent bins) is future
-    // work. The MMSE EQ (Task 2) provides additional noise regularization
-    // that handles the residual leakage.
-    //
-    // Default behavior:
-    //   - IEEE80211_RX_FFT_WINDOW=rectangular (default) -> compensation OFF
-    //   - IEEE80211_RX_FFT_WINDOW=hann AND IEEE80211_RX_FFT_WINDOW_COMPENSATE=1
-    //     (default ON for non-rectangular) -> compensation ON (multiply by 2.0)
-    //   - IEEE80211_RX_FFT_WINDOW=hann AND IEEE80211_RX_FFT_WINDOW_COMPENSATE=0
-    //     -> compensation OFF (raw Hann-windowed H52, matches Phase 71's broken behavior)
-    static bool hann_comp_cached = false;
-    static bool hann_comp_enabled = false;
-    if (!hann_comp_cached) {
-        const char* env_window = getenv("IEEE80211_RX_FFT_WINDOW");
-        // Manual case-insensitive compare against "rectangular"
-        bool is_non_rect = false;
-        if (env_window && env_window[0] != '\0') {
-            const char* w = env_window;
-            const char* target = "rectangular";
-            int wi = 0, ti = 0;
-            while (w[wi] && target[ti]) {
-                char cw = (w[wi] >= 'A' && w[wi] <= 'Z') ? (w[wi] + 32) : w[wi];
-                char ct = (target[ti] >= 'A' && target[ti] <= 'Z') ? (target[ti] + 32) : target[ti];
-                if (cw != ct) break;
-                wi++; ti++;
-            }
-            is_non_rect = (w[wi] != '\0' || target[ti] != '\0');
-        }
-        const char* env_comp = getenv("IEEE80211_RX_FFT_WINDOW_COMPENSATE");
-        // Default ON for non-rectangular; explicit "0" or "false" disables
-        bool comp_explicit_off = (env_comp && (env_comp[0] == '0' || env_comp[0] == 'f' || env_comp[0] == 'F'));
-        hann_comp_enabled = is_non_rect && !comp_explicit_off;
-        hann_comp_cached = true;
-    }
-    if (hann_comp_enabled) {
-        // Hann(64) DC gain = 0.5 -> multiply by 2.0 to restore magnitude
-        const gr_complex comp_factor(2.0f, 0.0f);
-        for (int i = 0; i < 52; i++) {
-            H52[i] = H52[i] * comp_factor;
-        }
-    }
 }
 
 // Phase 34: estimate per-frame sub-sample timing offset δ from H52.
