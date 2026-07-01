@@ -116,9 +116,17 @@ def main():
     parser.add_argument('--out-log', type=str, default=None, help='Redirect all stdout to this log file (Phase 73)')
     args = parser.parse_args()
 
-    # Phase 73: redirect stdout to log file BEFORE any prints (line-buffered for live monitoring)
+    # Phase 73: redirect stdout AND stderr to log file BEFORE any prints.
+    # C-level fprintf(stderr, ...) (e.g. USRP_LOG, SPLITTER_TAG) writes directly
+    # to fd 2, which is independent of Python's sys.stderr. Must use os.dup2
+    # to redirect the actual file descriptors that C code uses.
+    # Note: do NOT also reassign sys.stdout/stderr — GNU Radio's gr.top_block
+    # initialization resets them and we lose Python print() output.
     if args.out_log:
-        sys.stdout = open(args.out_log, 'w', buffering=1)
+        log_fd = os.open(args.out_log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        os.dup2(log_fd, 1)  # stdout (Python print + C printf)
+        os.dup2(log_fd, 2)  # stderr (C fprintf(stderr,...) — USRP_LOG etc.)
+        os.close(log_fd)
 
     if not os.path.exists(args.in_path):
         print(f"[REPLAY] ERROR: Input file {args.in_path} does not exist", file=sys.stderr, flush=True)

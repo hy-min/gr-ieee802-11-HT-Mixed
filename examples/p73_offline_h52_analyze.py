@@ -86,8 +86,17 @@ def main():
                 htsig_viterbi_diag_lines.append(line.strip())
                 continue
 
-            # H60_NULL pre-clean stats
-            # Format: [H60_NULL] ... n_nulls_before=X n_nulls_after=Y ...
+            # H60_NULL pre-clean stats (per-frame dump)
+            # Format: [H60_NULL_PER_FRAME] frame_sym=X n_nulls=Y/52 thresh=... radius=... is_ht=...
+            m = re.search(r'\[H60_NULL_PER_FRAME\].*?n_nulls=(\d+)/(\d+)', line)
+            if m:
+                n_nulls_after_list.append(int(m.group(1)))
+                # Also keep a "before" list equal to after (we don't have a before in this format)
+                # But for combo mode, pre-clean runs and n_nulls reflects AFTER pre-clean.
+                # Phase 61 actually has a 2-stage dump; let's record what's available.
+                continue
+
+            # H60_NULL (with before/after) - Phase 60 original format
             m = re.search(r'\[H60_NULL\].*?n_nulls_before=(\d+).*?n_nulls_after=(\d+)', line)
             if m:
                 n_nulls_before_list.append(int(m.group(1)))
@@ -120,11 +129,12 @@ def main():
     # H60_NULL pre-clean stats
     print(f"\n[P73-ANALYZE] === H60_NULL Pre-Clean 统计 ===", flush=True)
     if n_nulls_after_list:
-        before = np.array(n_nulls_before_list)
         after = np.array(n_nulls_after_list)
         print(f"H60_NULL fire count: {len(after)}", flush=True)
-        print(f"  n_nulls_before: mean={before.mean():.2f}, median={np.median(before):.2f}, "
-              f"min={before.min()}, max={before.max()}", flush=True)
+        if n_nulls_before_list:
+            before = np.array(n_nulls_before_list)
+            print(f"  n_nulls_before: mean={before.mean():.2f}, median={np.median(before):.2f}, "
+                  f"min={before.min()}, max={before.max()}", flush=True)
         print(f"  n_nulls_after:  mean={after.mean():.2f}, median={np.median(after):.2f}, "
               f"min={after.min()}, max={after.max()}", flush=True)
         print(f"  帧 n_nulls_after <= 2 比例: {(after <= 2).mean() * 100:.1f}%", flush=True)
