@@ -4700,6 +4700,53 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     USRP_LOG("%s", h60pbuf);
                 }
                 interp_h52_nulls(Hhdr52, nulls, d_h52_interp_radius);
+
+                // Phase 73: iterative pre-clean. Apply detect+interp a second
+                // time to catch residual nulls that the first pass missed (e.g.
+                // SCs whose magnitude dropped below threshold only after the
+                // first interpolation round). Opt-in via
+                // IEEE80211_H52_NULL_ITERATIVE=1. Default OFF to preserve
+                // existing single-pass behavior.
+                static bool p73_iterative_inited = false;
+                static bool p73_iterative_enabled = false;
+                if (!p73_iterative_inited) {
+                    const char* env_iter = std::getenv("IEEE80211_H52_NULL_ITERATIVE");
+                    p73_iterative_enabled = (env_iter && env_iter[0] != '\0' && env_iter[0] != '0');
+                    p73_iterative_inited = true;
+                    if (p73_iterative_enabled) {
+                        std::cout << "[FRAME_EQ] IEEE80211_H52_NULL_ITERATIVE=1 "
+                                  << "(apply pre-clean twice)\n";
+                    }
+                }
+                if (p73_iterative_enabled) {
+                    auto nulls2 = detect_h52_nulls(Hhdr52, d_h52_null_thresh);
+                    if (d_h52_null_dump_enabled) {
+                        char buf2[256];
+                        snprintf(buf2, sizeof(buf2),
+                            "[H60_NULL_ITER] iter1_after=%zu iter2_before=%zu thresh=%.3f radius=%d\n",
+                            nulls.size(), nulls2.size(),
+                            d_h52_null_thresh, d_h52_interp_radius);
+                        USRP_LOG("%s", buf2);
+                    }
+                    if (getenv("IEEE80211_H60_NULL_PER_FRAME_DUMP") &&
+                        getenv("IEEE80211_H60_NULL_PER_FRAME_DUMP")[0] == '1') {
+                        char h60ibuf[256];
+                        snprintf(h60ibuf, sizeof(h60ibuf),
+                            "[H60_NULL_ITER_PER_FRAME] frame_sym=%d iter1=%zu iter2_before=%zu iter2_after=%zu\n",
+                            d_internal_symbol_counter, nulls.size(), nulls2.size(), (size_t)0);
+                        USRP_LOG("%s", h60ibuf);
+                    }
+                    interp_h52_nulls(Hhdr52, nulls2, d_h52_interp_radius);
+                    if (getenv("IEEE80211_H60_NULL_PER_FRAME_DUMP") &&
+                        getenv("IEEE80211_H60_NULL_PER_FRAME_DUMP")[0] == '1') {
+                        auto nulls2_after = detect_h52_nulls(Hhdr52, d_h52_null_thresh);
+                        char h60ibuf2[256];
+                        snprintf(h60ibuf2, sizeof(h60ibuf2),
+                            "[H60_NULL_ITER_PER_FRAME] frame_sym=%d iter1=%zu iter2_before=%zu iter2_after=%zu\n",
+                            d_internal_symbol_counter, nulls.size(), nulls2.size(), nulls2_after.size());
+                        USRP_LOG("%s", h60ibuf2);
+                    }
+                }
             }
 
             // Phase 38 Step 2: per-symbol δ drift diagnostic. Estimate δ
