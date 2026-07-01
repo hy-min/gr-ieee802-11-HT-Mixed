@@ -1927,13 +1927,19 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
                                              int* out_psdu_length = nullptr,
                                              int* out_parity_ok = nullptr,
                                              uint8_t* dbg_eqbits48 = nullptr,
-                                             uint8_t* dbg_deintl48 = nullptr)
+                                             uint8_t* dbg_deintl48 = nullptr,
+                                             int rot_idx = 0)
 {
     uint8_t eqbits48[48];
     uint8_t deintl48[48];
 
     // NOTE: rx52 (d_early_eqsym) has already been phase-compensated in general_work
     // using per-subcarrier linear regression (CFO+SFO). Do NOT apply CPE again.
+    // Phase 70: Apply optional phase rotation before hard-decision.
+    // rot_idx in [0, 3] corresponds to 0°/90°/180°/270° rotation,
+    // allowing the 8-candidate search (4 rot × 2 inv) to undo any
+    // residual phase error in the equalized L-SIG constellation.
+    const gr_complex rot_factor = std::polar(1.0f, rot_idx * (float)(M_PI / 2.0));
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
@@ -1942,6 +1948,9 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
         } else {
             eq = safe_div(rx52[i], H52[i]);
         }
+        // Rotate the equalized symbol by rot_idx * 90° to align constellation
+        // back to the real axis for hard-decision.
+        eq = eq * rot_factor;
         eqbits48[i] = hard_bit_from_complex(eq);
     }
 
@@ -4811,7 +4820,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                                  nullptr,         // out_psdu_length: not needed (already in lsig_len)
                                                                  &lsig_parity_ok_int,
                                                                  nullptr,
-                                                                 nullptr);
+                                                                 nullptr,
+                                                                 /* rot_idx = */ 0);
                 if (lsig_ok) {
                     lsig_decode_calls++;
                     lsig_last_inv       = inv_lsig;
