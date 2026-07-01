@@ -108,11 +108,17 @@ class ReplayTop(gr.top_block):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Phase 68 offline replay')
+    parser = argparse.ArgumentParser(description='Phase 68/73 offline replay with multi-loop support')
     parser.add_argument('--in', dest='in_path', default='/tmp/p68_raw_iq.bin', help='Input raw IQ file')
     parser.add_argument('--head', type=int, default=0, help='Max items to replay (0 = entire file)')
     parser.add_argument('--duration', type=float, default=0, help='Wall-clock duration in s (0 = entire file)')
+    parser.add_argument('--loop', type=int, default=1, help='Number of times to loop the IQ file (Phase 73, default 1)')
+    parser.add_argument('--out-log', type=str, default=None, help='Redirect all stdout to this log file (Phase 73)')
     args = parser.parse_args()
+
+    # Phase 73: redirect stdout to log file BEFORE any prints (line-buffered for live monitoring)
+    if args.out_log:
+        sys.stdout = open(args.out_log, 'w', buffering=1)
 
     if not os.path.exists(args.in_path):
         print(f"[REPLAY] ERROR: Input file {args.in_path} does not exist", file=sys.stderr, flush=True)
@@ -121,46 +127,63 @@ def main():
     in_size = os.path.getsize(args.in_path)
     in_samples = in_size // 8  # complex64
     print(f"[REPLAY] Input file: {args.in_path} ({in_size} bytes, {in_samples} samples)", flush=True)
+    print(f"[REPLAY] Loop count: {args.loop}", flush=True)
 
     if args.head == 0:
         args.head = in_samples
 
-    tb = ReplayTop(args)
-    tb.start()
+    aggregate_ok = 0
+    aggregate_fail = 0
+    aggregate_rx = 0
 
-    print(f"[REPLAY] Replaying up to {args.head} samples ({args.head / 20e6:.3f}s @ 20 MHz)...", flush=True)
+    # Phase 73: outer loop over N iterations of the same IQ file
+    for loop_idx in range(args.loop):
+        print(f"[REPLAY] ===== Loop {loop_idx + 1}/{args.loop} =====", flush=True)
 
-    t0 = time.time()
-    if args.duration > 0:
-        # Wall-clock bound.
-        while time.time() - t0 < args.duration:
-            time.sleep(0.5)
-            elapsed = time.time() - t0
-            sent = tb.msg_debug_rx.num_messages()
-            print(f"[REPLAY] t={elapsed:.1f}s RX={sent} FCS_OK={tb.fcs.ok} FAIL={tb.fcs.fail}", flush=True)
-    else:
-        # Wait for file source to drain.
-        prev_count = 0
-        stable = 0
-        while True:
-            time.sleep(0.5)
-            elapsed = time.time() - t0
-            sent = tb.msg_debug_rx.num_messages()
-            print(f"[REPLAY] t={elapsed:.1f}s RX={sent} FCS_OK={tb.fcs.ok} FAIL={tb.fcs.fail}", flush=True)
-            if sent == prev_count:
-                stable += 1
-                if stable >= 6:  # 3s of zero progress = drained
-                    break
-            else:
-                stable = 0
-                prev_count = sent
+        tb = ReplayTop(args)
+        tb.start()
 
-    tb.stop()
-    tb.wait()
+        print(f"[REPLAY] Replaying up to {args.head} samples ({args.head / 20e6:.3f}s @ 20 MHz)...", flush=True)
 
-    print(f"[REPLAY] ===== RESULTS =====", flush=True)
-    print(f"[REPLAY] RX messages: {tb.msg_debug_rx.num_messages()}", flush=True)
-    print(f"[REPLAY] FCS_OK={tb.fcs.ok} FCS_FAIL={tb.fcs.fail}", flush=True)
+        t0 = time.time()
+        if args.duration > 0:
+            # Wall-clock bound.
+            while time.time() - t0 < args.duration:
+                time.sleep(0.5)
+                elapsed = time.time() - t0
+                sent = tb.msg_debug_rx.num_messages()
+                print(f"[REPLAY][loop{loop_idx+1}] t={elapsed:.1f}s RX={sent} FCS_OK={tb.fcs.ok} FAIL={tb.fcs.fail}", flush=True)
+        else:
+            # Wait for file source to drain.
+            prev_count = 0
+            stable = 0
+            while True:
+                time.sleep(0.5)
+                elapsed = time.time() - t0
+                sent = tb.msg_debug_rx.num_messages()
+                print(f"[REPLAY][loop{loop_idx+1}] t={elapsed:.1f}s RX={sent} FCS_OK={tb.fcs.ok} FAIL={tb.fcs.fail}", flush=True)
+                if sent == prev_count:
+                    stable += 1
+                    if stable >= 6:  # 3s of zero progress = drained
+                        break
+                else:
+                    stable = 0
+                    prev_count = sent
+
+        tb.stop()
+        tb.wait()
+
+        loop_rx = tb.msg_debug_rx.num_messages()
+        loop_ok = tb.fcs.ok
+        loop_fail = tb.fcs.fail
+        aggregate_rx += loop_rx
+        aggregate_ok += loop_ok
+        aggregate_fail += loop_fail
+        print(f"[REPLAY][loop{loop_idx+1}] ===== Loop {loop_idx+1} DONE: RX={loop_rx} OK={loop_ok} FAIL={loop_fail} =====", flush=True)
+
+    print(f"[REPLAY] ===== AGGREGATE RESULTS ({args.loop} loops) =====", flush=True)
+    print(f"[REPLAY] RX messages: {aggregate_rx}", flush=True)
+    print(f"[REPLAY] FCS_OK={aggregate_ok} FCS_FAIL={aggregate_fail}", flush=True)
 
 
 if __name__ == '__main__':
