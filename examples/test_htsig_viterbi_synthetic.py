@@ -696,6 +696,115 @@ def test_layer3_awgn():
           f"9dB: {results[9]}/3, 6dB: {results[6]}/3")
 
 
+# ============================================================
+# Layer 4: USRP-like channel impairments
+# Mimics Phase 33b 64-PSK residual + Phase 38 frequency-selective nulls
+# + Phase 76 observed SNR=3 dB
+# ============================================================
+def apply_usrp_like_channel(sc52_0, sc52_1, frame_seed=0):
+    """Apply USRP-like channel: multipath + per-frame δ + nulls + AWGN.
+
+    Models:
+      1. Multipath: 2-path channel with sub-GI delay
+      2. Per-frame δ: sub-sample timing offset (uniform in [-π/64, +π/64])
+      3. Frequency-selective nulls: 5-10 SCs with |H|=0.05-0.14
+      4. AWGN: SNR=3 dB (matches USRP observation)
+    """
+    rng = np.random.default_rng(seed=frame_seed)
+    n_fft = 64
+    # 802.11n uses 52 data SCs: -26..-1, 1..26 (DC excluded, only 52 SCs).
+    sc_indices = np.array([k for k in range(-26, 27) if k != 0], dtype=np.int32)  # 52 SCs
+    assert len(sc_indices) == 52
+
+    # Multipath: H[k] = 1 + 0.3 * exp(-j*pi*k/5)
+    H_mp = (1.0 + 0.3 * np.exp(-1j * np.pi * sc_indices / 5)).astype(np.complex64)
+
+    # Per-frame delta: uniform in [-1/64, +1/64] (64-PSK residual)
+    delta = rng.uniform(-1.0, 1.0) / 64.0
+    H_delta = np.exp(1j * 2 * np.pi * delta * sc_indices / n_fft).astype(np.complex64)
+
+    # Frequency-selective nulls: 5-10 SCs with |H|=0.05-0.14
+    n_nulls = int(rng.integers(5, 11))
+    null_indices = rng.choice(52, size=n_nulls, replace=False)
+    H_nulls = np.ones(52, dtype=np.complex64)
+    H_nulls[null_indices] = rng.uniform(0.05, 0.14, size=n_nulls).astype(np.complex64)
+
+    # Combined H
+    H = H_mp * H_delta * H_nulls
+
+    sc52_0_rx = sc52_0 * H
+    sc52_1_rx = sc52_1 * H
+
+    # AWGN at SNR=3 dB
+    sig_power = float(np.mean(np.abs(sc52_0_rx) ** 2))
+    noise_power = sig_power / (10 ** (3.0 / 10))
+    noise_0 = np.sqrt(noise_power / 2) * (rng.standard_normal(52) + 1j * rng.standard_normal(52))
+    noise_1 = np.sqrt(noise_power / 2) * (rng.standard_normal(52) + 1j * rng.standard_normal(52))
+    sc52_0_rx = (sc52_0_rx + noise_0.astype(np.complex64)).astype(np.complex64)
+    sc52_1_rx = (sc52_1_rx + noise_1.astype(np.complex64)).astype(np.complex64)
+
+    return sc52_0_rx, sc52_1_rx, H, delta, n_nulls
+
+
+def synth_and_decode_layer4(case_name, frame_seed=0, **case_kwargs):
+    """Layer 4: USRP-like channel. Returns decoder info dict."""
+    bits48_tx = make_known_htsig_bits(**case_kwargs)
+    coded96 = _bcc_encode_48(bits48_tx)
+    coded0 = coded96[0:48]
+    coded1 = coded96[48:96]
+    intl0 = htsig_interleave(coded0)
+    intl1 = htsig_interleave(coded1)
+    syms0 = bpsk_qbpsk_modulate(intl0)
+    syms1 = bpsk_qbpsk_modulate(intl1)
+    sc52_0 = insert_ht_pilots(syms0, 0)
+    sc52_1 = insert_ht_pilots(syms1, 1)
+
+    sc52_0_rx, sc52_1_rx, H, delta, n_nulls = apply_usrp_like_channel(
+        sc52_0, sc52_1, frame_seed=frame_seed)
+
+    # Ideal equalization (we control the channel)
+    eq52_0 = sc52_0_rx / H
+    eq52_1 = sc52_1_rx / H
+    eq48_a = eq52_0[0:48]
+    eq48_b = eq52_1[0:48]
+
+    dec48, info = decode_htsig_attempt(eq48_a, eq48_b)
+    info["case"] = case_name
+    info["frame_seed"] = frame_seed
+    info["delta"] = delta
+    info["n_nulls"] = n_nulls
+    info["expected_mcs"] = case_kwargs.get("mcs", 0)
+    info["expected_length"] = case_kwargs.get("length", 100)
+    if dec48 is not None:
+        info["bit_match"] = bool(np.array_equal(dec48, bits48_tx))
+    return info
+
+
+def test_layer4_usrp_like_baseline():
+    """Layer 4 baseline: USRP-like channel + ideal equalization.
+    Run 100 frames per case, measure success rate."""
+    cases = [
+        ("A", {"mcs": 0, "length": 100, "sgi": 0, "ldpc": 0}),
+        ("B", {"mcs": 7, "length": 1000, "sgi": 1, "aggregation": 1}),
+        ("C", {"mcs": 0, "length": 10, "ldpc": 1}),
+    ]
+    n_frames = 100
+    results = {}
+    for name, kwargs in cases:
+        passed = 0
+        for seed in range(n_frames):
+            info = synth_and_decode_layer4(name, frame_seed=seed, **kwargs)
+            if info.get("crc_ok") and info.get("bit_match"):
+                passed += 1
+        results[name] = passed
+        print(f"[INFO] Layer4/baseline/{name}: {passed}/{n_frames}")
+    total = sum(results.values())
+    total_possible = 3 * n_frames
+    pct = 100.0 * total / total_possible
+    print(f"[RESULT] Layer 4 baseline: {total}/{total_possible} ({pct:.1f}%)")
+    return results
+
+
 if __name__ == "__main__":
     test_viterbi_encode_decode_roundtrip()
     test_make_known_htsig_bits_case_a()
@@ -704,4 +813,6 @@ if __name__ == "__main__":
     test_layer1_clean()
     test_layer2_cfo()
     test_layer3_awgn()
-    print("\nPhase 37 Layer 1+2+3 tests passed.")
+    print()
+    test_layer4_usrp_like_baseline()
+    print("\nPhase 37 Layer 1+2+3 + Phase 78a Layer 4 tests done.")
