@@ -805,6 +805,94 @@ def test_layer4_usrp_like_baseline():
     return results
 
 
+# ============================================================
+# 77a: Per-symbol CPE (Common Phase Error) compensation
+# Mirrors C++ IEEE80211_HTSIG_PILOT_CPE=1 (Phase 35/77a logic).
+# Estimate phase from 4 HT-SIG pilots (SCs -21, -7, +7, +21 =
+# bins 48..51 in 52-order), rotate symbol by -phi.
+# ============================================================
+def apply_per_symbol_cpe(eq52_0, eq52_1):
+    """Apply per-symbol CPE: estimate phase from 4 pilots, rotate symbol.
+
+    Pilots at SCs {-21, -7, +7, +21} (bins 48..51 in 52-order).
+    Pilots are on IMAG axis (QBPSK) with known polarity per symbol.
+    """
+    pilot_bins = [48, 49, 50, 51]
+
+    def cpe_one_symbol(eq52):
+        pilot_args = np.array([np.angle(eq52[b]) for b in pilot_bins])
+        pilot_mags = np.array([np.abs(eq52[b]) for b in pilot_bins])
+        valid = pilot_mags > 1e-3
+        if not np.any(valid):
+            return eq52
+        phi = float(np.mean(pilot_args[valid]))
+        rot = np.exp(-1j * phi)
+        return (eq52 * rot).astype(np.complex64)
+
+    return cpe_one_symbol(eq52_0), cpe_one_symbol(eq52_1)
+
+
+def synth_and_decode_layer4_with_cpe(case_name, frame_seed=0, **case_kwargs):
+    """Layer 4 with 77a per-symbol CPE applied between equalization and decoding."""
+    bits48_tx = make_known_htsig_bits(**case_kwargs)
+    coded96 = _bcc_encode_48(bits48_tx)
+    coded0 = coded96[0:48]
+    coded1 = coded96[48:96]
+    intl0 = htsig_interleave(coded0)
+    intl1 = htsig_interleave(coded1)
+    syms0 = bpsk_qbpsk_modulate(intl0)
+    syms1 = bpsk_qbpsk_modulate(intl1)
+    sc52_0 = insert_ht_pilots(syms0, 0)
+    sc52_1 = insert_ht_pilots(syms1, 1)
+
+    sc52_0_rx, sc52_1_rx, H, delta, n_nulls = apply_usrp_like_channel(
+        sc52_0, sc52_1, frame_seed=frame_seed)
+    eq52_0 = sc52_0_rx / H
+    eq52_1 = sc52_1_rx / H
+
+    # Apply 77a per-symbol CPE before dropping pilots
+    eq52_0_cpe, eq52_1_cpe = apply_per_symbol_cpe(eq52_0, eq52_1)
+
+    eq48_a = eq52_0_cpe[0:48]
+    eq48_b = eq52_1_cpe[0:48]
+
+    dec48, info = decode_htsig_attempt(eq48_a, eq48_b)
+    info["case"] = case_name
+    info["frame_seed"] = frame_seed
+    info["delta"] = delta
+    info["n_nulls"] = n_nulls
+    info["expected_mcs"] = case_kwargs.get("mcs", 0)
+    info["expected_length"] = case_kwargs.get("length", 100)
+    info["cpe_applied"] = True
+    if dec48 is not None:
+        info["bit_match"] = bool(np.array_equal(dec48, bits48_tx))
+    return info
+
+
+def test_layer4_usrp_like_with_cpe():
+    """Layer 4 with 77a per-symbol CPE. Compare to 91% baseline."""
+    cases = [
+        ("A", {"mcs": 0, "length": 100, "sgi": 0, "ldpc": 0}),
+        ("B", {"mcs": 7, "length": 1000, "sgi": 1, "aggregation": 1}),
+        ("C", {"mcs": 0, "length": 10, "ldpc": 1}),
+    ]
+    n_frames = 100
+    results = {}
+    for name, kwargs in cases:
+        passed = 0
+        for seed in range(n_frames):
+            info = synth_and_decode_layer4_with_cpe(name, frame_seed=seed, **kwargs)
+            if info.get("crc_ok") and info.get("bit_match"):
+                passed += 1
+        results[name] = passed
+        print(f"[INFO] Layer4/77a-cpe/{name}: {passed}/{n_frames}")
+    total = sum(results.values())
+    total_possible = 3 * n_frames
+    pct = 100.0 * total / total_possible
+    print(f"[RESULT] Layer 4 + 77a CPE: {total}/{total_possible} ({pct:.1f}%)")
+    return results
+
+
 if __name__ == "__main__":
     test_viterbi_encode_decode_roundtrip()
     test_make_known_htsig_bits_case_a()
@@ -815,4 +903,5 @@ if __name__ == "__main__":
     test_layer3_awgn()
     print()
     test_layer4_usrp_like_baseline()
+    test_layer4_usrp_like_with_cpe()
     print("\nPhase 37 Layer 1+2+3 + Phase 78a Layer 4 tests done.")
