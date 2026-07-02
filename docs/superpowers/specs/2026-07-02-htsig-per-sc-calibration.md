@@ -69,20 +69,27 @@ Phase 33b/78b/78c/79 verdicts in `docs/superpowers/notes/`. Key findings:
 
 ### Per-SC phase calibration (new C++ helper)
 
-Replace the Phase 79 per-symbol scalar δ with a per-SC phase correction:
+**Critical correction from initial draft**: Phase 78b's 5 stable null SCs are
+**noise-dominated** (std_im=7.8 across frames), so they are NOT suitable as
+δ estimators. Phase 79 already correctly used PILOTS (high SNR anchors) for δ
+estimation — that's why δ=0.9112 was meaningful. The structural fingerprint
+of null SCs is their **stable per-SC magnitude/phase pattern** across frames,
+which is useful for a STATIC bias LUT, not for per-frame δ.
+
+The corrected design:
 
 ```
 For each data SC k (0..47) and pilot SC k_p (48..51):
 
-step 1 (per-frame linear fit from null SCs):
-  // Use 5 stable null SCs as anchors
-  // For each null SC k_n: extract phase arg(eq[k_n])
-  // Fit linear regression: phase[k] = a + b·k  →  b = δ_hat × 2π/64
-  δ_hat = b × 64 / (2π)  ∈ [0, 1) at 1/64 quantization
+step 1 (per-frame δ from PILOTS, same as Phase 79):
+  // Use 4 pilots (high SNR) as anchors for linear regression
+  δ_hat = estimate_symbol_delta_qbpsk(rx52, H52, pilot_polarity)
 
-step 2 (optional static per-SC LUT, Phase 80b-B):
+step 2 (static per-SC phase LUT, Phase 80b-B):
+  // Offline: median per-SC phase across N=30+ USRP frames
+  // Captures non-linear residual phase distortion
   LUT[k] = exp(-j × median_arg_eq_across_N_frames[k])
-  Pre-computed offline from USRP capture, applied as additional correction.
+  Loaded from JSON file at startup if IEEE80211_HTSIG_PER_SC_LUT is set.
 
 step 3 (per-SC phase correction):
   correction[k] = LUT[k] × exp(+j·2π·k·δ_hat/64)
@@ -94,18 +101,16 @@ step 3 (per-SC phase correction):
 
 | Aspect | Phase 79 | Phase 80b |
 |---|---|---|
-| Estimator source | Center pilots ({-21,-7,+7,+21}) | Edge null SCs (high |k|) |
-| Phase ramp slope | Computed from low-sensitivity anchors | Computed from high-sensitivity anchors |
-| Correction shape | Scalar δ (uniform across SCs) | Per-SC × (LUT + δ ramp) |
-| Residual error after correction | High at edges (±133° at SC=±26) | Low (captured by per-SC model) |
+| δ estimator | Pilots (high SNR, central SCs) | Same as Phase 79 (pilots) |
+| Per-SC ramp correction | Scalar δ across all SCs | Same as Phase 79 |
+| Static per-SC bias | None | LUT from multi-frame USRP capture |
+| Non-linear residual handling | Not addressed | Captured by LUT |
 
-**Key insight**: Phase 79 applied scalar δ `exp(+j·2π·k·δ/64)`. The δ value came from
-center pilots where the ramp is small. So the correction at edges is large but
-*systematically wrong* — applying the center-derived δ doesn't fully correct the
-edge distortion because the actual distortion has higher-order components.
-
-Phase 80b uses edge null SCs (where the phase ramp is large) for δ estimation,
-giving a more accurate δ value. Plus optional LUT captures non-linear residuals.
+**Key insight**: Phase 79 already does per-frame δ + per-SC ramp. What's MISSING
+is the non-linear residual phase that doesn't fit the linear ramp model. This
+residual is what Phase 78b identified as 5 stable null SCs — a structural
+fingerprint of the USRP channel. Phase 80b captures this fingerprint as a
+static per-SC LUT, applied as additional calibration.
 
 ### Application to HT-SIG symbols
 
@@ -114,22 +119,31 @@ between equalize and bit extraction:
 
 ```cpp
 if (d_apply_htsig_per_sc_cal) {
-    // Phase 80b-A: per-frame δ from null SCs
-    float delta_a = estimate_delta_from_null_scs(rx52_a, H52_a);
-    float delta_b = estimate_delta_from_null_scs(rx52_b, H52_b);
+    // Step 1: per-frame δ from pilots (same as Phase 79)
+    float delta_a = estimate_symbol_delta_qbpsk(rx52_a, H52_a, pol_htsig0);
+    float delta_b = estimate_symbol_delta_qbpsk(rx52_b, H52_b, pol_htsig1);
 
-    // Phase 80b-B: optional static LUT
-    if (d_htsig_per_sc_lut_valid) {
-        apply_per_sc_lut(rx52_a, H52_a, d_htsig_per_sc_lut_a, eq48_a);
-        apply_per_sc_lut(rx52_b, H52_b, d_htsig_per_sc_lut_b, eq48_b);
-    }
-
-    // Apply per-SC δ ramp correction
+    // Step 2: per-SC ramp correction
     for (int i = 0; i < 48; i++) {
-        float delta_phase = TWO_PI * kScIndex52[i] * delta_a / 64.0f;
-        eq48_a[i] *= std::polar(1.0f, +delta_phase);
+        float delta_phase_a = TWO_PI * kScIndex52[i] * delta_a / 64.0f;
+        eq48_a[i] = safe_div(rx52_a[i], H52_a[i]);
+        eq48_a[i] *= std::polar(1.0f, +delta_phase_a);
     }
     // ... similar for b ...
+
+    // Step 3: static per-SC LUT (if loaded)
+    if (d_htsig_per_sc_lut_valid) {
+        for (int i = 0; i < 48; i++) {
+            eq48_a[i] *= d_htsig_per_sc_lut_a[i];
+            eq48_b[i] *= d_htsig_per_sc_lut_b[i];
+        }
+    }
+
+    // Step 4: bit extraction
+    for (int i = 0; i < 48; i++) {
+        eqbits48_a[i] = (eq48_a[i].imag() >= 0.0f) ? 1 : 0;
+        // ... similar for b ...
+    }
 } else {
     // Existing Phase 18/35/46 path (unchanged)
 }
@@ -142,11 +156,16 @@ In `general_work` near the Phase 34/79 block, when `d_apply_htsig_per_sc_cal=1` 
 
 ```cpp
 if (d_apply_htsig_per_sc_cal) {
-    // Phase 80b-A: per-symbol δ from this symbol's null SCs
-    float delta_i = estimate_delta_from_null_scs(d_early_eqsym[i], H52);
+    // Step 1: per-symbol δ from pilots (same as Phase 79)
+    float delta_i = estimate_symbol_delta_qbpsk(raw_eq52, H52, pol_data);
+
+    // Step 2: per-SC ramp + static LUT
     for (int k = 0; k < 52; k++) {
         float delta_phase = TWO_PI * kScIndex52[k] * delta_i / 64.0f;
         d_early_eqsym[i][k] *= std::polar(1.0f, +delta_phase);
+        if (d_htsig_per_sc_lut_valid) {
+            d_early_eqsym[i][k] *= d_htsig_per_sc_lut_data[k];
+        }
     }
 } else if (d_apply_htsig_per_symbol_delta) {
     // Phase 79 path (unchanged)
