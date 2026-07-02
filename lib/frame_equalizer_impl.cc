@@ -4639,6 +4639,50 @@ int frame_equalizer_impl::general_work(int noutput_items,
                      d_sym_idx, sym_offset, cfo_phase);
         }
 
+        // Phase 79 Task 5: per-symbol δ correction for DATA symbols.
+        // Estimator uses this symbol's own pilots (QBPSK, cyclic n mod 4).
+        // Replaces Phase 34 per-frame constant δ for env=ON. raw_eq52 is the
+        // ZF-equalized rx/H (same form as eq52 in Task 4). d_h52_stash holds
+        // the H52 from L-LTF, which is the channel reference for the estimator.
+        // Default OFF preserves Phase 18/34 baseline.
+        if (d_apply_htsig_per_symbol_delta &&
+            d_sym_idx >= d_data_start_rel &&
+            d_h52_stash_valid)
+        {
+            // Data symbol pilot polarity per 802.11n §17.3.5.10 (cyclic shift).
+            // Base polarity: [+j, +j, +j, -j] (matches HT-SIG0). For data symbol n
+            // (n=0 for first data symbol), polarity rotates by n mod 4.
+            int n = d_sym_idx - d_data_start_rel;
+            const gr_complex pol_base[4] = {
+                gr_complex(0.0f, +1.0f),  // SC -21
+                gr_complex(0.0f, +1.0f),  // SC -7
+                gr_complex(0.0f, +1.0f),  // SC +7
+                gr_complex(0.0f, -1.0f)   // SC +21
+            };
+            gr_complex pol_data[4];
+            for (int p = 0; p < 4; p++) {
+                pol_data[p] = pol_base[(p + n) % 4];
+            }
+
+            // raw_eq52 is already the equalized rx/H (same form as eq52 in Task 4),
+            // so we can pass it directly to the estimator.
+            float delta_i = estimate_symbol_delta_qbpsk(raw_eq52, d_h52_stash, pol_data);
+
+            // Apply per-SC phase rotation directly (env=ON REPLACES Phase 34 per-frame δ).
+            // Per-symbol δ is more accurate than per-frame δ; SFO is much smaller than δ.
+            for (int k = 0; k < 52; k++) {
+                apply_delta_correction_to_eq(raw_eq52[k], kScIndex52[k], delta_i);
+            }
+
+            if (d_log_htsig_delta_dump) {
+                char dbuf[128];
+                snprintf(dbuf, sizeof(dbuf),
+                         "[DATA_DELTA] sym_idx=%d n=%d delta=%.4f\n",
+                         d_sym_idx, n, delta_i);
+                USRP_LOG("%s", dbuf);
+            }
+        }
+
         // Phase 47: MMSE override for data symbols. Replaces gr::digital
         // ZF equalizer output (raw_eq52) with conj(H)·rx/(|H|²+N0) when env
         // var is ON. H52 was stashed to d_h52_stash before this scope.
