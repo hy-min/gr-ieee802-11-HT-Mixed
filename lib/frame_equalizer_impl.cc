@@ -2017,6 +2017,79 @@ static int detect_htsig_rotation(const gr_complex* ht_sig_eq52)
     }
 }
 
+// ============================================================
+// Phase 79: QBPSK-aware per-symbol δ estimator
+// Grid search over δ ∈ {0, 1/64, ..., 63/64} to find value that
+// maximizes inner product of observed pilot residuals with expected
+// phase ramp. Replaces Phase 38 estimator that returned 0 for HT-SIG
+// due to ±-cancellation on pilot SC indices summing to 0.
+//
+// Matches Python reference: examples/test_htsig_delta_synthetic.py
+// Plan: docs/superpowers/plans/2026-07-02-htsig-per-symbol-delta.md Task 2
+//
+// Sign convention (matched-filter correlator):
+//   residual[k] = eq52[k] * conj(polarity[k])   (contains exp(-j*2π*k*δ_true/64))
+//   expected[δ, k] = exp(+j*2π*k*δ/64)         (matched-filter probe)
+//   inner(δ) = Σ_p conj(expected) * residual    (peaks at δ == δ_true)
+// ============================================================
+static float estimate_symbol_delta(const gr_complex* eq52,
+                                   const gr_complex* H52,
+                                   const int pilot_polarity[4])
+{
+    // Pilot SCs in 0..51 array indexing (matches kScIndex52[48..51])
+    static const int pilot_idx[4] = {48, 49, 50, 51};
+    // Actual SC indices per 802.11n
+    static const int pilot_sc[4] = {-21, -7, 7, 21};
+
+    const float MIN_H_MAG = 0.01f;
+    const int N_GRID = 64;
+    const float TWO_PI = 2.0f * (float)M_PI;
+
+    // Step 1: Compute residual[k] = eq52[k] * conj(polarity[k]) for each pilot,
+    // skipping pilots on channel nulls.
+    int valid_pilots = 0;
+    gr_complex residual[4];
+
+    for (int p = 0; p < 4; p++) {
+        if (std::abs(H52[pilot_idx[p]]) < MIN_H_MAG) {
+            residual[p] = gr_complex(0.0f, 0.0f);
+            continue;
+        }
+        gr_complex tx_pilot((float)pilot_polarity[p], 0.0f);
+        residual[p] = eq52[pilot_idx[p]] * std::conj(tx_pilot);
+        valid_pilots++;
+    }
+
+    // Step 2: Graceful fallback if all pilots are on nulls
+    if (valid_pilots == 0) {
+        return 0.0f;
+    }
+
+    // Step 3: Grid search over δ ∈ {0, 1/64, ..., 63/64}
+    float best_delta = 0.0f;
+    float best_mag = 0.0f;
+
+    for (int d = 0; d < N_GRID; d++) {
+        float delta = (float)d / (float)N_GRID;
+        gr_complex sum(0.0f, 0.0f);
+
+        for (int p = 0; p < 4; p++) {
+            if (std::abs(H52[pilot_idx[p]]) < MIN_H_MAG) continue;
+            float expected_phase = TWO_PI * (float)pilot_sc[p] * delta / 64.0f;
+            gr_complex expected_rot = std::polar(1.0f, expected_phase);
+            sum += std::conj(expected_rot) * residual[p];
+        }
+
+        float mag = std::abs(sum);
+        if (mag > best_mag) {
+            best_mag = mag;
+            best_delta = delta;
+        }
+    }
+
+    return best_delta;
+}
+
 // Apply rotation compensation to HT-SIG before decoding
 static void apply_htsig_rotation(const gr_complex* in52, gr_complex* out52, int rotation)
 {
