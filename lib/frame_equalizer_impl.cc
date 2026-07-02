@@ -2090,6 +2090,86 @@ static float estimate_symbol_delta(const gr_complex* eq52,
     return best_delta;
 }
 
+// ============================================================
+// Phase 79: QBPSK-aware variant of estimate_symbol_delta.
+// HT-SIG pilots are rotated by 90° (QBPSK): they live on the IMAG axis.
+// Polarities are COMPLEX {+j, +j, +j, -j} for HT-SIG0 and {-j, -j, -j, +j}
+// for HT-SIG1 (802.11n §17.3.5.10). The estimator handles QBPSK by
+// rotating the pilot back to the real axis via conj(polarity) before
+// applying the matched-filter correlator. Math is otherwise identical.
+// ============================================================
+static float estimate_symbol_delta_qbpsk(const gr_complex* eq52,
+                                         const gr_complex* H52,
+                                         const gr_complex pilot_polarity[4])
+{
+    // Pilot SCs in 0..51 array indexing (matches kScIndex52[48..51])
+    static const int pilot_idx[4] = {48, 49, 50, 51};
+    // Actual SC indices per 802.11n
+    static const int pilot_sc[4] = {-21, -7, 7, 21};
+
+    const float MIN_H_MAG = 0.01f;
+    const int N_GRID = 64;
+    const float TWO_PI = 2.0f * (float)M_PI;
+
+    // Step 1: Compute residual[k] = eq52[k] * conj(polarity[k]) for each pilot,
+    // skipping pilots on channel nulls. For QBPSK, conj(+j) = -j, conj(-j) = +j,
+    // so multiplying eq * conj(pol) rotates the pilot from the IMAG axis back
+    // onto the REAL axis, exposing the residual exp(-j*2π*k*δ/64) ramp.
+    int valid_pilots = 0;
+    gr_complex residual[4];
+
+    for (int p = 0; p < 4; p++) {
+        if (std::abs(H52[pilot_idx[p]]) < MIN_H_MAG) {
+            residual[p] = gr_complex(0.0f, 0.0f);
+            continue;
+        }
+        residual[p] = eq52[pilot_idx[p]] * std::conj(pilot_polarity[p]);
+        valid_pilots++;
+    }
+
+    if (valid_pilots == 0) {
+        return 0.0f;
+    }
+
+    // Step 2: Grid search over δ ∈ {0, 1/64, ..., 63/64}
+    float best_delta = 0.0f;
+    float best_mag = 0.0f;
+
+    for (int d = 0; d < N_GRID; d++) {
+        float delta = (float)d / (float)N_GRID;
+        gr_complex sum(0.0f, 0.0f);
+
+        for (int p = 0; p < 4; p++) {
+            if (std::abs(H52[pilot_idx[p]]) < MIN_H_MAG) continue;
+            float expected_phase = TWO_PI * (float)pilot_sc[p] * delta / 64.0f;
+            gr_complex expected_rot = std::polar(1.0f, expected_phase);
+            sum += std::conj(expected_rot) * residual[p];
+        }
+
+        float mag = std::abs(sum);
+        if (mag > best_mag) {
+            best_mag = mag;
+            best_delta = delta;
+        }
+    }
+
+    return best_delta;
+}
+
+// Phase 79: apply per-symbol δ correction to a single equalized symbol.
+// delta_phase = 2π * sc_index * δ / 64  (linear phase ramp across SCs).
+// Sign: conjugate of the forward time-delay rotation; matches matched-filter
+// estimator (see estimate_symbol_delta comments above).
+// ============================================================
+static inline void apply_delta_correction_to_eq(gr_complex& eq,
+                                                  int sc_index,
+                                                  float delta)
+{
+    const float TWO_PI = 2.0f * (float)M_PI;
+    float delta_phase = TWO_PI * (float)sc_index * delta / 64.0f;
+    eq *= std::polar(1.0f, +delta_phase);
+}
+
 // Apply rotation compensation to HT-SIG before decoding
 static void apply_htsig_rotation(const gr_complex* in52, gr_complex* out52, int rotation)
 {
@@ -2553,7 +2633,9 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        int* out_vit_metric = nullptr,
                                        const char** out_fail_reason = nullptr,
                                        bool use_soft_llr = false,
-                                       int  n0_percentile = 0)  // Phase 47: 0=disabled, 1-49=enabled
+                                       int  n0_percentile = 0,         // Phase 47: 0=disabled, 1-49=enabled
+                                       bool apply_htsig_per_symbol_delta = false,  // Phase 79: δ tracking
+                                       bool log_htsig_delta_dump = false)          // Phase 79: δ dump
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -2572,11 +2654,58 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     // NOTE: rx52_a/b (d_early_eqsym) has already been phase-compensated in general_work.
     // Do NOT apply additional CPE compensation here.
 
+    // Phase 79: estimate per-symbol δ from QBPSK pilots for HT-SIG0 and HT-SIG1.
+    // Opt-in via IEEE80211_HTSIG_PER_SYMBOL_DELTA=1 (passed as apply_htsig_per_symbol_delta).
+    // Default OFF preserves Phase 18/35/46 stack behavior.
+    // QBPSK polarities per 802.11n §17.3.5.10:
+    //   HT-SIG0: p = [+j, +j, +j, -j] for SCs [-21, -7, +7, +21]
+    //   HT-SIG1: p = [-j, -j, -j, +j] for SCs [-21, -7, +7, +21]
+    float delta_a = 0.0f;
+    float delta_b = 0.0f;
+    if (apply_htsig_per_symbol_delta) {
+        // Build equalized pilot arrays for the estimator (needs rx/H, not the
+        // raw rx52, so we divide here to mirror Python test_htsig_delta_synthetic.py).
+        gr_complex eq52_a[52];
+        gr_complex eq52_b[52];
+        for (int i = 0; i < 52; i++) {
+            float hm_a = std::abs(H52_a[i]);
+            eq52_a[i] = (hm_a < 0.001f) ? gr_complex(0.0f, 0.0f)
+                                        : safe_div(rx52_a[i], H52_a[i]);
+            float hm_b = std::abs(H52_b[i]);
+            eq52_b[i] = (hm_b < 0.001f) ? gr_complex(0.0f, 0.0f)
+                                        : safe_div(rx52_b[i], H52_b[i]);
+        }
+        const gr_complex pol_htsig0[4] = {
+            gr_complex(0.0f, +1.0f),  // SC -21
+            gr_complex(0.0f, +1.0f),  // SC -7
+            gr_complex(0.0f, +1.0f),  // SC +7
+            gr_complex(0.0f, -1.0f)   // SC +21
+        };
+        const gr_complex pol_htsig1[4] = {
+            gr_complex(0.0f, -1.0f),  // SC -21
+            gr_complex(0.0f, -1.0f),  // SC -7
+            gr_complex(0.0f, -1.0f),  // SC +7
+            gr_complex(0.0f, +1.0f)   // SC +21
+        };
+        delta_a = estimate_symbol_delta_qbpsk(eq52_a, H52_a, pol_htsig0);
+        delta_b = estimate_symbol_delta_qbpsk(eq52_b, H52_b, pol_htsig1);
+
+        if (log_htsig_delta_dump) {
+            char dbuf[128];
+            snprintf(dbuf, sizeof(dbuf),
+                     "[HTSIG_DELTA] delta_htsig0=%.4f delta_htsig1=%.4f\n",
+                     delta_a, delta_b);
+            USRP_LOG("%s", dbuf);
+        }
+    }
+
     // Extract bits from HT-SIG0 (rx52_a)
     // Phase 44: when use_soft_llr, also compute LLR = sign(eq.imag()) * |H|/max|H|
     // Phase 46 AR5: when d_mmse_equalize, use MMSE equalization (conj(H)·rx/(|H|²+N0))
     //               to bypass Phase 38's 50× noise amplification at Hhdr52 nulls.
     // Parallel computation so the per-SC phase diagnostic dump keeps working.
+    // Phase 79: when apply_htsig_per_symbol_delta, apply per-symbol δ
+    //           correction inside the loop using kScIndex52[i] as the SC index.
     {
         float max_h_a = 0.0f;
         if (use_soft_llr) {
@@ -2600,6 +2729,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 eq = eq_mmse_a[i];
             } else {
                 eq = safe_div(rx52_a[i], H52_a[i]);
+            }
+            // Phase 79: per-symbol δ correction (uses kScIndex52[i] = actual SC index)
+            if (apply_htsig_per_symbol_delta) {
+                apply_delta_correction_to_eq(eq, kScIndex52[i], delta_a);
             }
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
@@ -2701,6 +2834,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     // Phase 44: also compute LLR for HT-SIG1 when use_soft_llr.
     // Phase 46 AR5: when d_mmse_equalize, use MMSE equalization (conj(H)·rx/(|H|²+N0))
     //               to bypass Phase 38's 50× noise amplification at Hhdr52 nulls.
+    // Phase 79: when apply_htsig_per_symbol_delta, apply per-symbol δ
+    //           correction using delta_b (estimated from HT-SIG1 QBPSK pilots).
     {
         float max_h_b = 0.0f;
         if (use_soft_llr) {
@@ -2730,6 +2865,13 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 eq = eq_mmse_b[i] * cpe_rot_b;
             } else {
                 eq = safe_div(rx52_b[i], H52_b[i]) * cpe_rot_b;
+            }
+            // Phase 79: per-symbol δ correction for HT-SIG1.
+            // cpe_rot_b is a global constant rotation (residual phase), δ is a
+            // per-SC linear phase ramp; the two multiply commute. Apply δ here
+            // (before bit extraction) using kScIndex52[i] as the actual SC index.
+            if (apply_htsig_per_symbol_delta) {
+                apply_delta_correction_to_eq(eq, kScIndex52[i], delta_b);
             }
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
@@ -5576,7 +5718,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            &cand_metric,
                                                            &cand_fail,
                                                            d_use_soft_llr_viterbi,
-                                                           d_mmse_equalize ? d_mmse_n0_percentile : 0);
+                                                           d_mmse_equalize ? d_mmse_n0_percentile : 0,
+                                                           d_apply_htsig_per_symbol_delta,
+                                                           d_log_htsig_delta_dump);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
