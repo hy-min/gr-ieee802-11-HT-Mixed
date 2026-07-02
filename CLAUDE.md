@@ -50,6 +50,13 @@ hierarchy applies:
 - **Same-board default**: `A:0` TX → `A:0` RX2 (per Phase 53 verdict,
   cross-board is 2.4x weaker).
 - **禁止 `--rate 5`** (Phase 58 REFUTED, 48× more overflows than `--rate 20`).
+- **IEEE80211_HTSIG_PER_SYMBOL_DELTA=1** — Phase 79 per-symbol δ tracking
+  for HT-SIG0/1 + data symbols (QBPSK-aware grid-search over 64-point δ).
+  Default OFF. **REFUTED on USRP** (Phase 79 verdict 2026-07-02,
+  FCS_OK=0/90, avg_snr_htsig=2.80 dB). Estimator works (synthetic 4/4 PASS)
+  but USRP structural noise dominates. Kept as opt-in for triage.
+- **IEEE80211_HTSIG_DELTA_DUMP=1** — Phase 79 diagnostic: logs δ_htsig0,
+  δ_htsig1, per-data-symbol δ. Default OFF.
 
 ## Reference
 
@@ -60,5 +67,5 @@ hierarchy applies:
 - 12+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
   `禁止方向` section.
 
-*Last updated: 2026-06-30 (Phase 59 closure, BLOCKED verdict — Phase 60
-must target the upstream HT-SIG gate)*
+*Last updated: 2026-07-02 (Phase 79 closure, REFUTED on USRP — Phase 80
+must target structural noise via per-SC phase calibration)*
