@@ -163,6 +163,17 @@ private:
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
     bool d_log_htsig_h52;
 
+    // Phase 77c: SNR-weighted H52 averaging refinement. Replaces the
+    // simple LTS0-only estimation in estimate_header_channel_from_lltf52()
+    // with a per-SC average of LTS0 and LTS1 weighted by their magnitudes.
+    // Conceptually: H52 = (w1*H_LTS0 + w0*H_LTS1)/(w0+w1) where
+    // w_i = sum_i(|H_LTS_i|). Higher |H| LTS contributes more, so a
+    // single LTS with deep nulls cannot corrupt the average. Phase 27
+    // REFUTED simple average / sign-based / median variants; this is
+    // structurally different (|H|-weighted, per-SC). Default OFF.
+    // Enable via IEEE80211_H52_SNR_WEIGHTED=1.
+    bool d_apply_h52_snr_weighted;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the

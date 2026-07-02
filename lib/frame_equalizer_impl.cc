@@ -813,6 +813,7 @@ bool ltf0_ever_saved = false;
 bool g_log_ltf0_fft = false;  // Bridge from d_log_ltf0_fft to static extract_header52_from_sym64
 bool g_log_ltf0_fft_precomp = false;  // Bridge from d_log_ltf0_fft_precomp to static extract_header52_from_sym64
 bool g_h_median_filter = false;  // Bridge from d_h_median_filter to static estimate_header_channel_from_lltf52
+bool g_h52_snr_weighted = false; // Bridge from d_apply_h52_snr_weighted to static estimate_header_channel_from_lltf52
 bool g_log_h52_filtered = false;  // Bridge from d_log_h52_filtered to call-site dump (post-filter)
 bool g_log_h52_input = false;     // Bridge from d_log_h52_input to call-site dump (Hhdr52 at equalizer input)
 bool g_log_frame_gain = false;    // Bridge from d_log_frame_gain to static extract_header52_from_sym64
@@ -1030,23 +1031,25 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
                                                 const gr_complex* lltf1_52,
                                                 gr_complex* H52)
 {
-    // Channel estimation using LTF0.
-    // Use kLltf48TX (matching data path approach, no kFftNormalize).
+    // Channel estimation using LTF0 (default) or SNR-weighted LTS0/LTS1
+    // (Phase 77c). Use kLltf48TX (matching data path approach, no kFftNormalize).
     // The data path uses kLltf48TX for both H estimation and equalization.
     // The double error cancellation makes it work on both software loopback
     // and USRP. The header path previously used kLltf64Binned * kFftNormalize,
     // which produced wrong equalized symbols on USRP due to different FFT
     // normalization.
 
+    // Build H_LTS0 (current default).
+    gr_complex H_LTS0[52];
     // Compute H from LTF0 data subcarriers
     // Use kLltf48TX directly (matching data path approach).
     for (int i = 0; i < 48; i++) {
         const gr_complex lltf0 = lltf0_52[i];
         const gr_complex tx = kLltf48TX[i];
         if (std::abs(tx) > 0.001f) {
-            H52[i] = lltf0 / tx;
+            H_LTS0[i] = lltf0 / tx;
         } else {
-            H52[i] = lltf0;
+            H_LTS0[i] = lltf0;
         }
     }
     // Compute H from LTF0 pilot subcarriers
@@ -1055,11 +1058,68 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
         const gr_complex lltf0 = lltf0_52[48 + i];
         const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
         if (std::abs(tx) > 0.001f) {
-            H52[48 + i] = lltf0 / tx;
+            H_LTS0[48 + i] = lltf0 / tx;
         } else {
-            H52[48 + i] = lltf0;
+            H_LTS0[48 + i] = lltf0;
         }
     }
+
+    if (!g_h52_snr_weighted) {
+        // Default: LTS0 only.
+        for (int i = 0; i < 52; i++) H52[i] = H_LTS0[i];
+        return;
+    }
+
+    // Phase 77c: SNR-weighted average of LTS0 and LTS1.
+    // H52[i] = (w1*H_LTS0[i] + w0*H_LTS1[i]) / (w0 + w1) where
+    // w_i = sum_j(|H_LTS_i[j]|). Higher-magnitude LTS gets higher weight
+    // globally, so a single LTS with deep channel nulls cannot bias the
+    // result. Uses arg1 (lltf0_52) and arg2 (lltf1_52) as the two LTS
+    // observations; call sites that pass the same pointer for both
+    // (legacy callers) get H52 == H_LTS0.
+    if (lltf1_52 == lltf0_52) {
+        // Legacy caller: cannot blend, fall back to LTS0.
+        for (int i = 0; i < 52; i++) H52[i] = H_LTS0[i];
+        return;
+    }
+    gr_complex H_LTS1[52];
+    for (int i = 0; i < 48; i++) {
+        const gr_complex lltf1 = lltf1_52[i];
+        const gr_complex tx = kLltf48TX[i];
+        if (std::abs(tx) > 0.001f) {
+            H_LTS1[i] = lltf1 / tx;
+        } else {
+            H_LTS1[i] = lltf1;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        const gr_complex lltf1 = lltf1_52[48 + i];
+        const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
+        if (std::abs(tx) > 0.001f) {
+            H_LTS1[48 + i] = lltf1 / tx;
+        } else {
+            H_LTS1[48 + i] = lltf1;
+        }
+    }
+    double w0 = 0.0, w1 = 0.0;
+    for (int i = 0; i < 52; i++) {
+        w0 += std::abs(H_LTS0[i]);
+        w1 += std::abs(H_LTS1[i]);
+    }
+    double total = w0 + w1;
+    if (total < 1e-9) {
+        // Both LTS are zero — keep LTS0 as a safe fallback.
+        for (int i = 0; i < 52; i++) H52[i] = H_LTS0[i];
+        return;
+    }
+    for (int i = 0; i < 52; i++) {
+        // Higher-magnitude LTS gets the higher weight.
+        H52[i] = gr_complex(
+            (w1 * H_LTS0[i].real() + w0 * H_LTS1[i].real()) / total,
+            (w1 * H_LTS0[i].imag() + w0 * H_LTS1[i].imag()) / total);
+    }
+    USRP_LOG("[H52_SNR_WEIGHTED] w0=%.4f w1=%.4f ratio=%.3f\n",
+             w0, w1, (w0 + 1e-12) / (w1 + 1e-12));
 }
 
 // Phase 34: estimate per-frame sub-sample timing offset δ from H52.
@@ -3178,6 +3238,19 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H52_DUMP=1\n";
     }
 
+    // Phase 77c: SNR-weighted H52 averaging refinement. Replaces the
+    // simple LTS0-only estimation in estimate_header_channel_from_lltf52()
+    // with a per-SC |H|-weighted average of LTS0 and LTS1. Phase 27 REFUTED
+    // simple/signed/median variants; this uses |H| as the per-SC weight so
+    // a single LTS with deep nulls cannot bias the average. Default OFF.
+    // Enable via IEEE80211_H52_SNR_WEIGHTED=1.
+    const char* env_hsw = std::getenv("IEEE80211_H52_SNR_WEIGHTED");
+    d_apply_h52_snr_weighted = (env_hsw && env_hsw[0] == '1');
+    g_h52_snr_weighted = d_apply_h52_snr_weighted;  // Propagate to static estimator
+    if (d_apply_h52_snr_weighted) {
+        std::cout << "[FRAME_EQ] IEEE80211_H52_SNR_WEIGHTED=1 (SNR-weighted H52 ENABLED)\n";
+    }
+
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
     // error rotates BPSK constellation, causing viterbi_fail. Dump the
@@ -4004,6 +4077,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // CFO cancels when dividing RX/H because both have the same CFO rotation.
                 gr_complex H52[52];
                 const gr_complex* lltf_for_H = nullptr;
+                const gr_complex* lltf_for_H1 = nullptr;  // Phase 77c: 2nd LTS for SNR-weighted average
                 if (d_use_lltf1_for_h) {
                     // Experiment: use L-LTF1 (counter=1) for H estimation. Halves the
                     // time gap to L-SIG (counter=2) from 8us to 4us.
@@ -4016,8 +4090,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         ? d_ltf_compensated[0]
                         : d_early_eqsym[kLltf0Rel];
                 }
+                if (d_apply_h52_snr_weighted) {
+                    // Phase 77c: pass L-LTF1 as the 2nd LTS observation.
+                    // Prefer the CFO-compensated version when available, else raw.
+                    lltf_for_H1 = d_ltf_compensated_valid[1]
+                        ? d_ltf_compensated[1]
+                        : d_early_eqsym[kLltf1Rel];
+                }
                 estimate_header_channel_from_lltf52(lltf_for_H,
-                                                    lltf_for_H,  // arg2 is unused, pass same ptr
+                                                    lltf_for_H1 ? lltf_for_H1 : lltf_for_H,
                                                     H52);
                 // [H52_DUMP] Diagnostic: dump |H52[i]| and arg(H52[i]) for all
                 // 52 subcarriers per frame. Opt-in via IEEE80211_H52_DUMP=1.
