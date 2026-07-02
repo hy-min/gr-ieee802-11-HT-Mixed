@@ -4751,6 +4751,164 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
 
+            // Phase 78b-1b: HT-SIG diagnostic dumps MOVED HERE (was inside
+            // the per-(rot,inv) candidate loop, gated on `lsig_ok`).
+            // Now sibling to DELTA_PER_SYMBOL (line ~4862) and fires for
+            // every HT-capable frame reaching counter=4 regardless of
+            // whether L-SIG viterbi succeeded. This is essential because
+            // USRP frames with HT_SIG_PARSE_FAIL=viterbi_fail never
+            // reached the previous dump site (p78b replay: 0 fires vs
+            // 5 viterbi-fail frames).
+            //
+            // Fires at counter=4 (HT-SIG1 captured) AFTER CFO+SFO+delta
+            // correction has been applied to d_early_eqsym[3] and
+            // d_early_eqsym[4]. Does NOT include Phase 35 per-symbol
+            // pilot CPE or Phase 60 H52 null interp — those run later in
+            // the candidate loop. To dump *post*-CPE constellation, also
+            // add a second dump site after the candidate loop completes
+            // successfully. For p78b we only need the pre-CPE snapshot.
+            // Dumps pre-rotation FFT bins and pilot phases for layer
+            // diagnosis.
+            if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot || d_log_htsig_eq)) {
+                static int g_htsig_dump_counter = 0;
+                if (g_htsig_dump_counter < 10) {
+                    if (d_log_htsig_bin && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
+                        char htbuf[4096];
+                        int n = 0;
+                        n += snprintf(htbuf + n, sizeof(htbuf) - n,
+                            "[HTSIG_BIN_DUMP] counter=4 frame=%d htsig0=[", g_htsig_dump_counter);
+                        for (int i = 0; i < 52; i++) {
+                            n += snprintf(htbuf + n, sizeof(htbuf) - n, "%.3f%+.3fi%c",
+                                d_early_eqsym[3][i].real(),
+                                d_early_eqsym[3][i].imag(),
+                                (i < 51) ? ',' : ']');
+                        }
+                        n += snprintf(htbuf + n, sizeof(htbuf) - n, " htsig1=[");
+                        for (int i = 0; i < 52; i++) {
+                            n += snprintf(htbuf + n, sizeof(htbuf) - n, "%.3f%+.3fi%c",
+                                d_early_eqsym[4][i].real(),
+                                d_early_eqsym[4][i].imag(),
+                                (i < 51) ? ',' : ']');
+                        }
+                        USRP_LOG("%s\n", htbuf);
+                    }
+                    if (d_log_htsig_pilot && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
+                        // Phase 35 review fix (Issue 1): guard NaN risk on
+                        // std::arg(0). On USRP, |H| at pilots can drop to
+                        // 0.02-0.13 (Phase 31b); atan2(0,0) is
+                        // implementation-defined and may yield NaN, which
+                        // chokes the Python parser. Output NaN sentinel
+                        // when |H| < 1e-3.
+                        auto safe_arg = [](const gr_complex& c) -> float {
+                            return (std::abs(c) > 1e-3f) ? std::arg(c)
+                                                         : std::numeric_limits<float>::quiet_NaN();
+                        };
+                        char pbuf[256];
+                        snprintf(pbuf, sizeof(pbuf),
+                            "[HTSIG_PILOT_DUMP] counter=4 frame=%d "
+                            "htsig0_pilots=arg[%.3f,%.3f,%.3f,%.3f] "
+                            "htsig1_pilots=arg[%.3f,%.3f,%.3f,%.3f]\n",
+                            g_htsig_dump_counter,
+                            safe_arg(d_early_eqsym[3][48]), safe_arg(d_early_eqsym[3][49]),
+                            safe_arg(d_early_eqsym[3][50]), safe_arg(d_early_eqsym[3][51]),
+                            safe_arg(d_early_eqsym[4][48]), safe_arg(d_early_eqsym[4][49]),
+                            safe_arg(d_early_eqsym[4][50]), safe_arg(d_early_eqsym[4][51]));
+                        USRP_LOG("%s", pbuf);
+                    }
+                    // Phase 35 review fix (Issue 2): EQ_INPUT_DUMP removed.
+                    // At counter=4, d_early_eqsym[3,4] already have
+                    // CFO+SFO+delta applied, so dumping here would
+                    // duplicate BIN_DUMP and waste the 10-frame
+                    // flood-gate budget. If a distinct layer dump is
+                    // needed later, add it at the post-extract
+                    // pre-rotation site (different memory, distinct
+                    // dump semantics).
+                    // Phase 38 Step 7: NEW equalized-constellation dump.
+                    // Computes eq = d_early_eqsym / Hhdr52 for all 52
+                    // subcarriers of HT-SIG0 and HT-SIG1 and prints
+                    // them. If equalization is correct, expect QBPSK
+                    // clusters on the IMAG axis (±j) for data SCs and
+                    // pilots {j,j,j,-j}. If scatter, equalization is
+                    // broken. Counter still tied to 10-frame budget.
+                    if (d_log_htsig_eq) {
+                        char eqbuf[8192];
+                        int n = 0;
+                        // HT-SIG0 data SCs (0..47) and pilots (48..51)
+                        n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                            "[HTSIG_EQ_DUMP] frame=%d htsig0_eq=[",
+                            g_htsig_dump_counter);
+                        for (int i = 0; i < 52; i++) {
+                            gr_complex h = Hhdr52[i];
+                            gr_complex eq;
+                            if (std::abs(h) < 1e-3f) {
+                                eq = gr_complex(std::numeric_limits<float>::quiet_NaN(),
+                                                 std::numeric_limits<float>::quiet_NaN());
+                            } else {
+                                eq = d_early_eqsym[3][i] / h;
+                            }
+                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                "%.3f%+.3fi%c",
+                                eq.real(), eq.imag(),
+                                (i < 51) ? ',' : ']');
+                        }
+                        n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                            " htsig1_eq=[");
+                        for (int i = 0; i < 52; i++) {
+                            gr_complex h = Hhdr52[i];
+                            gr_complex eq;
+                            if (std::abs(h) < 1e-3f) {
+                                eq = gr_complex(std::numeric_limits<float>::quiet_NaN(),
+                                                 std::numeric_limits<float>::quiet_NaN());
+                            } else {
+                                eq = d_early_eqsym[4][i] / h;
+                            }
+                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                "%.3f%+.3fi%c",
+                                eq.real(), eq.imag(),
+                                (i < 51) ? ',' : ']');
+                        }
+                        // Summary: mean imag, std imag, |real|/|imag| ratio
+                        // for the 48 data SCs of each symbol.
+                        // QBPSK should give |real|/|imag| < 0.3.
+                        double sum_im_a = 0, sum_im2_a = 0, sum_re_a = 0;
+                        double sum_im_b = 0, sum_im2_b = 0, sum_re_b = 0;
+                        int cnt = 0;
+                        for (int i = 0; i < 48; i++) {
+                            gr_complex h = Hhdr52[i];
+                            if (std::abs(h) < 1e-3f) continue;
+                            gr_complex ea = d_early_eqsym[3][i] / h;
+                            gr_complex eb = d_early_eqsym[4][i] / h;
+                            sum_re_a += std::abs(ea.real());
+                            sum_im_a += ea.imag();
+                            sum_im2_a += (double)ea.imag() * ea.imag();
+                            sum_re_b += std::abs(eb.real());
+                            sum_im_b += eb.imag();
+                            sum_im2_b += (double)eb.imag() * eb.imag();
+                            cnt++;
+                        }
+                        if (cnt > 0) {
+                            double mean_re_a = sum_re_a / cnt;
+                            double mean_im_a = sum_im_a / cnt;
+                            double var_im_a = sum_im2_a / cnt - mean_im_a * mean_im_a;
+                            double std_im_a = (var_im_a > 0) ? std::sqrt(var_im_a) : 0.0;
+                            double mean_re_b = sum_re_b / cnt;
+                            double mean_im_b = sum_im_b / cnt;
+                            double var_im_b = sum_im2_b / cnt - mean_im_b * mean_im_b;
+                            double std_im_b = (var_im_b > 0) ? std::sqrt(var_im_b) : 0.0;
+                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
+                                " htsig0 mean|re|=%.3f mean_im=%.3f std_im=%.3f"
+                                " htsig1 mean|re|=%.3f mean_im=%.3f std_im=%.3f\n",
+                                mean_re_a, mean_im_a, std_im_a,
+                                mean_re_b, mean_im_b, std_im_b);
+                        } else {
+                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n, "\n");
+                        }
+                        USRP_LOG("%s", eqbuf);
+                    }
+                    g_htsig_dump_counter++;
+                }
+            }
+
             // Phase 60: pre-clean Hhdr52 BEFORE HT-SIG equalization. Phase 59's call
             // site (line 5058) is gated by d_is_ht=true, which never sets on USRP
             // because HT-SIG viterbi fails first. This call site runs inside the
@@ -5218,149 +5376,17 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     apply_persc(d_early_eqsym[kHtSig1Rel], /*sym_idx*/ 1);
                 }
 
-                // Phase 35: HT-SIG diagnostic dumps (flood-gated to first 10 frames).
-                // Fires at counter=4 (HT-SIG1 captured) AFTER CFO+SFO+delta correction
-                // has been applied to d_early_eqsym[3] and d_early_eqsym[4].
-                // Dumps pre-rotation FFT bins and pilot phases for layer diagnosis.
-                if (d_internal_symbol_counter == 4 && (d_log_htsig_bin || d_log_htsig_pilot || d_log_htsig_eq)) {
-                    static int g_htsig_dump_counter = 0;
-                    if (g_htsig_dump_counter < 10) {
-                        if (d_log_htsig_bin && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
-                            char htbuf[4096];
-                            int n = 0;
-                            n += snprintf(htbuf + n, sizeof(htbuf) - n,
-                                "[HTSIG_BIN_DUMP] counter=4 frame=%d htsig0=[", g_htsig_dump_counter);
-                            for (int i = 0; i < 52; i++) {
-                                n += snprintf(htbuf + n, sizeof(htbuf) - n, "%.3f%+.3fi%c",
-                                    d_early_eqsym[3][i].real(),
-                                    d_early_eqsym[3][i].imag(),
-                                    (i < 51) ? ',' : ']');
-                            }
-                            n += snprintf(htbuf + n, sizeof(htbuf) - n, " htsig1=[");
-                            for (int i = 0; i < 52; i++) {
-                                n += snprintf(htbuf + n, sizeof(htbuf) - n, "%.3f%+.3fi%c",
-                                    d_early_eqsym[4][i].real(),
-                                    d_early_eqsym[4][i].imag(),
-                                    (i < 51) ? ',' : ']');
-                            }
-                            USRP_LOG("%s\n", htbuf);
-                        }
-                        if (d_log_htsig_pilot && d_early_eqsym_valid[3] && d_early_eqsym_valid[4]) {
-                            // Phase 35 review fix (Issue 1): guard NaN risk on
-                            // std::arg(0). On USRP, |H| at pilots can drop to
-                            // 0.02-0.13 (Phase 31b); atan2(0,0) is
-                            // implementation-defined and may yield NaN, which
-                            // chokes the Python parser. Output NaN sentinel
-                            // when |H| < 1e-3.
-                            auto safe_arg = [](const gr_complex& c) -> float {
-                                return (std::abs(c) > 1e-3f) ? std::arg(c)
-                                                             : std::numeric_limits<float>::quiet_NaN();
-                            };
-                            char pbuf[256];
-                            snprintf(pbuf, sizeof(pbuf),
-                                "[HTSIG_PILOT_DUMP] counter=4 frame=%d "
-                                "htsig0_pilots=arg[%.3f,%.3f,%.3f,%.3f] "
-                                "htsig1_pilots=arg[%.3f,%.3f,%.3f,%.3f]\n",
-                                g_htsig_dump_counter,
-                                safe_arg(d_early_eqsym[3][48]), safe_arg(d_early_eqsym[3][49]),
-                                safe_arg(d_early_eqsym[3][50]), safe_arg(d_early_eqsym[3][51]),
-                                safe_arg(d_early_eqsym[4][48]), safe_arg(d_early_eqsym[4][49]),
-                                safe_arg(d_early_eqsym[4][50]), safe_arg(d_early_eqsym[4][51]));
-                            USRP_LOG("%s", pbuf);
-                        }
-                        // Phase 35 review fix (Issue 2): EQ_INPUT_DUMP removed.
-                        // At counter=4, d_early_eqsym[3,4] already have
-                        // CFO+SFO+delta applied, so dumping here would
-                        // duplicate BIN_DUMP and waste the 10-frame
-                        // flood-gate budget. If a distinct layer dump is
-                        // needed later, add it at the post-extract
-                        // pre-rotation site (different memory, distinct
-                        // dump semantics).
-                        // Phase 38 Step 7: NEW equalized-constellation dump.
-                        // Computes eq = d_early_eqsym / Hhdr52 for all 52
-                        // subcarriers of HT-SIG0 and HT-SIG1 and prints
-                        // them. If equalization is correct, expect QBPSK
-                        // clusters on the IMAG axis (±j) for data SCs and
-                        // pilots {j,j,j,-j}. If scatter, equalization is
-                        // broken. Counter still tied to 10-frame budget.
-                        if (d_log_htsig_eq) {
-                            char eqbuf[8192];
-                            int n = 0;
-                            // HT-SIG0 data SCs (0..47) and pilots (48..51)
-                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
-                                "[HTSIG_EQ_DUMP] frame=%d htsig0_eq=[",
-                                g_htsig_dump_counter);
-                            for (int i = 0; i < 52; i++) {
-                                gr_complex h = Hhdr52[i];
-                                gr_complex eq;
-                                if (std::abs(h) < 1e-3f) {
-                                    eq = gr_complex(std::numeric_limits<float>::quiet_NaN(),
-                                                     std::numeric_limits<float>::quiet_NaN());
-                                } else {
-                                    eq = d_early_eqsym[3][i] / h;
-                                }
-                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
-                                    "%.3f%+.3fi%c",
-                                    eq.real(), eq.imag(),
-                                    (i < 51) ? ',' : ']');
-                            }
-                            n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
-                                " htsig1_eq=[");
-                            for (int i = 0; i < 52; i++) {
-                                gr_complex h = Hhdr52[i];
-                                gr_complex eq;
-                                if (std::abs(h) < 1e-3f) {
-                                    eq = gr_complex(std::numeric_limits<float>::quiet_NaN(),
-                                                     std::numeric_limits<float>::quiet_NaN());
-                                } else {
-                                    eq = d_early_eqsym[4][i] / h;
-                                }
-                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
-                                    "%.3f%+.3fi%c",
-                                    eq.real(), eq.imag(),
-                                    (i < 51) ? ',' : ']');
-                            }
-                            // Summary: mean imag, std imag, |real|/|imag| ratio
-                            // for the 48 data SCs of each symbol.
-                            // QBPSK should give |real|/|imag| < 0.3.
-                            double sum_im_a = 0, sum_im2_a = 0, sum_re_a = 0;
-                            double sum_im_b = 0, sum_im2_b = 0, sum_re_b = 0;
-                            int cnt = 0;
-                            for (int i = 0; i < 48; i++) {
-                                gr_complex h = Hhdr52[i];
-                                if (std::abs(h) < 1e-3f) continue;
-                                gr_complex ea = d_early_eqsym[3][i] / h;
-                                gr_complex eb = d_early_eqsym[4][i] / h;
-                                sum_re_a += std::abs(ea.real());
-                                sum_im_a += ea.imag();
-                                sum_im2_a += (double)ea.imag() * ea.imag();
-                                sum_re_b += std::abs(eb.real());
-                                sum_im_b += eb.imag();
-                                sum_im2_b += (double)eb.imag() * eb.imag();
-                                cnt++;
-                            }
-                            if (cnt > 0) {
-                                double mean_re_a = sum_re_a / cnt;
-                                double mean_im_a = sum_im_a / cnt;
-                                double var_im_a = sum_im2_a / cnt - mean_im_a * mean_im_a;
-                                double std_im_a = (var_im_a > 0) ? std::sqrt(var_im_a) : 0.0;
-                                double mean_re_b = sum_re_b / cnt;
-                                double mean_im_b = sum_im_b / cnt;
-                                double var_im_b = sum_im2_b / cnt - mean_im_b * mean_im_b;
-                                double std_im_b = (var_im_b > 0) ? std::sqrt(var_im_b) : 0.0;
-                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n,
-                                    " htsig0 mean|re|=%.3f mean_im=%.3f std_im=%.3f"
-                                    " htsig1 mean|re|=%.3f mean_im=%.3f std_im=%.3f\n",
-                                    mean_re_a, mean_im_a, std_im_a,
-                                    mean_re_b, mean_im_b, std_im_b);
-                            } else {
-                                n += snprintf(eqbuf + n, sizeof(eqbuf) - n, "\n");
-                            }
-                            USRP_LOG("%s", eqbuf);
-                        }
-                        g_htsig_dump_counter++;
-                    }
-                }
+                // (Phase 35 HT-SIG diagnostic dumps MOVED OUT of this scope to
+                //  before the L-SIG rot/inv candidate loop, see lines ~4755+
+                //  after Phase 34 delta correction. Reason: Phase 78b-1b
+                //  found the previous location was gated on `lsig_ok` from
+                //  the per-(rot,inv) candidate loop, so the dump fired 0
+                //  times on USRP frames where L-SIG viterbi failed first
+                //  (HT_SIG_PARSE_FAIL=5 in the p78b replay). The new
+                //  location is sibling to DELTA_PER_SYMBOL_DUMP and fires
+                //  for every HT-capable frame reaching counter=4, including
+                //  frames where L-SIG fails — which is exactly what we
+                //  need for diagnosing the equalizer wall.)
 
                 // Phase 39: HT-SIG pilot-based H re-estimation.
                 // Computes H_htsig0 and H_htsig1 from each symbol's own
