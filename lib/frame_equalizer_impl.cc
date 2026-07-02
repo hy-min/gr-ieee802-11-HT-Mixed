@@ -3145,6 +3145,19 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PILOT_PERSC=1 (HT-SIG per-SC pilot CPE ENABLED)\n";
     }
 
+    // Phase 77a: per-symbol pilot-aided CPE on L-SIG.
+    // L-SIG is BPSK with 90° margin (vs HT-SIG QBPSK 45° margin), so CPE
+    // is more robust than the Phase 35/36 HT-SIG counterpart. Rotates
+    // d_early_eqsym[kLSigRel] by exp(-j*phi) where phi = mean(arg) of
+    // the 4 pilot SCs {-21,-7,7,21} (bins {48,49,50,51}). Applied
+    // before L-SIG viterbi decode. Default OFF.
+    // Enable via IEEE80211_LSIG_PILOT_CPE=1.
+    const char* env_lpc = std::getenv("IEEE80211_LSIG_PILOT_CPE");
+    d_apply_lsig_cpe = (env_lpc && env_lpc[0] == '1');
+    if (d_apply_lsig_cpe) {
+        std::cout << "[FRAME_EQ] IEEE80211_LSIG_PILOT_CPE=1 (L-SIG pilot-aided CPE ENABLED)\n";
+    }
+
     // Phase 39: HT-SIG pilot-based H re-estimation. Replaces Hhdr52
     // (L-LTF0-based) for HT-SIG equalization with H_htsig0/1 estimated
     // from each symbol's own 4 pilots. Bypasses L-LTF0 deep nulls.
@@ -4924,6 +4937,41 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // yielding an infinite loop. Set true BEFORE the goto and
             // checked as part of the condition below.
             bool lsig_promoted = false;
+
+            // Phase 77a: per-symbol L-SIG pilot-aided CPE.
+            // Applied ONCE per frame (not per rot/inv candidate) BEFORE the
+            // L-SIG viterbi candidate search loop. Pilots at bins
+            // {48,49,50,51} (SCs {-21,-7,7,21}) — same indices as HT-SIG
+            // but L-SIG pilots are BPSK {+1,+1,+1,+1} (no QBPSK rotation).
+            // We don't need to subtract expected pilot polarity because we're
+            // computing phi = mean(arg(eq_pilot)) — the average of 4 BPSK
+            // pilots on the real axis is ~0 for an aligned channel, and any
+            // residual rotation is exactly the phase we want to cancel.
+            // Gated on |bin| > 1e-3 to avoid NaN from arg(0).
+            if (d_apply_lsig_cpe && d_early_eqsym_valid[kLSigRel]) {
+                static const int kLsigPilotBins[4] = {48, 49, 50, 51};
+                double sum_arg = 0.0;
+                int n_valid = 0;
+                for (int p = 0; p < 4; p++) {
+                    const gr_complex& c = d_early_eqsym[kLSigRel][kLsigPilotBins[p]];
+                    if (std::abs(c) > 1e-3f) {
+                        sum_arg += std::arg(c);
+                        n_valid++;
+                    }
+                }
+                if (n_valid > 0) {
+                    float phi = (float)(sum_arg / (double)n_valid);
+                    gr_complex rot = std::exp(gr_complex(0.0f, -phi));
+                    for (int i = 0; i < 52; i++) {
+                        d_early_eqsym[kLSigRel][i] *= rot;
+                    }
+                    // Atomic dump (snprintf + USRP_LOG per e90e3f5 lesson).
+                    char lpcbuf[256];
+                    snprintf(lpcbuf, sizeof(lpcbuf),
+                             "[LSIG_PILOT_CPE] phi=%.4f rad n_valid=%d\n", phi, n_valid);
+                    USRP_LOG("%s", lpcbuf);
+                }
+            }
 
             // L-SIG invert brute-force (with optional rot candidate expansion)
             // Phase 70: declare local variables and loop indices in outer

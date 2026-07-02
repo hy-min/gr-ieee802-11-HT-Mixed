@@ -132,6 +132,17 @@ private:
     // IEEE80211_HTSIG_PILOT_CPE=1.
     bool d_apply_htsig_pilot_cpe;
 
+    // Phase 77a: per-symbol pilot-aided CPE on L-SIG.
+    // L-SIG is BPSK with 90° decision margin (structurally more robust
+    // than HT-SIG QBPSK 45°). Pilots at bins {48,49,50,51} (SCs
+    // {-21,-7,7,21}) same as HT-SIG, but L-SIG pilots are BPSK with
+    // expected polarity {+1,+1,+1,+1} (no QBPSK rotation). Averages
+    // arg() over the 4 pilots and rotates all 52 bins of d_early_eqsym
+    // [kLSigRel] by exp(-j*phi). Applied BEFORE L-SIG viterbi decode so
+    // the viterbi sees a phase-aligned constellation. Default OFF.
+    // Enable via IEEE80211_LSIG_PILOT_CPE=1.
+    bool d_apply_lsig_cpe;
+
     // Phase 36: per-SC linear fit on HT-SIG pilots. Uses ht_expected_pilot
     // polarity-aware helper + linear regression on (sc_index, channel_phase)
     // to recover (a, b) coefficients. Replaces/supplements Phase 35 per-symbol
