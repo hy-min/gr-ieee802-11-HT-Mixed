@@ -254,6 +254,18 @@ private:
     // is wrong. Opt-in via IEEE80211_DELTA_PER_SYMBOL_DUMP=1. Default OFF.
     bool  d_log_delta_per_symbol      = false;
 
+    // Phase 79: per-symbol δ tracking for HT-SIG + data symbols.
+    // When true, replaces Phase 34's constant-per-frame δ with a
+    // pilot-aware grid search estimator applied independently to each
+    // symbol (counter >= 4). Default OFF preserves Phase 18/34/35 stack.
+    // Enable via IEEE80211_HTSIG_PER_SYMBOL_DELTA=1.
+    bool d_apply_htsig_per_symbol_delta = false;
+
+    // Phase 79: optional diagnostic dump for per-symbol δ values.
+    // Logs δ_htsig0, δ_htsig1, and per-data-symbol δ on USRP for triage.
+    // Opt-in via IEEE80211_HTSIG_DELTA_DUMP=1. Default OFF.
+    bool d_log_htsig_delta_dump        = false;
+
     // Phase 44: soft-LLR viterbi for HT-SIG unblock. When true, the
     // HT-SIG decoder feeds soft LLRs (sign(eq.imag()) * |H[i]|/max(|H|))
     // to viterbi_decode_133_171_soft instead of hard bits to the original

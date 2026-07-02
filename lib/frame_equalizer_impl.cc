@@ -3482,6 +3482,26 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                   << "AND HT-SIG pilot CPE ENABLED)\n";
     }
 
+    // Phase 79: per-symbol δ estimation for HT-SIG + data symbols.
+    // Replaces Phase 34 per-frame constant δ for symbol indices >= 4.
+    // Pilot-aware grid search estimator (see estimate_symbol_delta above).
+    // Default OFF preserves current behavior (Phase 18/34/35 stack).
+    // Enable via IEEE80211_HTSIG_PER_SYMBOL_DELTA=1.
+    const char* env_hspd = std::getenv("IEEE80211_HTSIG_PER_SYMBOL_DELTA");
+    d_apply_htsig_per_symbol_delta = (env_hspd && env_hspd[0] == '1');
+    if (d_apply_htsig_per_symbol_delta) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_PER_SYMBOL_DELTA=1 (per-symbol δ tracking ENABLED)\n";
+    }
+
+    // Phase 79: optional diagnostic dump for per-symbol δ values.
+    // Logs δ_htsig0, δ_htsig1, and per-data-symbol δ on USRP for triage.
+    // Opt-in via IEEE80211_HTSIG_DELTA_DUMP=1.
+    const char* env_hdd = std::getenv("IEEE80211_HTSIG_DELTA_DUMP");
+    d_log_htsig_delta_dump = (env_hdd && env_hdd[0] == '1');
+    if (d_log_htsig_delta_dump) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_DELTA_DUMP=1 (per-symbol δ values will be logged)\n";
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
