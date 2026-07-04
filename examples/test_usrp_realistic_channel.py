@@ -83,3 +83,20 @@ def apply_per_frame_delta(eq52, sc_index_52, delta, delta_mode="fixed"):
         delta = float(np.random.uniform(0.0, 1.0))
     rot = np.exp(1j * 2.0 * np.pi * sc_index_52.astype(np.float64) * delta / 64.0).astype(np.complex64)
     return (eq * rot).astype(np.complex64)
+
+
+def apply_awgn_snr_db(signal, snr_db, rng=None):
+    """Add complex AWGN to achieve target SNR (signal_power / noise_power = 10^(SNR/10)).
+
+    Useful for: (1) verifying synthetic decoder at known SNR; (2) reproducing
+    Phase 78a's 91.0% baseline at 3 dB SNR; (3) producing Phase 81's 7.11 dB
+    avg_snr_lsig by adding noise to a noiseless synthetic signal.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    sig = signal.astype(np.complex64)
+    sig_power = float(np.mean(np.abs(sig)**2))
+    noise_power = sig_power / (10.0 ** (snr_db / 10.0))
+    noise = (rng.standard_normal(sig.shape) + 1j * rng.standard_normal(sig.shape)).astype(np.complex64)
+    noise = noise * np.sqrt(noise_power / float(np.mean(np.abs(noise)**2)))
+    return sig + noise

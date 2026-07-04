@@ -98,8 +98,25 @@ def test_per_frame_delta_phase_ramp_is_linear():
     print(f"OK: phase ramp matches theoretical, max diff = {diff.max():.2e} rad")
 
 
+def test_awgn_produces_target_snr_within_1db():
+    """AWGN at target_snr_db=10 should produce measured SNR within ±1 dB."""
+    from test_usrp_realistic_channel import apply_awgn_snr_db
+
+    rng = np.random.default_rng(42)
+    sig = (rng.standard_normal(10000) + 1j * rng.standard_normal(10000)).astype(np.complex64)
+    sig = sig / np.sqrt(np.mean(np.abs(sig)**2))  # unit power
+    sig_noisy = apply_awgn_snr_db(sig, snr_db=10.0, rng=rng)
+    signal_power = np.mean(np.abs(sig)**2)
+    noise = sig_noisy - sig
+    noise_power = np.mean(np.abs(noise)**2)
+    measured_snr = 10 * np.log10(signal_power / noise_power)
+    assert abs(measured_snr - 10.0) < 1.0, f"SNR {measured_snr:.2f} not within ±1 of target 10"
+    print(f"OK: measured SNR = {measured_snr:.2f} dB (target 10)")
+
+
 if __name__ == '__main__':
     test_five_stable_null_scs_are_stable()
     test_64psk_residual_quantizes_phase_to_64_bins()
     test_per_frame_delta_uniform_distribution()
     test_per_frame_delta_phase_ramp_is_linear()
+    test_awgn_produces_target_snr_within_1db()
