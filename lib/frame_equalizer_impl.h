@@ -317,14 +317,12 @@ private:
                                               // activation. Cost is 1 bool — kept for traceability.
 
     // Phase 80b: per-SC phase calibration LUT for HT-SIG and data symbols.
-    // d_htsig_per_sc_lut_a[0..47]   covers 48 HT-SIG data SCs (pilots
-    //   handled separately by Phase 79 estimator — do NOT include them).
-    // d_htsig_per_sc_lut_data[0..51] covers all 52 SCs for data symbols
-    //   (48 data + 4 pilots) in kScIndex52 layout.
+    // d_htsig_per_sc_lut_data[0..51] covers all 52 SCs in kScIndex52 layout
+    // (48 data + 4 pilots). HT-SIG paths use indices 0..47; data-symbol
+    // paths use the full 52.
     // Loaded from a JSON file specified by IEEE80211_HTSIG_PER_SC_LUT.
     // When d_htsig_per_sc_lut_valid is false (default), LUT hooks are
     // no-ops — regression-safe for callers that never set the env var.
-    gr_complex d_htsig_per_sc_lut_a[48]   = {};
     gr_complex d_htsig_per_sc_lut_data[52] = {};
     bool       d_htsig_per_sc_lut_valid   = false;
     std::string d_htsig_per_sc_lut_path;
@@ -406,10 +404,10 @@ public:
     void set_extra_header_symbols(int n) override;
 
     // Phase 80b: load per-SC phase LUT from a JSON file. On success, sets
-    // d_htsig_per_sc_lut_a[0..47] (48 HT-SIG data SCs) and
-    // d_htsig_per_sc_lut_data[0..51] (all 52 SCs) and flips
-    // d_htsig_per_sc_lut_valid=true. On any error (open/parse/shape),
-    // logs to std::cerr and returns false; the LUT stays invalid.
+    // d_htsig_per_sc_lut_data[0..51] (all 52 SCs in kScIndex52 layout)
+    // and flips d_htsig_per_sc_lut_valid=true. On any error
+    // (open/parse/shape), logs to std::cerr and returns false; the LUT
+    // stays invalid.
     bool load_per_sc_lut_from_json(const char* path);
 
     void forecast(int noutput_items,

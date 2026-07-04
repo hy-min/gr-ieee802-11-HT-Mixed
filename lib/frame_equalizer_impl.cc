@@ -2178,25 +2178,38 @@ static inline void apply_delta_correction_to_eq(gr_complex& eq,
 // per-SC bias is removed. LUT is 52-element (all SCs).
 // No-op when d_htsig_per_sc_lut_valid is false.
 // ============================================================
+// Reverse-lookup table: kScToArrayIdx[sc_index + 26] gives the index in
+// kScIndex52[] (and thus in the 52-element LUT) for that SC, or -1 if the
+// SC is not in the active 52 (DC=0, ±7 pilots excluded since pilots get
+// dedicated LUT entries 48..51). Initialized once at first use.
+// This replaces the previous hand-coded if/else chain which had an
+// off-by-one error corrupting 12 of 48 data SCs (Phase 80b review C-1).
+static int kScToArrayIdx[53];          // sc_index ∈ [-26..+26] → idx or -1
+static bool kScToArrayIdx_init = false;
+static inline void init_sc_to_array_idx(void) {
+    if (kScToArrayIdx_init) return;
+    for (int i = 0; i < 53; i++) kScToArrayIdx[i] = -1;
+    for (int i = 0; i < 52; i++) {
+        int sc = kScIndex52[i];
+        if (sc >= -26 && sc <= 26) {
+            kScToArrayIdx[sc + 26] = i;
+        }
+    }
+    kScToArrayIdx_init = true;
+}
+
 static inline void apply_per_sc_correction(gr_complex& eq,
                                            int sc_index,
                                            const gr_complex* lut52)
 {
-    // Map SC index (-26..+26) to LUT array index (0..51) via simple lookup.
+    if (!lut52) return;
+    // Map SC index (-26..+26) to LUT array index via reverse-lookup table.
     // lut52 is indexed by kScIndex52 layout: index 0..47 = data, 48..51 = pilots.
-    // We assume the caller passes a flat 52-element LUT in the same layout.
-    int lut_idx = -1;
-    if (sc_index >= -26 && sc_index <= -22) lut_idx = sc_index + 26;       // -26..-22 → 0..4
-    else if (sc_index >= -20 && sc_index <= -8) lut_idx = sc_index + 25;  // -20..-8 → 5..17
-    else if (sc_index >= -6 && sc_index <= -1) lut_idx = sc_index + 23;   // -6..-1 → 17..22
-    else if (sc_index >= 1 && sc_index <= 6) lut_idx = sc_index + 22;     // 1..6 → 23..28
-    else if (sc_index >= 8 && sc_index <= 20) lut_idx = sc_index + 22;    // 8..20 → 30..42
-    else if (sc_index >= 22 && sc_index <= 26) lut_idx = sc_index + 21;   // 22..26 → 43..47
-    else if (sc_index == -21) lut_idx = 48;
-    else if (sc_index == -7) lut_idx = 49;
-    else if (sc_index == 7) lut_idx = 50;
-    else if (sc_index == 21) lut_idx = 51;
-    if (lut_idx < 0 || lut_idx >= 52) return;  // safety
+    if (!kScToArrayIdx_init) init_sc_to_array_idx();
+    int lut_idx = (sc_index >= -26 && sc_index <= 26)
+                  ? kScToArrayIdx[sc_index + 26]
+                  : -1;
+    if (lut_idx < 0 || lut_idx >= 52) return;  // DC, ±7, or out-of-range
     eq *= lut52[lut_idx];
 }
 
@@ -3759,19 +3772,19 @@ void frame_equalizer_impl::set_extra_header_symbols(int) {}
 
 // ============================================================
 // Phase 80b: parse JSON LUT file and load into member arrays.
-// HT-SIG LUT is 48-entry only (data SCs — pilots handled by estimator).
-// Data LUT is 52-entry (all SCs in kScIndex52 layout).
+// Data LUT is 52-entry (all SCs in kScIndex52 layout). The HT-SIG paths
+// reuse the same 52-element LUT but only address indices 0..47 (the
+// 48 data SCs); pilots {-21,-7,7,21} at indices 48..51 are not used by
+// HT-SIG (handled separately by the Phase 79 pilot estimator).
 // JSON format:
 //   {
-//     "htsig_data_lut": [[re, im], ... 48 entries],
 //     "data_lut": [[re, im], ... 52 entries],
 //     "n_frames": <int>,
 //     "freq_mhz": <int>,
 //     "timestamp": "<iso8601>"
 //   }
 // Returns true on success, false on any error.
-// On success: d_htsig_per_sc_lut_a[0..47]     = htsig_data_lut,
-//             d_htsig_per_sc_lut_data[0..51]  = data_lut.
+// On success: d_htsig_per_sc_lut_data[0..51] = data_lut.
 // ============================================================
 bool frame_equalizer_impl::load_per_sc_lut_from_json(const char* path)
 {
@@ -3801,40 +3814,89 @@ bool frame_equalizer_impl::load_per_sc_lut_from_json(const char* path)
         std::vector<std::vector<float>> result;
         int d = 0;
         std::string current;
+        // Helper: parse a "[re,im]" pair with size and std::stof guards.
+        auto parse_pair = [&](const std::string& s) -> std::vector<float> {
+            // Strip outer brackets
+            std::string inner = s;
+            if (inner.size() >= 2 && inner.front() == '[' && inner.back() == ']') {
+                inner = inner.substr(1, inner.size() - 2);
+            }
+            std::stringstream ps(inner);
+            std::string item;
+            std::vector<float> pair;
+            while (std::getline(ps, item, ',')) {
+                // Trim leading/trailing whitespace
+                size_t a = item.find_first_not_of(" \t\r\n");
+                size_t b = item.find_last_not_of(" \t\r\n");
+                if (a == std::string::npos) continue;
+                item = item.substr(a, b - a + 1);
+                try {
+                    pair.push_back(std::stof(item));
+                } catch (const std::invalid_argument&) {
+                    char buf[160];
+                    snprintf(buf, sizeof(buf),
+                             "[FRAME_EQ] LUT parse error: invalid float '%s' in key '%s'\n",
+                             item.c_str(), key.c_str());
+                    USRP_LOG("%s", buf);
+                    throw;
+                } catch (const std::out_of_range&) {
+                    char buf[160];
+                    snprintf(buf, sizeof(buf),
+                             "[FRAME_EQ] LUT parse error: float out of range '%s' in key '%s'\n",
+                             item.c_str(), key.c_str());
+                    USRP_LOG("%s", buf);
+                    throw;
+                }
+            }
+            return pair;
+        };
         for (char c : arr_str) {
             if (c == '[') { d++; current += c; }
             else if (c == ']') { d--; current += c; }
             else if (c == ',' && d == 0) {
-                std::vector<float> pair;
-                std::stringstream ps(current.substr(1, current.size() - 2));
-                std::string item;
-                while (std::getline(ps, item, ',')) {
-                    pair.push_back(std::stof(item));
+                try {
+                    auto pair = parse_pair(current);
+                    if (pair.size() != 2) {
+                        char buf[160];
+                        snprintf(buf, sizeof(buf),
+                                 "[FRAME_EQ] LUT parse error: pair has %zu elements (expected 2) in key '%s'\n",
+                                 pair.size(), key.c_str());
+                        USRP_LOG("%s", buf);
+                        return std::vector<std::vector<float>>{};
+                    }
+                    result.push_back(pair);
+                } catch (...) {
+                    return std::vector<std::vector<float>>{};
                 }
-                result.push_back(pair);
                 current.clear();
             } else {
                 current += c;
             }
         }
         if (!current.empty()) {
-            std::vector<float> pair;
-            std::stringstream ps(current.substr(1, current.size() - 2));
-            std::string item;
-            while (std::getline(ps, item, ',')) {
-                pair.push_back(std::stof(item));
+            try {
+                auto pair = parse_pair(current);
+                if (pair.size() != 2) {
+                    char buf[160];
+                    snprintf(buf, sizeof(buf),
+                             "[FRAME_EQ] LUT parse error: pair has %zu elements (expected 2) in key '%s'\n",
+                             pair.size(), key.c_str());
+                    USRP_LOG("%s", buf);
+                    return std::vector<std::vector<float>>{};
+                }
+                result.push_back(pair);
+            } catch (...) {
+                return std::vector<std::vector<float>>{};
             }
-            result.push_back(pair);
         }
         return result;
     };
 
-    auto htsig_arr = extract_array("htsig_data_lut");
     auto data_arr = extract_array("data_lut");
 
-    if (htsig_arr.size() != 48) {
-        std::cerr << "[FRAME_EQ] LUT htsig_data_lut has " << htsig_arr.size()
-                  << " entries, expected 48\n";
+    if (data_arr.empty()) {
+        // Could be missing key OR parse error inside extract_array.
+        // std::cerr distinguishes them in either case.
         return false;
     }
     if (data_arr.size() != 52) {
@@ -3843,17 +3905,13 @@ bool frame_equalizer_impl::load_per_sc_lut_from_json(const char* path)
         return false;
     }
 
-    // HT-SIG LUT (48 data SCs only — pilots handled by estimator)
-    for (int i = 0; i < 48; i++) {
-        d_htsig_per_sc_lut_a[i] = gr_complex(htsig_arr[i][0], htsig_arr[i][1]);
-    }
     // Data LUT (all 52 SCs in kScIndex52 layout)
     for (int i = 0; i < 52; i++) {
         d_htsig_per_sc_lut_data[i] = gr_complex(data_arr[i][0], data_arr[i][1]);
     }
     d_htsig_per_sc_lut_valid = true;
     std::cout << "[FRAME_EQ] Loaded per-SC LUT from " << path
-              << " (htsig=48, data=52)\n";
+              << " (data=52)\n";
     return true;
 }
 
