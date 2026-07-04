@@ -2170,6 +2170,36 @@ static inline void apply_delta_correction_to_eq(gr_complex& eq,
     eq *= std::polar(1.0f, +delta_phase);
 }
 
+// ============================================================
+// Phase 80b: apply static per-SC phase LUT to a single equalized bin.
+// LUT[k] is pre-computed offline (median arg(eq) across N USRP frames,
+// negated). Called AFTER apply_delta_correction_to_eq so that the
+// linear δ ramp is corrected first, then the residual non-linear
+// per-SC bias is removed. LUT is 52-element (all SCs).
+// No-op when d_htsig_per_sc_lut_valid is false.
+// ============================================================
+static inline void apply_per_sc_correction(gr_complex& eq,
+                                           int sc_index,
+                                           const gr_complex* lut52)
+{
+    // Map SC index (-26..+26) to LUT array index (0..51) via simple lookup.
+    // lut52 is indexed by kScIndex52 layout: index 0..47 = data, 48..51 = pilots.
+    // We assume the caller passes a flat 52-element LUT in the same layout.
+    int lut_idx = -1;
+    if (sc_index >= -26 && sc_index <= -22) lut_idx = sc_index + 26;       // -26..-22 → 0..4
+    else if (sc_index >= -20 && sc_index <= -8) lut_idx = sc_index + 25;  // -20..-8 → 5..17
+    else if (sc_index >= -6 && sc_index <= -1) lut_idx = sc_index + 23;   // -6..-1 → 17..22
+    else if (sc_index >= 1 && sc_index <= 6) lut_idx = sc_index + 22;     // 1..6 → 23..28
+    else if (sc_index >= 8 && sc_index <= 20) lut_idx = sc_index + 22;    // 8..20 → 30..42
+    else if (sc_index >= 22 && sc_index <= 26) lut_idx = sc_index + 21;   // 22..26 → 43..47
+    else if (sc_index == -21) lut_idx = 48;
+    else if (sc_index == -7) lut_idx = 49;
+    else if (sc_index == 7) lut_idx = 50;
+    else if (sc_index == 21) lut_idx = 51;
+    if (lut_idx < 0 || lut_idx >= 52) return;  // safety
+    eq *= lut52[lut_idx];
+}
+
 // Apply rotation compensation to HT-SIG before decoding
 static void apply_htsig_rotation(const gr_complex* in52, gr_complex* out52, int rotation)
 {
