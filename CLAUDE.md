@@ -50,6 +50,33 @@ hierarchy applies:
 - **Same-board default**: `A:0` TX → `A:0` RX2 (per Phase 53 verdict,
   cross-board is 2.4x weaker).
 - **禁止 `--rate 5`** (Phase 58 REFUTED, 48× more overflows than `--rate 20`).
+- **Phase 82+ cable test config (NEW 2026-07-04, user accepted)**:
+  Direct SMA cable (NO attenuator) is Phase 82 default per user
+  decision after Phase 81 verdict. 30 dB SMA attenuator (HAT-30+)
+  no longer required upfront. 5250 MHz cable gives +5.7 dB
+  avg_snr_htsig boost vs 5890 air (9.61 dB vs 4.25 dB), well above
+  6 dB viterbi threshold. **HW risk**: bare cable at --tx-gain 0
+  sends ~+5 dBm into RX2 (20 dB above UBX-160 -15 dBm max). **Limit
+  total cable runs ≤5** until 30 dB attenuator arrives.
+  Test command: `test_usrp_minimal_loopback.py --freq 5250
+  --tx-gain 0 --rate 20 --warmup 60 --rx-subdev A:0`
+  (no `--cross-board`; same-board TDD with bare SMA male-male cable
+  connecting TX/RX port to RX2 port on A:0).
+- **Phase 82 attack direction (NEW 2026-07-04)**: Root-cause fix of
+  Phase 34 δ correction algorithm at 5250 MHz cable. Bottleneck
+  shifted from "viterbi wall" (5890 air, 4 dB SNR) to "Phase 18
+  strict rate=0xD check rejects 0x9 decode at 5250" (Phase 81).
+  Strategy: fix δ estimator so 5250 produces correct rate=0xD;
+  HT-SIG decoder then unlocks naturally without LUT or rate-accept
+  knob. Plan: T1 clean raw IQ capture → T2 offline δ analysis →
+  T3 root-cause ID → T4 minimal fix → T5 USRP realtime verification.
+  **VERDICT 2026-07-04: REFUTED** (`docs/superpowers/notes/2026-07-04-phase82-verdict.md`).
+  ε-scan over [-32, +32]/64 produces at most 10/149 frames (6.7%) at
+  rate=0xD — no clean shift. SNR on this capture (-2.6 dB) is 10 dB
+  below Phase 81's reported 7.11 dB; LTF ref division (T3.5) confirmed
+  it is NOT a Python analysis bug. **Equalizer-layer attack surface
+  EXHAUSTED (20+ REFUTED including Phase 82).** No further cable runs
+  pending a deliberate upstream-attack plan.
 - **IEEE80211_HTSIG_PER_SYMBOL_DELTA=1** — Phase 79 per-symbol δ tracking
   for HT-SIG0/1 + data symbols (QBPSK-aware grid-search over 64-point δ).
   Default OFF. **REFUTED on USRP** (Phase 79 verdict 2026-07-02,
@@ -73,10 +100,14 @@ hierarchy applies:
   upstream).
 - Phase 77 closure (equalizer ceiling): `docs/superpowers/notes/2026-07-03-phase77-verdict.md`
 - Phase 80b REFUTED (per-SC LUT): `docs/superpowers/notes/2026-07-04-p80b-verdict.md`
-- 20+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
-  `禁止方向` section. **Equalizer layer is CLOSED** — Phase 82 must attack
-  upstream (L-LTF0, splitter, RF chain, sync stages, frame_detect,
-  frame_equalizer pre-equalize).
+- Phase 86 verdict (L-LTF0 audit, Phase 78b 5-stable-nulls REFUTED):
+  `docs/superpowers/notes/2026-07-04-phase86-verdict.md`
+- 21+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
+  `禁止方向` section. **Equalizer layer is CLOSED** — Phase 87+ must attack
+  upstream (L-STF detect, sync_long FRAME_START_BASE, splitter positions,
+  UHD streaming stability). CPE phase std=90° smoking gun suggests upstream
+  phase-coherence issue.
 
-*Last updated: 2026-07-04 (Phase 80b REFUTED — equalizer layer closed after
-20+ REFUTED; Phase 82 must attack upstream per HARD CONSTRAINT)*
+*Last updated: 2026-07-04 (Phase 86 REFUTED — Phase 78b 5-stable-nulls
+disproven in /tmp/p28_loopback_iq.fc32; CPE std=90° smoking gun for upstream;
+equalizer layer CLOSED after 21+ REFUTED)*
