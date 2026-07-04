@@ -26,6 +26,8 @@
 #include <gnuradio/io_signature.h>
 #include <ieee802_11/sync_short.h>
 
+#include <algorithm>
+#include <cstring>
 #include <iostream>
 
 using namespace gr::ieee802_11;
@@ -64,9 +66,18 @@ public:
           d_copied(0),
           d_below_threshold(0),
           MIN_PLATEAU(min_plateau),
-          d_threshold(threshold)
+          d_threshold(threshold),
+          d_use_adaptive(
+              getenv("IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH")
+                  ? true : false),
+          d_adaptive_dump(
+              getenv("IEEE80211_SYNC_SHORT_ADAPTIVE_DUMP")
+                  ? true : false),
+          d_corr_window_idx(0),
+          d_corr_window_filled(0),
+          d_adaptive_thresh(threshold)
     {
-
+        memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
     }
 
@@ -96,20 +107,45 @@ public:
         case SEARCH: {
             int i;
 
+            // Phase 89 T2: track in_cor for adaptive threshold via median
             for (i = 0; i < ninput; i++) {
-                if (in_cor[i] > d_threshold) {
+                d_corr_window[d_corr_window_idx] = in_cor[i];
+                d_corr_window_idx = (d_corr_window_idx + 1) & 0xFFF;  // mod-4096
+                if (d_corr_window_filled < 4096) d_corr_window_filled++;
+            }
+
+            // Recompute adaptive threshold (median*10) every call
+            float effective_threshold = d_threshold;
+            if (d_use_adaptive && d_corr_window_filled > 100) {
+                // Compute median: copy and sort (4096 floats ~ 16KB, ~ms)
+                static float sorted_buf[4096];
+                memcpy(sorted_buf, d_corr_window, sizeof(sorted_buf));
+                std::sort(sorted_buf, sorted_buf + d_corr_window_filled);
+                float median = sorted_buf[d_corr_window_filled / 2];
+                d_adaptive_thresh = std::max(median * 10.0f, 0.01f);
+                effective_threshold = d_adaptive_thresh;
+                if (d_adaptive_dump) {
+                    fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] filled=%d median=%.6f "
+                            "adaptive_thresh=%.6f\n",
+                            d_corr_window_filled, median, d_adaptive_thresh);
+                }
+            }
+
+            int i2;
+            for (i2 = 0; i2 < ninput; i2++) {
+                if (in_cor[i2] > effective_threshold) {
                     if (d_plateau < MIN_PLATEAU) {
                         d_plateau++;
 
                     } else {
                         d_state = COPY;
                         d_copied = 0;
-                        d_freq_offset = arg(in_abs[i]) / 16;
+                        d_freq_offset = arg(in_abs[i2]) / 16;
                         d_plateau = 0;
-                        insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i);
+                        insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i2);
                         dout << "SHORT Frame!" << std::endl;
-                        USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
-                                     i, in_cor[i], d_freq_offset);
+                        USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f thresh=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
+                                     i2, in_cor[i2], effective_threshold, d_freq_offset);
                         break;
                     }
                 } else {
@@ -117,7 +153,7 @@ public:
                 }
             }
 
-            consume_each(i);
+            consume_each(i2);
             return 0;
         }
 
@@ -206,10 +242,17 @@ private:
     int d_plateau;
     int d_below_threshold;
     float d_freq_offset;
-    const double d_threshold;
+    double d_threshold;  // Phase 89 T2: made non-const for adaptive support
     const bool d_log;
     const bool d_debug;
     const unsigned int MIN_PLATEAU;
+    // Phase 89 T2: adaptive threshold state
+    const bool d_use_adaptive;
+    const bool d_adaptive_dump;
+    float d_corr_window[4096];  // ring buffer of in_cor samples
+    int d_corr_window_idx;
+    int d_corr_window_filled;
+    float d_adaptive_thresh;
 };
 
 sync_short::sptr

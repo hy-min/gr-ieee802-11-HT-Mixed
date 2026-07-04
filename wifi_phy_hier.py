@@ -86,7 +86,9 @@ class wifi_phy_hier(gr.hier_block2):
         # Blocks
         ##################################################
 
-        self.sync_short = ieee802_11.sync_short(sensitivity, 2, True, True)
+        # Phase 89 T3: MIN_PLATEAU env var override (default 2, opt-in 16 for L-STF plateau)
+        MIN_PLATEAU = int(os.environ.get('IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE', '2'))
+        self.sync_short = ieee802_11.sync_short(sensitivity, MIN_PLATEAU, True, True)
         # Phase 58 Task 5: increased to 1M samples (8 MB) for USRP burst absorption
         self.sync_short.set_min_output_buffer(1000000)
         self.sync_long = ieee802_11.sync_long(sync_length, True, True)

@@ -28,14 +28,22 @@ public:
               getenv("IEEE80211_SYNC_SHORT_BYPASS_ENERGY_GATE")
                   ? 0.0f
                   : energy_gate_factor),
+          d_use_boxcar(
+              getenv("IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR")
+                  ? true : false),
+          d_boxcar_dump(
+              getenv("IEEE80211_SYNC_SHORT_FUSED_BOXCAR_DUMP")
+                  ? true : false),
           d_noise_est_window(noise_est_window),
           d_alpha(std::exp(-1.0f / static_cast<float>(noise_est_window))),
           d_noise_floor(1e-6f),
           d_delay_idx(0),
           d_ma_cc_idx(0),
           d_ma_ff_idx(0),
+          d_boxcar_idx(0),
           d_sum_cc(0),
-          d_sum_ff(0)
+          d_sum_ff(0),
+          d_sum_boxcar(0)
     {
         (void)threshold; // threshold is used by downstream sync_short, not this block
 
@@ -45,6 +53,7 @@ public:
         for (int i = 0; i < 16; i++) d_delay_ring[i] = gr_complex(0, 0);
         for (int i = 0; i < 48; i++) d_mult_ring[i] = gr_complex(0, 0);
         for (int i = 0; i < 64; i++) d_mag_sq_ring[i] = 0.0f;
+        for (int i = 0; i < 16; i++) d_boxcar_ring[i] = 0.0f;
     }
 
     int general_work(int noutput_items,
@@ -118,11 +127,38 @@ public:
             float ma_ff = d_sum_ff;
 
             // Step 5: normalized correlation
-            float cor = (ma_ff > 1e-12f) ? (std::abs(ma_cc) / ma_ff) : 0.0f;
+            // When USE_BOXCAR is set (Phase 89): output raw period-16 autocorr
+            // magnitude, then 16-sample boxcar-smooth. This matches Python's
+            // |a*conj(b)| + boxcar(16) algorithm and avoids the MA(48)/MA(64)
+            // ratio failure mode where noise random walk > coherent L-STF.
+            float out2_val;
+            if (d_use_boxcar) {
+                float ac_raw = std::abs(mult);  // |in[i] * conj(in[i-16])|, real
+                d_sum_boxcar += ac_raw;
+                d_sum_boxcar -= d_boxcar_ring[d_boxcar_idx];
+                d_boxcar_ring[d_boxcar_idx] = ac_raw;
+                d_boxcar_idx = (d_boxcar_idx + 1) & 0xF;  // mod-16 via bitmask
+                out2_val = d_sum_boxcar;  // raw sum; ~16*sigma for noise, ~16*peak for L-STF
+            } else {
+                out2_val = (ma_ff > 1e-12f) ? (std::abs(ma_cc) / ma_ff) : 0.0f;
+            }
 
             out0[i] = delayed;
             out1[i] = ma_cc;
-            out2[i] = cor;
+            out2[i] = out2_val;
+        }
+
+        // Optional boxcar dump (Phase 89 T1)
+        if (d_boxcar_dump && dump_call_count < 50) {
+            float max_v = 0.0f, min_v = 1e9f;
+            for (int i = 0; i < n; i++) {
+                if (out2[i] > max_v) max_v = out2[i];
+                if (out2[i] < min_v) min_v = out2[i];
+            }
+            fprintf(stderr, "[SYNC-SHORT-FUSED-BOXCAR] call=%d n=%d batch_power=%.6f "
+                    "max_out2=%.4f min_out2=%.4f\n",
+                    dump_call_count, n, batch_power, max_v, min_v);
+            dump_call_count++;
         }
 
         if (dump_enabled && dump_call_count < 200) {
@@ -161,6 +197,8 @@ public:
 
 private:
     const float d_energy_gate_factor;
+    const bool d_use_boxcar;
+    const bool d_boxcar_dump;
     const int d_noise_est_window;
     const float d_alpha;
 
@@ -170,15 +208,18 @@ private:
     gr_complex d_delay_ring[16];
     gr_complex d_mult_ring[48];
     float d_mag_sq_ring[64];
+    float d_boxcar_ring[16];  // Phase 89: 16-sample boxcar over raw autocorr
 
     // Ring indices
     int d_delay_idx;
     int d_ma_cc_idx;
     int d_ma_ff_idx;
+    int d_boxcar_idx;
 
     // Running sums
     gr_complex d_sum_cc;
     float d_sum_ff;
+    float d_sum_boxcar;
 };
 
 sync_short_fused::sptr
