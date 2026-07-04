@@ -2685,7 +2685,9 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        bool use_soft_llr = false,
                                        int  n0_percentile = 0,         // Phase 47: 0=disabled, 1-49=enabled
                                        bool apply_htsig_per_symbol_delta = false,  // Phase 79: δ tracking
-                                       bool log_htsig_delta_dump = false)          // Phase 79: δ dump
+                                       bool log_htsig_delta_dump = false,         // Phase 79: δ dump
+                                       const gr_complex* per_sc_lut52 = nullptr,  // Phase 80b: per-SC LUT (52 entries, nullptr=disabled)
+                                       bool per_sc_lut_valid = false)             // Phase 80b: gate
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -2783,6 +2785,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             // Phase 79: per-symbol δ correction (uses kScIndex52[i] = actual SC index)
             if (apply_htsig_per_symbol_delta) {
                 apply_delta_correction_to_eq(eq, kScIndex52[i], delta_a);
+            }
+            // Phase 80b: per-SC LUT correction (applied AFTER Phase 79 delta correction)
+            if (per_sc_lut_valid && per_sc_lut52) {
+                apply_per_sc_correction(eq, kScIndex52[i], per_sc_lut52);
             }
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
@@ -2922,6 +2928,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             // (before bit extraction) using kScIndex52[i] as the actual SC index.
             if (apply_htsig_per_symbol_delta) {
                 apply_delta_correction_to_eq(eq, kScIndex52[i], delta_b);
+            }
+            // Phase 80b: per-SC LUT correction (applied AFTER Phase 79 delta correction)
+            if (per_sc_lut_valid && per_sc_lut52) {
+                apply_per_sc_correction(eq, kScIndex52[i], per_sc_lut52);
             }
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
@@ -5936,7 +5946,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            d_use_soft_llr_viterbi,
                                                            d_mmse_equalize ? d_mmse_n0_percentile : 0,
                                                            d_apply_htsig_per_symbol_delta,
-                                                           d_log_htsig_delta_dump);
+                                                           d_log_htsig_delta_dump,
+                                                           d_htsig_per_sc_lut_data,
+                                                           d_htsig_per_sc_lut_valid);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
