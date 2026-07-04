@@ -2427,14 +2427,34 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
             decoded24_int |= ((uint32_t)(decoded_bits[i] & 1) << (23 - i));
         }
         const int rate_f = (decoded24_int >> 20) & 0xF;
-        const int expected_rate = 0xD;  // BPSK 1/2 — required for 802.11n HT
-        if (rate_f != expected_rate) {
+        // Phase 81: accept list of rates via IEEE80211_LSIG_RATE_ACCEPT (comma-sep hex).
+        // Default 0xD when env unset. For 5250 MHz cable, 0x9 is the
+        // observed decoded rate — likely a Phase 34 mis-rotation artifact.
+        // Allow list allows the HT-SIG decoder to fire for diagnosis.
+        const char* env_ra = getenv("IEEE80211_LSIG_RATE_ACCEPT");
+        const char* accept_csv = env_ra ? env_ra : "0xD";
+        bool rate_accepted = false;
+        {
+            char tmp[128];
+            snprintf(tmp, sizeof(tmp), "%s", accept_csv);
+            char* saveptr = nullptr;
+            char* tok = strtok_r(tmp, ",", &saveptr);
+            while (tok) {
+                unsigned int v = 0;
+                if (sscanf(tok, "0x%X", &v) == 1 || sscanf(tok, "%x", &v) == 1 ||
+                    sscanf(tok, "%u", &v) == 1) {
+                    if (rate_f == (int)v) { rate_accepted = true; break; }
+                }
+                tok = strtok_r(nullptr, ",", &saveptr);
+            }
+        }
+        if (!rate_accepted) {
             // Opt-in audit log for the rejection (same env-gate as the validity check)
             if (getenv("IEEE80211_LSIG_VALIDITY_AUDIT")) {
                 char reject[160];
                 snprintf(reject, sizeof(reject),
-                         "[LSIG_REJECT] rate_field=0x%X expected=0x%X reason=rate_mismatch\n",
-                         rate_f, expected_rate);
+                         "[LSIG_REJECT] rate_field=0x%X accept_list=%s reason=rate_mismatch\n",
+                         rate_f, accept_csv);
                 USRP_LOG("%s", reject);
             }
             return false;
