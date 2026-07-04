@@ -57,6 +57,13 @@ hierarchy applies:
   but USRP structural noise dominates. Kept as opt-in for triage.
 - **IEEE80211_HTSIG_DELTA_DUMP=1** — Phase 79 diagnostic: logs δ_htsig0,
   δ_htsig1, per-data-symbol δ. Default OFF.
+- **IEEE80211_HTSIG_PER_SC_LUT=/path/to/lut.json** — Phase 80b per-SC phase
+  calibration LUT (median over N≥30 USRP frames, applied at HT-SIG0/HT-SIG1 +
+  data symbol equalizer output). Default OFF (env unset). **REFUTED on USRP**
+  (Phase 80b verdict 2026-07-04, USRP 5250 MHz 60s tx-gain 0: Sent=120
+  Recv=0, HT_SIG_CAND=16/16 crc_fail). C++ preserved for future use if
+  upstream gates ever unblock. Equalizer layer is **CLOSED** — Phase 82
+  must attack upstream per HARD CONSTRAINT.
 
 ## Reference
 
@@ -64,8 +71,12 @@ hierarchy applies:
 - Phase 59 BLOCKED: `docs/superpowers/notes/2026-06-29-phase59-h52-null-interp-verdict.md`
   (call site unreachable due to `d_is_ht` gate; Phase 60 must attack
   upstream).
-- 12+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
-  `禁止方向` section.
+- Phase 77 closure (equalizer ceiling): `docs/superpowers/notes/2026-07-03-phase77-verdict.md`
+- Phase 80b REFUTED (per-SC LUT): `docs/superpowers/notes/2026-07-04-p80b-verdict.md`
+- 20+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
+  `禁止方向` section. **Equalizer layer is CLOSED** — Phase 82 must attack
+  upstream (L-LTF0, splitter, RF chain, sync stages, frame_detect,
+  frame_equalizer pre-equalize).
 
-*Last updated: 2026-07-02 (Phase 79 closure, REFUTED on USRP — Phase 80
-must target structural noise via per-SC phase calibration)*
+*Last updated: 2026-07-04 (Phase 80b REFUTED — equalizer layer closed after
+20+ REFUTED; Phase 82 must attack upstream per HARD CONSTRAINT)*
