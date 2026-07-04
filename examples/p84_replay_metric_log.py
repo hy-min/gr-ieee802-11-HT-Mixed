@@ -15,11 +15,11 @@ import re
 import sys
 
 
-_RE_SNR = re.compile(r'\[FRAME_EQ\][^\n]*avg_snr_lsig=(-?[0-9.]+)')
-_RE_RATE = re.compile(r'\[FRAME_EQ\][^\n]*rate=0x([0-9A-Fa-f]+)')
+_RE_SNR = re.compile(r'\[(?:FRAME_EQ|HTSIG_VITERBI_DIAG|HT_SIG_PARSE_FAIL)\][^\n]*avg_snr_lsig=(-?[0-9.]+)')
+_RE_RATE = re.compile(r'\[(?:FRAME_EQ|HTSIG_VITERBI_DIAG|HT_SIG_PARSE_FAIL)\][^\n]*(?:lsig_)?rate=0x([0-9A-Fa-f]+)')
 
 
-def parse_replay_log(log_path):
+def parse_replay_log(log_path, snr_is_db=True):
     """Parse a C++ USRP_LOG replay log and extract per-frame SNR + rate.
 
     Parameters
@@ -27,24 +27,30 @@ def parse_replay_log(log_path):
     log_path : str
         Path to log file produced by `p68_replay_offline.py` with
         `IEEE80211_HT_STRUCT_AUDIT=1` (or similar) enabled.
+    snr_is_db : bool
+        If True (default), assume avg_snr_lsig is in dB and leave as-is.
+        If False, treat as linear power ratio and convert to dB via 10*log10().
 
     Returns
     -------
     snrs : list of float
-        Per-frame avg_snr_lsig values (dB).
+        Per-frame avg_snr_lsig values (dB after optional conversion).
     rates : list of int
         Per-frame decoded L-SIG rate (0x9, 0xD, etc.).
     n : int
         Min(len(snrs), len(rates)) — number of frames with both values.
     """
     snrs, rates = [], []
+    import math
     with open(log_path) as f:
         for line in f:
             m_snr = _RE_SNR.search(line)
             if m_snr:
                 try:
-                    snrs.append(float(m_snr.group(1)))
-                    continue
+                    val = float(m_snr.group(1))
+                    if not snr_is_db and val > 0:
+                        val = 10.0 * math.log10(val)
+                    snrs.append(val)
                 except ValueError:
                     pass
             m_rate = _RE_RATE.search(line)
