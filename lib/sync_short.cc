@@ -116,18 +116,30 @@ public:
 
             // Recompute adaptive threshold (median*10) every call
             float effective_threshold = d_threshold;
-            if (d_use_adaptive && d_corr_window_filled > 100) {
-                // Compute median: copy and sort (4096 floats ~ 16KB, ~ms)
-                static float sorted_buf[4096];
-                memcpy(sorted_buf, d_corr_window, sizeof(sorted_buf));
-                std::sort(sorted_buf, sorted_buf + d_corr_window_filled);
-                float median = sorted_buf[d_corr_window_filled / 2];
-                d_adaptive_thresh = std::max(median * 10.0f, 0.01f);
-                effective_threshold = d_adaptive_thresh;
-                if (d_adaptive_dump) {
-                    fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] filled=%d median=%.6f "
-                            "adaptive_thresh=%.6f\n",
-                            d_corr_window_filled, median, d_adaptive_thresh);
+            if (d_use_adaptive) {
+                if (d_corr_window_filled >= 4096) {
+                    // Adaptive: median*10 over last 4096 samples
+                    static float sorted_buf[4096];
+                    memcpy(sorted_buf, d_corr_window, sizeof(sorted_buf));
+                    std::sort(sorted_buf, sorted_buf + d_corr_window_filled);
+                    float median = sorted_buf[d_corr_window_filled / 2];
+                    d_adaptive_thresh = std::max(median * 10.0f, 0.01f);
+                    effective_threshold = d_adaptive_thresh;
+                    if (d_adaptive_dump) {
+                        fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] filled=%d median=%.6f "
+                                "adaptive_thresh=%.6f\n",
+                                d_corr_window_filled, median, d_adaptive_thresh);
+                    }
+                } else {
+                    // Phase 89 T5c: startup gate. Until window is fully populated,
+                    // we don't know the noise level. Use a pessimistic high
+                    // threshold to suppress false positives.
+                    effective_threshold = 3.0f;
+                    if (d_adaptive_dump && d_corr_window_filled % 500 == 0) {
+                        fprintf(stderr, "[SYNC-SHORT-ADAPTIVE-STARTUP] filled=%d/%d "
+                                "using high_thresh=%.3f\n",
+                                d_corr_window_filled, 4096, effective_threshold);
+                    }
                 }
             }
 
