@@ -3694,6 +3694,28 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_DELTA_DUMP=1 (per-symbol δ values will be logged)\n";
     }
 
+    // Phase 80b: load per-SC phase LUT from JSON file if path is set.
+    // Default OFF (env var unset) — no behavior change, regression-safe.
+    // Enable via IEEE80211_HTSIG_PER_SC_LUT=/path/to/lut.json.
+    const char* env_psl = std::getenv("IEEE80211_HTSIG_PER_SC_LUT");
+    if (env_psl && env_psl[0]) {
+        if (load_per_sc_lut_from_json(env_psl)) {
+            d_htsig_per_sc_lut_path = env_psl;
+            d_htsig_per_sc_lut_valid = true;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                          "[HTSIG_PER_SC_LUT] loaded %s (48+52 SCs)\n",
+                          env_psl);
+            USRP_LOG("%s", buf);
+        } else {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                          "[HTSIG_PER_SC_LUT] FAILED to load %s\n",
+                          env_psl);
+            USRP_LOG("%s", buf);
+        }
+    }
+
     set_algorithm(algo);
     reset_frame_state();
 }
@@ -3724,6 +3746,106 @@ void frame_equalizer_impl::set_algorithm(Equalizer algo)
 void frame_equalizer_impl::set_bandwidth(double bw) { d_bw = (int)bw; }
 void frame_equalizer_impl::set_frequency(double freq) { d_freq_offset_from_synclong = freq; }
 void frame_equalizer_impl::set_extra_header_symbols(int) {}
+
+// ============================================================
+// Phase 80b: parse JSON LUT file and load into member arrays.
+// HT-SIG LUT is 48-entry only (data SCs — pilots handled by estimator).
+// Data LUT is 52-entry (all SCs in kScIndex52 layout).
+// JSON format:
+//   {
+//     "htsig_data_lut": [[re, im], ... 48 entries],
+//     "data_lut": [[re, im], ... 52 entries],
+//     "n_frames": <int>,
+//     "freq_mhz": <int>,
+//     "timestamp": "<iso8601>"
+//   }
+// Returns true on success, false on any error.
+// On success: d_htsig_per_sc_lut_a[0..47]     = htsig_data_lut,
+//             d_htsig_per_sc_lut_data[0..51]  = data_lut.
+// ============================================================
+bool frame_equalizer_impl::load_per_sc_lut_from_json(const char* path)
+{
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        std::cerr << "[FRAME_EQ] Failed to open LUT file: " << path << "\n";
+        return false;
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    std::string content = ss.str();
+
+    auto extract_array = [&](const std::string& key) -> std::vector<std::vector<float>> {
+        auto kpos = content.find("\"" + key + "\"");
+        if (kpos == std::string::npos) return {};
+        auto br_open = content.find('[', kpos);
+        if (br_open == std::string::npos) return {};
+        int depth = 1;
+        size_t br_close = br_open + 1;
+        while (br_close < content.size() && depth > 0) {
+            if (content[br_close] == '[') depth++;
+            else if (content[br_close] == ']') depth--;
+            if (depth == 0) break;
+            br_close++;
+        }
+        std::string arr_str = content.substr(br_open + 1, br_close - br_open - 1);
+        std::vector<std::vector<float>> result;
+        int d = 0;
+        std::string current;
+        for (char c : arr_str) {
+            if (c == '[') { d++; current += c; }
+            else if (c == ']') { d--; current += c; }
+            else if (c == ',' && d == 0) {
+                std::vector<float> pair;
+                std::stringstream ps(current.substr(1, current.size() - 2));
+                std::string item;
+                while (std::getline(ps, item, ',')) {
+                    pair.push_back(std::stof(item));
+                }
+                result.push_back(pair);
+                current.clear();
+            } else {
+                current += c;
+            }
+        }
+        if (!current.empty()) {
+            std::vector<float> pair;
+            std::stringstream ps(current.substr(1, current.size() - 2));
+            std::string item;
+            while (std::getline(ps, item, ',')) {
+                pair.push_back(std::stof(item));
+            }
+            result.push_back(pair);
+        }
+        return result;
+    };
+
+    auto htsig_arr = extract_array("htsig_data_lut");
+    auto data_arr = extract_array("data_lut");
+
+    if (htsig_arr.size() != 48) {
+        std::cerr << "[FRAME_EQ] LUT htsig_data_lut has " << htsig_arr.size()
+                  << " entries, expected 48\n";
+        return false;
+    }
+    if (data_arr.size() != 52) {
+        std::cerr << "[FRAME_EQ] LUT data_lut has " << data_arr.size()
+                  << " entries, expected 52\n";
+        return false;
+    }
+
+    // HT-SIG LUT (48 data SCs only — pilots handled by estimator)
+    for (int i = 0; i < 48; i++) {
+        d_htsig_per_sc_lut_a[i] = gr_complex(htsig_arr[i][0], htsig_arr[i][1]);
+    }
+    // Data LUT (all 52 SCs in kScIndex52 layout)
+    for (int i = 0; i < 52; i++) {
+        d_htsig_per_sc_lut_data[i] = gr_complex(data_arr[i][0], data_arr[i][1]);
+    }
+    d_htsig_per_sc_lut_valid = true;
+    std::cout << "[FRAME_EQ] Loaded per-SC LUT from " << path
+              << " (htsig=48, data=52)\n";
+    return true;
+}
 
 void frame_equalizer_impl::forecast(int noutput_items,
                                     gr_vector_int& ninput_items_required)
