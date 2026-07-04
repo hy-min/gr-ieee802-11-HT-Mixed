@@ -104,14 +104,25 @@ hierarchy applies:
   `docs/superpowers/notes/2026-07-04-phase86-verdict.md`
 - Phase 87 verdict (sync_short L-STF detection FAILS, sync_long noise fallback):
   `docs/superpowers/notes/2026-07-04-phase87-verdict.md`
+- Phase 88 verdict (sync_short_fused MA(48)/MA(64) ratio FLAWED):
+  `docs/superpowers/notes/2026-07-04-phase88-verdict.md`
+  `|MA(48)|/MA(64)` returns HIGHER for noise random walk (1.22/σ) than
+  coherent L-STF (48/64=0.75). sync_short 174 detections in 5s @ corr=0.02-0.18
+  are NOISE spikes (real L-STF should give 0.75). MIN_PLATEAU=2 too low
+  (real plateau is 200+ samples). Threshold tuning alone INSUFFICIENT.
+  Phase 89 plan: replace detector with raw period-16 autocorr + 16-sample
+  boxcar (matching Python's working implementation).
 - 21+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
   `禁止方向` section. **Equalizer layer is CLOSED** — Phase 87 found root
   cause UPSTREAM: sync_short fails L-STF detection → sync_long correlation
   search fallback (sync_long.cc:555) produces 156 NOISE frames in
   /tmp/p28_loopback_iq.fc32. **Phase 84 51% rate=0x9 was the equalizer's
-  response to NOISE, not a channel property.** Phase 88 must fix
-  sync_short before any equalizer-layer validation on this dataset.
+  response to NOISE, not a channel property.** Phase 88 IDENTIFIED the
+  algorithm flaw; **Phase 89 must replace the detector** (not just threshold
+  tune) before any equalizer-layer validation on this dataset.
+- **IEEE80211_SYNC_SHORT_FUSED_DUMP=1** — Phase 88 diagnostic: logs
+  batch_power, noise_floor, max_cor, n>0.001, n>0.01 per call. Default OFF.
 
-*Last updated: 2026-07-04 (Phase 87 CONFIRMED — sync_short fails L-STF
-detection; sync_long noise fallback produces 156 garbage frames; Phase 84
-51% rate=0x9 was noise response, NOT channel property; Phase 88 = sync_short fix)*
+*Last updated: 2026-07-04 (Phase 88 PARTIAL — sync_short_fused MA(48)/MA(64)
+ratio is fundamentally flawed; Phase 89 attack plan: replace detector with
+Python-equivalent autocorr + 16-sample boxcar smoothing)*
