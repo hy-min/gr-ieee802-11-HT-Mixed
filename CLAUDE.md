@@ -102,12 +102,16 @@ hierarchy applies:
 - Phase 80b REFUTED (per-SC LUT): `docs/superpowers/notes/2026-07-04-p80b-verdict.md`
 - Phase 86 verdict (L-LTF0 audit, Phase 78b 5-stable-nulls REFUTED):
   `docs/superpowers/notes/2026-07-04-phase86-verdict.md`
+- Phase 87 verdict (sync_short L-STF detection FAILS, sync_long noise fallback):
+  `docs/superpowers/notes/2026-07-04-phase87-verdict.md`
 - 21+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
-  `禁止方向` section. **Equalizer layer is CLOSED** — Phase 87+ must attack
-  upstream (L-STF detect, sync_long FRAME_START_BASE, splitter positions,
-  UHD streaming stability). CPE phase std=90° smoking gun suggests upstream
-  phase-coherence issue.
+  `禁止方向` section. **Equalizer layer is CLOSED** — Phase 87 found root
+  cause UPSTREAM: sync_short fails L-STF detection → sync_long correlation
+  search fallback (sync_long.cc:555) produces 156 NOISE frames in
+  /tmp/p28_loopback_iq.fc32. **Phase 84 51% rate=0x9 was the equalizer's
+  response to NOISE, not a channel property.** Phase 88 must fix
+  sync_short before any equalizer-layer validation on this dataset.
 
-*Last updated: 2026-07-04 (Phase 86 REFUTED — Phase 78b 5-stable-nulls
-disproven in /tmp/p28_loopback_iq.fc32; CPE std=90° smoking gun for upstream;
-equalizer layer CLOSED after 21+ REFUTED)*
+*Last updated: 2026-07-04 (Phase 87 CONFIRMED — sync_short fails L-STF
+detection; sync_long noise fallback produces 156 garbage frames; Phase 84
+51% rate=0x9 was noise response, NOT channel property; Phase 88 = sync_short fix)*
