@@ -63,10 +63,10 @@ public:
 
         bool gated = false;
         float gate_threshold = 0.0f;
+        float batch_power = 0.0f;
 
         if (d_energy_gate_factor > 0.0f && n > 0) {
             // Energy gating: compute batch mean power
-            float batch_power = 0.0f;
             for (int i = 0; i < n; i++) {
                 batch_power += std::norm(in[i]);
             }
@@ -78,6 +78,12 @@ public:
 
             gated = (batch_power < gate_threshold);
         }
+
+        // Phase 88 T2c diagnostic: log batch stats when env var is set
+        // Computed AFTER the main loop fills out2[]
+        static bool dump_enabled =
+            (getenv("IEEE80211_SYNC_SHORT_FUSED_DUMP") != nullptr);
+        static int dump_call_count = 0;
 
         for (int i = 0; i < n; i++) {
             // Step 1: 16-sample delay ring
@@ -117,6 +123,36 @@ public:
             out0[i] = delayed;
             out1[i] = ma_cc;
             out2[i] = cor;
+        }
+
+        if (dump_enabled && dump_call_count < 200) {
+            float max_cor = 0.0f;
+            int n_above_001 = 0;
+            int n_above_01 = 0;
+            for (int i = 0; i < n; i++) {
+                if (out2[i] > max_cor) max_cor = out2[i];
+                if (out2[i] > 0.001f) n_above_001++;
+                if (out2[i] > 0.01f) n_above_01++;
+            }
+            // Phase 88 T2c: log every call so we can find the L-STF region
+            fprintf(stderr, "[SYNC-SHORT-FUSED] call=%d n=%d batch_power=%.6f noise_floor=%.6f "
+                    "gate_thresh=%.6f gated=%d max_cor=%.4f n>0.001=%d n>0.01=%d\n",
+                    dump_call_count, n, batch_power, d_noise_floor,
+                    gate_threshold, gated ? 1 : 0, max_cor, n_above_001, n_above_01);
+            dump_call_count++;
+        } else if (dump_enabled && dump_call_count < 3000 &&
+                   d_noise_floor * d_energy_gate_factor > 0.0f &&
+                   batch_power > d_noise_floor * d_energy_gate_factor * 5.0f) {
+            // Only log spikes where batch_power > 5x gate threshold (signal region)
+            float max_cor = 0.0f;
+            for (int i = 0; i < n; i++) {
+                if (out2[i] > max_cor) max_cor = out2[i];
+            }
+            fprintf(stderr, "[SYNC-SHORT-FUSED-SPIKE] call=%d batch_power=%.6f "
+                    "noise_floor=%.6f gate_thresh=%.6f max_cor=%.4f\n",
+                    dump_call_count, batch_power, d_noise_floor,
+                    d_noise_floor * d_energy_gate_factor, max_cor);
+            dump_call_count++;
         }
 
         consume_each(n);
