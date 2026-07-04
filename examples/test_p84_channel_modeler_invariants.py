@@ -36,5 +36,21 @@ def test_five_stable_null_scs_are_stable():
     print(f"OK: stable nulls = {top5}")
 
 
+def test_64psk_residual_quantizes_phase_to_64_bins():
+    """ADC residual should round each rx symbol's phase to nearest 1/64 of unit circle (Phase 33b)."""
+    from test_usrp_realistic_channel import apply_64psk_residual
+
+    rng = np.random.default_rng(42)
+    rx = rng.standard_normal(500) + 1j * rng.standard_normal(500)
+    rx = (rx / np.abs(rx)).astype(np.complex64)  # unit-magnitude (ADC saturates)
+    rx_distorted = apply_64psk_residual(rx)
+    phases = np.angle(rx_distorted)
+    # Each phase should be within ±(π/64) of a k*π/32 grid point
+    quant_err = np.abs((phases + np.pi) % (np.pi / 32) - np.pi / 64)
+    assert quant_err.max() < np.pi / 64 + 1e-6, f"max quant err {quant_err.max()} > π/64"
+    print(f"OK: 64-PSK max quant err = {quant_err.max():.6f} rad")
+
+
 if __name__ == '__main__':
     test_five_stable_null_scs_are_stable()
+    test_64psk_residual_quantizes_phase_to_64_bins()

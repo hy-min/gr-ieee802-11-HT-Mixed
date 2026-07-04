@@ -50,3 +50,17 @@ def apply_5_stable_null_scs(eq52, sc_index_52, null_depth=0.02):
         idx = int(np.where(sc_index_52 == sc)[0][0])
         eq[idx] = eq52[idx] * null_depth
     return eq
+
+
+def apply_64psk_residual(rx, n_bins=64):
+    """ADC quantization residual rounds phase to nearest 1/n_bins of unit circle (Phase 33b).
+
+    USRP NCO + UBX-160 ADC + DAC exhibit ~64-PSK quantization with RMS 0.0142 (Phase 33b).
+    Apply ONLY to the phase, preserving magnitude (magnitude normalization is separate).
+    """
+    rx = np.asarray(rx, dtype=np.complex64)
+    mag = np.abs(rx)
+    phases = np.angle(rx)
+    bin_width = 2.0 * np.pi / n_bins
+    quant_phases = np.round(phases / bin_width) * bin_width
+    return (mag * np.exp(1j * quant_phases)).astype(np.complex64)
