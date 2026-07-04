@@ -64,3 +64,22 @@ def apply_64psk_residual(rx, n_bins=64):
     bin_width = 2.0 * np.pi / n_bins
     quant_phases = np.round(phases / bin_width) * bin_width
     return (mag * np.exp(1j * quant_phases)).astype(np.complex64)
+
+
+def apply_per_frame_delta(eq52, sc_index_52, delta, delta_mode="fixed"):
+    """Apply per-frame sub-sample timing δ as phase ramp across SCs (Phase 34).
+
+    eq[sc_out] = eq[sc_in] * exp(j * 2π * sc * δ / 64)
+
+    Parameters
+    ----------
+    delta : float in [0,1)
+        δ in 1/64 sample units. Phase 82 found: per-frame δ is uniform over [0,1).
+    delta_mode : {"fixed", "uniform"}
+        fixed: use delta param directly. uniform: sample δ uniformly in [0,1).
+    """
+    eq = eq52.copy().astype(np.complex64)
+    if delta_mode == "uniform":
+        delta = float(np.random.uniform(0.0, 1.0))
+    rot = np.exp(1j * 2.0 * np.pi * sc_index_52.astype(np.float64) * delta / 64.0).astype(np.complex64)
+    return (eq * rot).astype(np.complex64)

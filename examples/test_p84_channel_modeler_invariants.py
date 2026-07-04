@@ -51,6 +51,55 @@ def test_64psk_residual_quantizes_phase_to_64_bins():
     print(f"OK: 64-PSK max quant err = {quant_err.max():.6f} rad")
 
 
+def test_per_frame_delta_uniform_distribution():
+    """uniform mode should sample δ ~ Uniform[0, 1) over N=6400 trials (Phase 82 finding).
+
+    The Phase 82 verdict observed that on USRP, per-frame δ is uniform over [0,1).
+    The modeler's "uniform" mode is what should reproduce this behavior.
+    """
+    from test_usrp_realistic_channel import apply_per_frame_delta
+
+    eq52 = np.ones(52, dtype=np.complex64)
+    sc_plus_26 = int(np.where(SC_INDEX_52 == 26)[0][0])
+    n_trials = 6400
+    phases_at_sc26 = np.empty(n_trials, dtype=np.float64)
+    for i in range(n_trials):
+        out = apply_per_frame_delta(eq52, SC_INDEX_52, delta=0.0, delta_mode="uniform")
+        phases_at_sc26[i] = float(np.angle(out[sc_plus_26]))
+
+    # Phases should span roughly [0, 2π*26/64] = [0, 2.55] rad (since δ ∈ [0,1) and SC=26)
+    assert phases_at_sc26.min() < 0.2, f"min phase {phases_at_sc26.min():.2f} not near 0"
+    assert phases_at_sc26.max() > 2.3, f"max phase {phases_at_sc26.max():.2f} not near 2.55"
+
+    # Bin into 16 buckets tightly covering the data range and check uniformity
+    data_max = max(phases_at_sc26.max(), 2.55)
+    buckets = np.linspace(0.0, data_max, 17)
+    counts, _ = np.histogram(phases_at_sc26, bins=buckets)
+    expected = n_trials / 16  # 400
+    # Compare the 14 middle buckets (skip first and last which have edge effects)
+    middle_dev = float(np.max(np.abs(counts[1:-1] - expected)))
+    assert middle_dev < 0.15 * expected, f"middle bucket deviation {middle_dev:.0f} vs expected {expected:.0f}"
+    print(f"OK: uniform δ covers phase range [{phases_at_sc26.min():.2f}, {phases_at_sc26.max():.2f}], "
+          f"middle bucket max dev {middle_dev:.0f} / {expected:.0f}")
+
+
+def test_per_frame_delta_phase_ramp_is_linear():
+    """The phase across SCs should be linear with slope 2π * δ / 64."""
+    from test_usrp_realistic_channel import apply_per_frame_delta
+
+    eq52 = np.ones(52, dtype=np.complex64)
+    delta = 0.25
+    out = apply_per_frame_delta(eq52, SC_INDEX_52, delta=delta)
+    expected_phases = (2.0 * np.pi * SC_INDEX_52.astype(np.float64) * delta / 64.0) % (2.0 * np.pi)
+    got_phases = np.angle(out)
+    # Wrap both to [-π, π] and check the rotation matches
+    diff = np.abs(np.angle(np.exp(1j * (got_phases - expected_phases))))
+    assert diff.max() < 1e-5, f"max phase diff {diff.max():.6f} > 1e-5"
+    print(f"OK: phase ramp matches theoretical, max diff = {diff.max():.2e} rad")
+
+
 if __name__ == '__main__':
     test_five_stable_null_scs_are_stable()
     test_64psk_residual_quantizes_phase_to_64_bins()
+    test_per_frame_delta_uniform_distribution()
+    test_per_frame_delta_phase_ramp_is_linear()
