@@ -33,12 +33,14 @@ def run_capture(duration_s, freq_mhz, tx_gain, output_path):
         "IEEE80211_HT_STRUCT_AUDIT": "1",
     })
 
+    # test_usrp_minimal_loopback.py lives at repo root (NOT in examples/),
+    # not under examples/. Hardcoded addr=192.168.10.2 inside the script.
     cmd = [
         "bash", "-c",
         f"unset LD_LIBRARY_PATH && LD_PRELOAD=./wrap_rpc2.so "
         f"PYTHONPATH=build/python/bindings:python:examples "
         f"/home/hy/conda/envs/gnuradio/bin/python "
-        f"examples/test_usrp_minimal_loopback.py "
+        f"./test_usrp_minimal_loopback.py "
         f"--duration {duration_s} --freq {freq_mhz} --tx-gain {tx_gain} --rate 20"
     ]
 
