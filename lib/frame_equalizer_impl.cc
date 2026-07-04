@@ -4854,6 +4854,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // Per-symbol δ is more accurate than per-frame δ; SFO is much smaller than δ.
             for (int k = 0; k < 52; k++) {
                 apply_delta_correction_to_eq(raw_eq52[k], kScIndex52[k], delta_i);
+                // Phase 80b Task 5: per-SC LUT correction for DATA symbols.
+                // Same pattern as HT-SIG0/HT-SIG1 (Task 4): after Phase 79 δ correction,
+                // multiply by per-SC LUT entry to remove residual non-linear phase bias.
+                // Data symbol loop covers all 52 SCs (data 0..47 + pilots 48..51), so the
+                // full d_htsig_per_sc_lut_data[52] is exercised (unlike HT-SIG which only
+                // uses 48 data SCs). No-op when d_htsig_per_sc_lut_valid is false.
+                if (d_htsig_per_sc_lut_valid) {
+                    apply_per_sc_correction(raw_eq52[k], kScIndex52[k], d_htsig_per_sc_lut_data);
+                }
             }
 
             if (d_log_htsig_delta_dump) {
