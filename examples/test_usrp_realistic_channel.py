@@ -100,3 +100,20 @@ def apply_awgn_snr_db(signal, snr_db, rng=None):
     noise = (rng.standard_normal(sig.shape) + 1j * rng.standard_normal(sig.shape)).astype(np.complex64)
     noise = noise * np.sqrt(noise_power / float(np.mean(np.abs(noise)**2)))
     return sig + noise
+
+
+def apply_usrp_realistic_channel(eq52, sc_index_52, snr_db=10.0, seed=None,
+                                 delta_uniform=True, null_depth=0.02):
+    """One-shot USRP-realistic channel model.
+
+    Pipeline order (matters!): null SCs → 64-PSK residual → per-frame δ → AWGN.
+    Matches Phase 78b structural finding: stable nulls on the same SCs every frame,
+    with 64-PSK residual from ADC + per-frame sub-sample timing offset + UHD drift.
+    """
+    rng = np.random.default_rng(seed) if seed is not None else np.random
+    sig = eq52.astype(np.complex64)
+    sig = apply_5_stable_null_scs(sig, sc_index_52, null_depth=null_depth)
+    sig = apply_64psk_residual(sig)
+    sig = apply_per_frame_delta(sig, sc_index_52, delta=0.0, delta_mode="uniform" if delta_uniform else "fixed")
+    sig = apply_awgn_snr_db(sig, snr_db=snr_db, rng=rng)
+    return sig

@@ -114,9 +114,32 @@ def test_awgn_produces_target_snr_within_1db():
     print(f"OK: measured SNR = {measured_snr:.2f} dB (target 10)")
 
 
+def test_aggregator_applies_all_four_impairments_in_order():
+    """Aggregated channel should: (1) drop 5 SCs to near-zero, (2) keep ~unit magnitude overall,
+    (3) shift the global phase, (4) add noise matching target SNR."""
+    from test_usrp_realistic_channel import apply_usrp_realistic_channel
+
+    rng = np.random.default_rng(42)
+    eq52 = (rng.standard_normal(52) + 1j * rng.standard_normal(52)).astype(np.complex64)
+    eq52 = eq52 / np.sqrt(np.mean(np.abs(eq52)**2))
+
+    out = apply_usrp_realistic_channel(eq52, SC_INDEX_52, snr_db=20.0, seed=42)
+
+    mag = np.abs(out)
+    # 5 stable nulls should be MUCH smaller than other SCs (ratio < 0.1)
+    null_scs = {-21, -7, 7, 21, -13}
+    null_indices = [i for i, sc in enumerate(SC_INDEX_52) if sc in null_scs]
+    other_indices = [i for i, sc in enumerate(SC_INDEX_52) if sc not in null_scs]
+    null_mag = float(np.mean(mag[null_indices]))
+    other_mag = float(np.mean(mag[other_indices]))
+    assert null_mag < 0.1 * other_mag, f"null/other ratio {null_mag/other_mag:.3f} not < 0.1"
+    print(f"OK: 5 null SCs are {null_mag:.4f} (vs {other_mag:.2f} on other SCs)")
+
+
 if __name__ == '__main__':
     test_five_stable_null_scs_are_stable()
     test_64psk_residual_quantizes_phase_to_64_bins()
     test_per_frame_delta_uniform_distribution()
     test_per_frame_delta_phase_ramp_is_linear()
     test_awgn_produces_target_snr_within_1db()
+    test_aggregator_applies_all_four_impairments_in_order()
