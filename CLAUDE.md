@@ -106,12 +106,20 @@ hierarchy applies:
   `docs/superpowers/notes/2026-07-04-phase87-verdict.md`
 - Phase 88 verdict (sync_short_fused MA(48)/MA(64) ratio FLAWED):
   `docs/superpowers/notes/2026-07-04-phase88-verdict.md`
-  `|MA(48)|/MA(64)` returns HIGHER for noise random walk (1.22/σ) than
-  coherent L-STF (48/64=0.75). sync_short 174 detections in 5s @ corr=0.02-0.18
-  are NOISE spikes (real L-STF should give 0.75). MIN_PLATEAU=2 too low
-  (real plateau is 200+ samples). Threshold tuning alone INSUFFICIENT.
-  Phase 89 plan: replace detector with raw period-16 autocorr + 16-sample
-  boxcar (matching Python's working implementation).
+- [Phase 89 verdict (sync_short detector replacement SUCCESS)](docs/superpowers/notes/2026-07-04-phase89-verdict.md)
+- **IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR=1** — Phase 89 fix (opt-in, default OFF):
+  replaces |MA(48)/MA(64)| with 16-sample boxcar-smoothed raw period-16 autocorr.
+  Boxcar at noise (σ²=0.008) = 0.13; boxcar at L-STF (BPSK ±1) = 16. 100× margin.
+- **IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH=1** — Phase 89 fix (opt-in, default OFF):
+  threshold = max(median(last 4096 samples)*10, 0.01). Startup gate uses 3.0
+  until window fills to suppress early-window false positives.
+- **IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE** — Phase 89 fix (opt-in, default 2).
+  Set to 16 to match L-STF plateau structure.
+- **Repl results (80M samples, 4s)**: 24 detections at corr=1.95-20876 (was 174
+  noise at 0.02-0.18 in Phase 88). HT_SIG_CAND: 16 entries (one frame through
+  viterbi). Loopback 1/1 PASS unchanged.
+- 5250 MHz cable run still required for USRP realtime FCS_OK ≥ 1 (HARD CONSTRAINT).
+  HT-SIG viterbi needs avg_snr_htsig > 6 dB (currently 2-3 dB at 5890 air).
 - 21+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
   `禁止方向` section. **Equalizer layer is CLOSED** — Phase 87 found root
   cause UPSTREAM: sync_short fails L-STF detection → sync_long correlation
@@ -123,6 +131,6 @@ hierarchy applies:
 - **IEEE80211_SYNC_SHORT_FUSED_DUMP=1** — Phase 88 diagnostic: logs
   batch_power, noise_floor, max_cor, n>0.001, n>0.01 per call. Default OFF.
 
-*Last updated: 2026-07-04 (Phase 88 PARTIAL — sync_short_fused MA(48)/MA(64)
-ratio is fundamentally flawed; Phase 89 attack plan: replace detector with
-Python-equivalent autocorr + 16-sample boxcar smoothing)*
+*Last updated: 2026-07-04 (Phase 89 SUCCESS — sync_short detector replaced with
+raw period-16 autocorr + 16-sample boxcar; L-STF detection 100× quality improvement;
+loopback regression unchanged; HT-SIG viterbi next blocker; 5250 cable run needed)*
