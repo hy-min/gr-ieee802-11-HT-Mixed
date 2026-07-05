@@ -131,6 +131,9 @@ hierarchy applies:
 - **IEEE80211_SYNC_SHORT_FUSED_DUMP=1** — Phase 88 diagnostic: logs
   batch_power, noise_floor, max_cor, n>0.001, n>0.01 per call. Default OFF.
 
-*Last updated: 2026-07-04 (Phase 89 SUCCESS — sync_short detector replaced with
-raw period-16 autocorr + 16-sample boxcar; L-STF detection 100× quality improvement;
-loopback regression unchanged; HT-SIG viterbi next blocker; 5250 cable run needed)*
+*Last updated: 2026-07-05 (Phase 102 CLOSURE — equalizer-layer (28+ REFUTED) +
+sync_short upstream (Phase 89 file-replay SUCCESS but cable FAILURE) CLOSED per
+user Option F. Phase 18 L-SIG-only FCS_OK=1 is final state. HARD CONSTRAINT
+NOT achieved. Code paths preserved for future continuation. Upstream attack
+plan: 30 dB attenuator → Schmidl-Cox → Park/Gezici → FFT-based L-STF → UHD
+stability fix.)*
