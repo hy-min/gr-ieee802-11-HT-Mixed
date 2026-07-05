@@ -159,7 +159,6 @@ in `docs/superpowers/notes/2026-07-05-phase102-closure.md` covering:
 1. Per-SC channel phase calibration LUT extension
 2. Frequency-domain δ correction extension
 3. LDPC switch (architectural)
-4. Different frame structure (legacy frame, skip HT-SIG)
 
 ---
 

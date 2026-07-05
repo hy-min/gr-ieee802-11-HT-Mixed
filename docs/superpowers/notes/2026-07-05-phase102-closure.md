@@ -134,10 +134,6 @@ The blockers are now TWO layers deep:
    - LDPC at MCS=7: BCC 0% vs LDPC 76% (per BCC vs LDPC comparison)
    - **Note**: project primarily uses MCS=0 BCC; LDPC switch is architectural
 
-4. **Different frame structure** (use legacy frame instead of HT-Mixed)
-   - Skip HT-SIG entirely; decode only L-SIG + DATA
-   - Lower throughput but bypasses HT-SIG viterbi entirely
-
 ---
 
 ## Project Future State
