@@ -172,3 +172,31 @@ def test_htsig_null_scs_envvar_parsing(env_value, expected, env_unset):
         f"IEEE80211_HTSIG_NULL_SCS={env_value!r} "
         f"(unset={env_unset}): expected {sorted(expected)}, got {sorted(actual)}"
     )
+
+
+def test_null_scs_zero_llr_smoke():
+    """Verify mask is loaded and accessible; full LLR path tested in Task 3."""
+    code = '''
+import os
+import sys
+sys.path.insert(0, "/home/hy/gr-ieee802-11/python")
+sys.path.insert(0, "/home/hy/gr-ieee802-11/build/python/bindings")
+os.environ["IEEE80211_HTSIG_NULL_SCS"] = "3,7,15"
+from ieee802_11 import frame_equalizer
+from ieee802_11 import Equalizer
+fe = frame_equalizer(Equalizer.LS, 0.0, 20.0, True, True)
+mask = fe.d_htsig_null_sc_mask if hasattr(fe, "d_htsig_null_sc_mask") else None
+if mask is None:
+    print("FAIL: d_htsig_null_sc_mask member not found")
+    sys.exit(1)
+set_bits = sorted({i for i, v in enumerate(mask) if v})
+if set_bits != [3, 7, 15]:
+    print(f"FAIL: expected [3, 7, 15], got {set_bits}")
+    sys.exit(1)
+print("PASS")
+'''
+    result = subprocess.run(
+        [PYTHON_BIN, "-c", code],
+        capture_output=True, text=True,
+    )
+    assert "PASS" in result.stdout, f"Failed: stdout={result.stdout!r} stderr={result.stderr!r}"

@@ -2700,7 +2700,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        bool apply_htsig_per_symbol_delta = false,  // Phase 79: δ tracking
                                        bool log_htsig_delta_dump = false,         // Phase 79: δ dump
                                        const gr_complex* per_sc_lut52 = nullptr,  // Phase 80b: per-SC LUT (52 entries, nullptr=disabled)
-                                       bool per_sc_lut_valid = false)             // Phase 80b: gate
+                                       bool per_sc_lut_valid = false,             // Phase 80b: gate
+                                       const uint8_t* htsig_null_sc_mask = nullptr)  // Phase 102: 52-bit mask (nullptr=disabled)
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -2807,9 +2808,16 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
             eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
             if (use_soft_llr) {
-                float conf = h_mag / max_h_a;
-                float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
-                llr48_a[i] = s * conf;
+                // Phase 102: if SC is in null mask, set LLR=0 (viterbi ignores
+                // this bit). Bypasses noise amplification at zero SCs
+                // (Phase 78b 5 stable globally-null SCs).
+                if (htsig_null_sc_mask && htsig_null_sc_mask[kScIndex52[i]]) {
+                    llr48_a[i] = 0.0f;
+                } else {
+                    float conf = h_mag / max_h_a;
+                    float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
+                    llr48_a[i] = s * conf;
+                }
             }
         }
     }
@@ -2949,9 +2957,14 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
             if (use_soft_llr) {
-                float conf = h_mag / max_h_b;
-                float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
-                llr48_b[i] = s * conf;
+                // Phase 102: see HT-SIG0 comment.
+                if (htsig_null_sc_mask && htsig_null_sc_mask[kScIndex52[i]]) {
+                    llr48_b[i] = 0.0f;
+                } else {
+                    float conf = h_mag / max_h_b;
+                    float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
+                    llr48_b[i] = s * conf;
+                }
             }
         }
     }
@@ -6136,7 +6149,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            d_apply_htsig_per_symbol_delta,
                                                            d_log_htsig_delta_dump,
                                                            d_htsig_per_sc_lut_data,
-                                                           d_htsig_per_sc_lut_valid);
+                                                           d_htsig_per_sc_lut_valid,
+                                                           d_htsig_null_sc_mask);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
