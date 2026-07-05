@@ -2236,7 +2236,8 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
                                              int* out_parity_ok = nullptr,
                                              uint8_t* dbg_eqbits48 = nullptr,
                                              uint8_t* dbg_deintl48 = nullptr,
-                                             int rot_idx = 0)
+                                             int rot_idx = 0,
+                                             int rot_step_div = 2)
 {
     uint8_t eqbits48[48];
     uint8_t deintl48[48];
@@ -2244,10 +2245,11 @@ static bool decode_lsig_direct_from_header52(const gr_complex* rx52,
     // NOTE: rx52 (d_early_eqsym) has already been phase-compensated in general_work
     // using per-subcarrier linear regression (CFO+SFO). Do NOT apply CPE again.
     // Phase 70: Apply optional phase rotation before hard-decision.
-    // rot_idx in [0, 3] corresponds to 0°/90°/180°/270° rotation,
-    // allowing the 8-candidate search (4 rot × 2 inv) to undo any
-    // residual phase error in the equalized L-SIG constellation.
-    const gr_complex rot_factor = std::polar(1.0f, rot_idx * (float)(M_PI / 2.0));
+    // rot_idx * (PI / rot_step_div) — defaults to PI/2 (90°) for Phase 70's
+    // 4-rot search; Phase 94 (IEEE80211_LSIG_FINE_ROT=1) sets rot_step_div=4
+    // for PI/4 (45°) step over an 8-rot range, targeting rotated-constellation
+    // failures (Phase 93: L-SIG EQ ratio=1.453 indicates ~45° mis-rotation).
+    const gr_complex rot_factor = std::polar(1.0f, rot_idx * (float)(M_PI / rot_step_div));
     for (int i = 0; i < 48; i++) {
         float h_mag = std::abs(H52[i]);
         gr_complex eq;
@@ -5688,8 +5690,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // × 2 inversions = 8 candidates. Pick the one with the lowest
             // structural-validity cost (HT_SIG_CAND pattern from Phase 66).
             // Default OFF: only the existing 2-attempt (inv=0,1) loop runs.
-            const int n_rot = (getenv("IEEE80211_LSIG_VITERBI_CANDIDATE") &&
-                               getenv("IEEE80211_LSIG_VITERBI_CANDIDATE")[0] != '\0') ? 4 : 1;
+            //
+            // Phase 94: IEEE80211_LSIG_FINE_ROT=1 — try 8 phase rotations
+            // × 2 inversions = 16 candidates at 45° step (PI/4).
+            // Targets the rotated-constellation failure identified in Phase 93
+            // (L-SIG EQ ratio=1.453, expect <1.0 for pure BPSK). The 90° step
+            // of Phase 70 misses 45° mis-rotations from residual CFO/SFO.
+            const bool fine_rot_env =
+                getenv("IEEE80211_LSIG_FINE_ROT") &&
+                getenv("IEEE80211_LSIG_FINE_ROT")[0] != '\0';
+            const bool cand_env =
+                getenv("IEEE80211_LSIG_VITERBI_CANDIDATE") &&
+                getenv("IEEE80211_LSIG_VITERBI_CANDIDATE")[0] != '\0';
+            int n_rot = 1;
+            int rot_step_div = 2;  // default: PI/2 (90°) step
+            if (fine_rot_env) {
+                // FINE_ROT supersedes CANDIDATE: 8 rot × 2 inv = 16 candidates
+                n_rot = 8;
+                rot_step_div = 4;  // PI/4 (45°) step
+            } else if (cand_env) {
+                n_rot = 4;
+                // rot_step_div stays 2 (PI/2, 90° step)
+            }
             int lsig_best_metric = INT_MAX;
             int lsig_best_rot = -1;
             int lsig_best_inv = -1;
@@ -5764,7 +5786,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                                  &lsig_parity_ok_int,
                                                                  nullptr,
                                                                  nullptr,
-                                                                 /* rot_idx = */ rot_lsig);
+                                                                 /* rot_idx = */ rot_lsig,
+                                                                 /* rot_step_div = */ rot_step_div);
                 if (lsig_ok) {
                     lsig_decode_calls++;
                     lsig_last_inv       = inv_lsig;
