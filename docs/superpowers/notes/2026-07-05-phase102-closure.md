@@ -88,31 +88,31 @@ The blockers are now TWO layers deep:
 
 **Possible fixes (in order of decreasing likelihood of success)**:
 
-1. **30 dB HAT-30+ SMA attenuator (Phase 81 verdict path)**
-   - Insert attenuator between TX/RX port and RX2 port on A:0
-   - RX2 in linear range (no clipping at --tx-gain 20)
-   - Reduces UHD streaming overflow → L-STF amplitude stable → Phase 89 boxcar above adaptive threshold
-   - **HW dependency**: attenuator arrival (BLOCKED on user)
-
-2. **Schmidl-Cox two-symbol correlation** (replaces single-period-16)
+1. **Schmidl-Cox two-symbol correlation** (replaces single-period-16)
    - Use first 32 samples of L-STF (two periods of 16) with sliding window correlation
    - More robust to frequency offset and amplitude variation
    - Standard 802.11n receiver approach
 
-3. **Park/Gezici half-symbol correlation** (asymmetric)
+2. **Park/Gezici half-symbol correlation** (asymmetric)
    - Use half-symbol shifted correlation to break plateau ambiguity
    - Different plateau shape → easier detection with adaptive threshold
 
-4. **Frequency-domain L-STF detection** (FFT-based)
+3. **Frequency-domain L-STF detection** (FFT-based)
    - Take 64-point FFT of L-STF, look for 12 subcarrier tones at ±4, ±8, ±12
    - Robust to time-domain noise
    - Computationally heavier (~64× FFT per detection attempt)
 
-5. **UHD streaming stability fix** (Phase 55 territory)
+4. **UHD streaming stability fix** (Phase 55 territory)
    - Reduce --rate to 5e6 (Phase 58 REFUTED — 48× more overflows)
    - Use recv_frame_size hint to UHD source
    - Use buffer pre-allocation to avoid runtime re-allocation
    - **Note**: Phase 55 evidence: 99% of samples lost to overflow; offline median SNR=10.4 vs realtime 1.48
+
+5. **Loopback/file-replay validation pipeline**
+   - Bypass USRP streaming entirely; capture IQ to file, run receiver offline
+   - File-replay confirmed Phase 89 works (24 detections at corr=1.95-20876)
+   - Reduces UHD instability as a variable; isolates equalizer + sync_short algorithms
+   - Useful for testing Layer 2 fixes without Layer 1 complications
 
 ### Layer 2 (Downstream of Layer 1): HT-SIG Viterbi
 
@@ -120,23 +120,21 @@ The blockers are now TWO layers deep:
 
 **Possible fixes** (only after Layer 1 unblocks):
 
-1. **30 dB attenuator** (same as Layer 1 fix — improves SNR overall)
-
-2. **Per-SC channel phase calibration LUT** (Phase 80b extension)
-   - Phase 80b REFUTED on USRP, but with 30 dB attenuator the SNR floor may be different
+1. **Per-SC channel phase calibration LUT** (Phase 80b extension)
+   - Phase 80b REFUTED on USRP, may behave differently on cleaner capture pipeline
    - Use median-aggregated per-SC phase from N≥30 captured frames
    - Apply at HT-SIG equalizer output (post-FFT, pre-bit-decision)
 
-3. **Frequency-domain δ correction** (Phase 82 extension)
-   - Phase 82 REFUTED at 5250, but with 30 dB attenuator the residual δ may be smaller
+2. **Frequency-domain δ correction** (Phase 82 extension)
+   - Phase 82 REFUTED at 5250, may behave differently on cleaner capture pipeline
    - ε-scan [-32, +32]/64 grid search
 
-4. **LDPC instead of BCC** (MCS≥5)
+3. **LDPC instead of BCC** (MCS≥5)
    - BCC works at MCS=0-6 with FEC OK
    - LDPC at MCS=7: BCC 0% vs LDPC 76% (per BCC vs LDPC comparison)
    - **Note**: project primarily uses MCS=0 BCC; LDPC switch is architectural
 
-5. **Different frame structure** (use legacy frame instead of HT-Mixed)
+4. **Different frame structure** (use legacy frame instead of HT-Mixed)
    - Skip HT-SIG entirely; decode only L-SIG + DATA
    - Lower throughput but bypasses HT-SIG viterbi entirely
 
@@ -144,16 +142,17 @@ The blockers are now TWO layers deep:
 
 ## Project Future State
 
-**If HW arrives (30 dB attenuator)**:
-1. Install attenuator per Phase 82+ standard config
+**If Schmidl-Cox sync_short succeeds** (Layer 1 fix):
+1. Replace Phase 89 boxcar with Schmidl-Cox two-symbol correlation
 2. Re-run Phase 89 env vars on real-time cable
 3. If sync_short recovers → re-run Phase 102 null-aware soft-LLR with identified null SC positions
 4. If HT-SIG metric recovers to ≤10 → likely FCS_OK ≥ 1
 
-**If HW does not arrive**:
-1. Implement Schmidl-Cox sync_short (Layer 1 fix)
-2. Re-run Phase 89 + 102 stack
-3. If still blocked → document as architectural ceiling
+**If file-replay pipeline succeeds** (cleaner capture):
+1. Capture IQ to file with stable USRP settings
+2. Run receiver offline (bypasses UHD streaming instability)
+3. Test Phase 102 null-aware soft-LLR with identified null SC positions
+4. If HT-SIG metric recovers → re-architect realtime pipeline using same algorithms
 
 **Acceptance of closure** (current decision):
 1. Code paths preserved for any future continuation

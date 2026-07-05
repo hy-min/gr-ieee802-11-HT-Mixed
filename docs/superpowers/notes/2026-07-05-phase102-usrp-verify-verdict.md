@@ -110,36 +110,56 @@ Phase 102 closes the **second** blocker (HT-SIG viterbi) from a different angle 
 
 Per project CLAUDE.md: "Any verdict ending in BLOCKED must include a concrete Phase 60+ attack plan that operates **upstream** of the blocker."
 
-### Option E: 30 dB SMA attenuator (RX2 protection + lower noise floor)
+### Option E: Re-architect sync_short with Schmidl-Cox / Park-Gezici
 
-Per Phase 96 verdict: "--tx-gain 20 produces CLEAN BPSK constellation (L-SIG EQ ratio=0.701 vs 1.4+ at --tx-gain 0)". The signal IS clean enough for viterbi. The blocker is sync_short, not the equalizer.
+The current sync_short uses single-period-16 autocorrelation + boxcar smoothing
+(Phase 89). On real-time USRP cable, this fails because UHD streaming instability
+(Phase 55: 8× SNR drift, 99% overflow) makes L-STF amplitude too noisy for the
+boxcar to consistently exceed the adaptive threshold.
 
-With 30 dB HAT-30+ attenuator:
-- RX2 in linear range (no clipping)
-- UHD streaming overflow reduced (more headroom)
-- L-STF amplitude stable → sync_short boxcar correlation above adaptive threshold → frames reach equalizer
+**Schmidl-Cox** uses 32-sample (two-period) sliding correlation, more robust to
+frequency offset and amplitude variation. Standard 802.11n receiver approach.
 
-**Risk**: HW availability. Per CLAUDE.md, the attenuator was supposed to arrive but hasn't. Phase 82 used bare cable as a workaround.
+**Park/Gezici** uses half-symbol shifted correlation to break plateau ambiguity,
+giving a sharper detection peak.
 
-### Option F: STOP at equalizer-layer closure (current state)
+Either approach is a from-scratch rewrite of sync_short's L-STF detector. Per
+Phase 89 verdict, the current algorithm works on file replay (24 detections at
+corr=1.95-20876), so any new algorithm must preserve file-replay performance
+while also working on real-time cable.
+
+**Risk**: Implementation cost (each algorithm is ~200 lines of C++), and
+verification requires either real-time cable success (HW-dependent) or a
+file-replay validation pipeline.
+
+### Option F: STOP at equalizer-layer closure (current state — ACCEPTED)
 
 Document Phase 87-102 chain as complete closure of:
 1. sync_short L-STF detection (Phase 87-89 partial, blocked on real-time cable)
 2. HT-SIG viterbi (Phase 100 + 102 — unreachable due to #1)
 
 Accept Phase 18 L-SIG-only achievement as final state of the equalizer-layer.
+Code paths preserved for any future continuation.
 
 ---
 
 ## Recommendation
 
-Per HARD CONSTRAINT, the project's success criterion (USRP realtime FCS_OK ≥ 1) is unreachable with current equalizer-layer + sync_short architecture. Three paths:
+User accepted Option F (closure) on 2026-07-05. Upstream attack plan documented
+in `docs/superpowers/notes/2026-07-05-phase102-closure.md` covering:
 
-1. **Wait for 30 dB attenuator** + retest (Option E). If attenuator arrives and sync_short recovers → Phase 102 retest may unblock HT-SIG viterbi.
-2. **Re-architect sync_short** from scratch with a more robust L-STF detector (e.g., Schmidl-Cox with two-symbol correlation, or Park/Gezici half-symbol methods).
-3. **Accept closure** at equalizer-layer + sync_short, document upstream-attack plan for any future continuation.
+**Layer 1 (sync_short)**:
+1. Schmidl-Cox two-symbol correlation
+2. Park/Gezici half-symbol correlation
+3. Frequency-domain L-STF detection (FFT-based)
+4. UHD streaming stability fix (Phase 55 territory)
+5. Loopback/file-replay validation pipeline
 
-User decision required.
+**Layer 2 (HT-SIG viterbi, only after Layer 1 unblocks)**:
+1. Per-SC channel phase calibration LUT extension
+2. Frequency-domain δ correction extension
+3. LDPC switch (architectural)
+4. Different frame structure (legacy frame, skip HT-SIG)
 
 ---
 
