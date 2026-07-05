@@ -3622,6 +3622,39 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_SOFT_LLR_VITERBI=1 (HT-SIG soft-LLR viterbi ENABLED)\n";
     }
 
+    // Phase 102: parse null-SC indices from env var (CSV of positions 0..51).
+    // Indices are positional in kScIndex52[] order. Used by HT-SIG soft-LLR path
+    // to set conf=0 (LLR=0) for noise-amplified SCs that would otherwise corrupt
+    // viterbi (Phase 78b 5 stable globally-null SCs).
+    // Default: all zeros (no SCs masked). Format: "0,5,10" -> mask indices 0/5/10.
+    {
+        for (int i = 0; i < 52; i++) d_htsig_null_sc_mask[i] = 0;
+        const char* env_ns = std::getenv("IEEE80211_HTSIG_NULL_SCS");
+        if (env_ns && env_ns[0] != '\0') {
+            int n_parsed = 0;
+            const char* p = env_ns;
+            while (*p && n_parsed < 52) {
+                int idx = 0;
+                bool got_digit = false;
+                while (*p >= '0' && *p <= '9') {
+                    idx = idx * 10 + (*p - '0');
+                    p++;
+                    got_digit = true;
+                }
+                if (got_digit && idx >= 0 && idx < 52) {
+                    d_htsig_null_sc_mask[idx] = 1;
+                    n_parsed++;
+                }
+                if (*p == ',' || *p == ' ') p++;
+                else if (*p != '\0') break;
+            }
+            if (n_parsed > 0) {
+                std::cout << "[FRAME_EQ] IEEE80211_HTSIG_NULL_SCS='"
+                          << env_ns << "' (masked " << n_parsed << " SCs)\n";
+            }
+        }
+    }
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
     // Bypasses Phase 38's 50× noise amplification at Hhdr52 channel nulls by
     // regularizing the denominator with a noise-floor estimate (25th percentile

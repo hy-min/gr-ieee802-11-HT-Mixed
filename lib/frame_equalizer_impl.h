@@ -327,6 +327,10 @@ private:
     bool       d_htsig_per_sc_lut_valid   = false;
     std::string d_htsig_per_sc_lut_path;
 
+    // Phase 102: per-SC null mask (1 = treat as null, set LLR=0 in HT-SIG).
+    // Populated from IEEE80211_HTSIG_NULL_SCS env var (CSV of indices 0..51).
+    uint8_t d_htsig_null_sc_mask[52];
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase
@@ -409,6 +413,13 @@ public:
     // (open/parse/shape), logs to std::cerr and returns false; the LUT
     // stays invalid.
     bool load_per_sc_lut_from_json(const char* path);
+
+    // Phase 102: read-only accessor for the parsed null-SC mask. Used by
+    // Python bindings (and tests) to verify IEEE80211_HTSIG_NULL_SCS was
+    // parsed correctly at constructor time. Returns a pointer to the
+    // 52-element uint8_t array (1 = null SC, 0 = non-null).
+    const uint8_t* get_d_htsig_null_sc_mask() const { return d_htsig_null_sc_mask; }
+    static constexpr int get_d_htsig_null_sc_mask_size() { return 52; }
 
     void forecast(int noutput_items,
                   gr_vector_int& ninput_items_required) override;
