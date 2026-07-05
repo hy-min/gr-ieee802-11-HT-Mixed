@@ -5683,6 +5683,60 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
 
+            // ============================================================
+            // Phase 100A T1: Per-SC |H| and per-SC |eq|² diagnostic.
+            // Opt-in via IEEE80211_PER_SC_SNR_DUMP=1 (default OFF).
+            // Flood-gated to 10 frames to keep log size manageable.
+            // Identifies the 5 globally-null SCs from Phase 78b's structural
+            // ceiling, by per-SC |H| ranking. Also dumps |H|/|eq|² per SC
+            // for L-SIG (eq = rx[kLSigRel]/Hhdr52) and HT-SIG0
+            // (eq = rx[kHtSig0Rel]/Hhdr52) so we can correlate noise
+            // amplification with the 10 forced-zero bit positions in viterbi.
+            //
+            // Format: SC_index → kScIndex52[i] (the actual IEEE 802.11n SC number,
+            // e.g., -26, -25, ..., +26 with pilot positions -21,-7,+7,+21 at
+            // indices 48..51). |H[i]| from Hhdr52. |eq_lsig[i]| = |rx_lsig/Hhdr52|,
+            // |eq_htsig0[i]| = |rx_htsig0/Hhdr52|.
+            // Atomic snprintf+USRP_LOG per e90e3f5.
+            if (getenv("IEEE80211_PER_SC_SNR_DUMP") &&
+                getenv("IEEE80211_PER_SC_SNR_DUMP")[0] != '\0') {
+                static int g_persc_snr_counter = 0;
+                if (g_persc_snr_counter < 10) {
+                    char psbuf[4096];
+                    int pn = snprintf(psbuf, sizeof(psbuf),
+                        "[PER_SC_SNR] frame=%d |H|=[",
+                        g_persc_snr_counter);
+                    for (int i = 0; i < 52 && pn < (int)sizeof(psbuf) - 64; i++) {
+                        pn += snprintf(psbuf + pn, sizeof(psbuf) - pn,
+                            "%d:%.3f,", kScIndex52[i],
+                            std::abs(Hhdr52[i]));
+                    }
+                    pn += snprintf(psbuf + pn, sizeof(psbuf) - pn,
+                        "] |eq_lsig|=[");
+                    for (int i = 0; i < 48 && pn < (int)sizeof(psbuf) - 64; i++) {
+                        float hm = std::abs(Hhdr52[i]);
+                        float em = (hm < 1e-3f) ? 0.0f
+                                    : std::abs(safe_div(
+                                          d_early_eqsym[kLSigRel][i], Hhdr52[i]));
+                        pn += snprintf(psbuf + pn, sizeof(psbuf) - pn,
+                            "%d:%.3f,", kScIndex52[i], em);
+                    }
+                    pn += snprintf(psbuf + pn, sizeof(psbuf) - pn,
+                        "] |eq_htsig0|=[");
+                    for (int i = 0; i < 48 && pn < (int)sizeof(psbuf) - 64; i++) {
+                        float hm = std::abs(Hhdr52[i]);
+                        float em = (hm < 1e-3f) ? 0.0f
+                                    : std::abs(safe_div(
+                                          d_early_eqsym[kHtSig0Rel][i], Hhdr52[i]));
+                        pn += snprintf(psbuf + pn, sizeof(psbuf) - pn,
+                            "%d:%.3f,", kScIndex52[i], em);
+                    }
+                    pn += snprintf(psbuf + pn, sizeof(psbuf) - pn, "]\n");
+                    USRP_LOG("%s", psbuf);
+                    g_persc_snr_counter++;
+                }
+            }
+
             // Phase 70: 8-candidate L-SIG viterbi search.
             // When IEEE80211_LSIG_VITERBI_CANDIDATE=1, try 4 phase rotations
             // × 2 inversions = 8 candidates. Pick the one with the lowest
