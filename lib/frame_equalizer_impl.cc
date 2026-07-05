@@ -1974,15 +1974,12 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
 //   2 = -90° rotation (multiply by -j)
 //   3 = 180° rotation (multiply by -1)
 
-static inline gr_complex get_htsig_rotation_factor(int rotation)
+static inline gr_complex get_htsig_rotation_factor(int rotation, int step_div = 2)
 {
-    switch (rotation) {
-        case 0: return gr_complex(1.0f, 0.0f);   // 0°
-        case 1: return gr_complex(0.0f, 1.0f);    // +90°
-        case 2: return gr_complex(0.0f, -1.0f);   // -90°
-        case 3: return gr_complex(-1.0f, 0.0f);   // 180°
-        default: return gr_complex(1.0f, 0.0f);
-    }
+    // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 sets step_div=4 (PI/4 = 45°) so
+    // the candidate search covers 8 rotations 0/45/90/.../315. Default
+    // step_div=2 (PI/2 = 90°) preserves Phase 70/94 4-rotation baseline.
+    return std::polar(1.0f, rotation * (float)(M_PI / step_div));
 }
 
 // Detect HT-SIG QBPSK rotation by analyzing pilot phases
@@ -2214,9 +2211,10 @@ static inline void apply_per_sc_correction(gr_complex& eq,
 }
 
 // Apply rotation compensation to HT-SIG before decoding
-static void apply_htsig_rotation(const gr_complex* in52, gr_complex* out52, int rotation)
+// Phase 95: step_div controls rotation step (default 2 = 90°, FINE_ROT = 45°).
+static void apply_htsig_rotation(const gr_complex* in52, gr_complex* out52, int rotation, int step_div = 2)
 {
-    gr_complex rot = get_htsig_rotation_factor(rotation);
+    gr_complex rot = get_htsig_rotation_factor(rotation, step_div);
     for (int i = 0; i < 52; i++) {
         out52[i] = in52[i] * std::conj(rot);
     }
@@ -5633,7 +5631,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             bool lsig_saw_viterbi_fail = false;  // viterbi decode failed (rate/length not extractable)
             int  lsig_viterbi_fail_inv = -1;
             int  lsig_decode_calls     = 0;      // # of inv_lsig calls that ran viterbi
-            int  htsig_candidates_tried = 0;     // 4 rot * 2 inv_a * 2 inv_b max = 16
+            int  htsig_candidates_tried = 0;     // 4 rot * 2 inv_a * 2 inv_b max = 16 (32 with HTSIG_FINE_ROT=1)
             int  htsig_lsig_enc        = -1;     // L-SIG enc passed to HT-SIG path
             int  htsig_last_rot        = -1;
             int  htsig_last_inv_a      = -1;
@@ -5997,12 +5995,25 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
                 }
 
-                // Try all 4 rotations and 180 degree ambiguity on each symbol
-                for (int rot = 0; rot <= 3 && !found; rot++) {
+                // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate
+                // search to 8 rotations × 2 inv_a × 2 inv_b = 32 candidates
+                // at 45° step. Targets rotated-constellation HT-SIG frames
+                // that the 90° step misses (Phase 94: ratio_ht=0.965 stayed
+                // below 1.2 threshold; HT-SIG chain fired once but failed
+                // because rotation search missed the actual rotation).
+                const bool htsig_fine_rot_env =
+                    getenv("IEEE80211_HTSIG_FINE_ROT") &&
+                    getenv("IEEE80211_HTSIG_FINE_ROT")[0] != '\0';
+                const int htsig_n_rot = htsig_fine_rot_env ? 8 : 4;
+                const int htsig_step_div = htsig_fine_rot_env ? 4 : 2;
+
+                // Try all 4 (or 8 with FINE_ROT) rotations and 180° ambiguity
+                // on each symbol.
+                for (int rot = 0; rot < htsig_n_rot && !found; rot++) {
                     gr_complex rot_htsig0[52];
                     gr_complex rot_htsig1[52];
-                    apply_htsig_rotation(d_early_eqsym[kHtSig0Rel], rot_htsig0, rot);
-                    apply_htsig_rotation(d_early_eqsym[kHtSig1Rel], rot_htsig1, rot);
+                    apply_htsig_rotation(d_early_eqsym[kHtSig0Rel], rot_htsig0, rot, htsig_step_div);
+                    apply_htsig_rotation(d_early_eqsym[kHtSig1Rel], rot_htsig1, rot, htsig_step_div);
 
                     for (int inv_a = 0; inv_a <= 1 && !found; inv_a++) {
                         for (int inv_b = 0; inv_b <= 1 && !found; inv_b++) {
