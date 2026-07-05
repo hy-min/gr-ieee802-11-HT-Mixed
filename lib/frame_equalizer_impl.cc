@@ -2811,7 +2811,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 // Phase 102: if SC is in null mask, set LLR=0 (viterbi ignores
                 // this bit). Bypasses noise amplification at zero SCs
                 // (Phase 78b 5 stable globally-null SCs).
-                if (htsig_null_sc_mask && htsig_null_sc_mask[kScIndex52[i]]) {
+                // FIX(p102): mask is indexed by HT-SIG data loop position (0..47),
+                // NOT by kScIndex52[i] which is the signed SC value (-26..+26).
+                // Previous code indexed by kScIndex52[i], causing UB for negative
+                // SC values (-13, -21, -7). HT-SIG loop only iterates i=0..47 (data SCs),
+                // so mask[i] is correct.
+                if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
                     llr48_a[i] = 0.0f;
                 } else {
                     float conf = h_mag / max_h_a;
@@ -2958,7 +2963,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
             if (use_soft_llr) {
                 // Phase 102: see HT-SIG0 comment.
-                if (htsig_null_sc_mask && htsig_null_sc_mask[kScIndex52[i]]) {
+                // FIX(p102): see HT-SIG0 comment — use i not kScIndex52[i].
+                if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
                     llr48_b[i] = 0.0f;
                 } else {
                     float conf = h_mag / max_h_b;
@@ -3635,11 +3641,14 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_SOFT_LLR_VITERBI=1 (HT-SIG soft-LLR viterbi ENABLED)\n";
     }
 
-    // Phase 102: parse null-SC indices from env var (CSV of positions 0..51).
-    // Indices are positional in kScIndex52[] order. Used by HT-SIG soft-LLR path
-    // to set conf=0 (LLR=0) for noise-amplified SCs that would otherwise corrupt
-    // viterbi (Phase 78b 5 stable globally-null SCs).
-    // Default: all zeros (no SCs masked). Format: "0,5,10" -> mask indices 0/5/10.
+    // Phase 102: parse null-SC positions from env var (CSV of HT-SIG data loop
+    // positions 0..47). IMPORTANT: positions are HT-SIG data loop indices, NOT
+    // kScIndex52[i] signed SC values. The HT-SIG LLR writer checks
+    // htsig_null_sc_mask[i] (loop position), so the env var must specify
+    // loop positions. Phase 78b null SC values {-21,-13,-7,7,21}: only -13 is
+    // in the data SC set (loop position 12); the other 4 are pilots at
+    // kScIndex52[48..51] and never enter the HT-SIG data loop.
+    // Default: all zeros (no SCs masked). Format: "12" -> mask loop position 12.
     {
         for (int i = 0; i < 52; i++) d_htsig_null_sc_mask[i] = 0;
         const char* env_ns = std::getenv("IEEE80211_HTSIG_NULL_SCS");
