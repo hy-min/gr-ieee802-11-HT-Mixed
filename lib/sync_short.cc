@@ -114,21 +114,36 @@ public:
                 if (d_corr_window_filled < 4096) d_corr_window_filled++;
             }
 
-            // Recompute adaptive threshold (median*10) every call
+            // Recompute adaptive threshold (percentile_90 * 1.5) every call
+            // Phase 92: switch from median*10 to percentile_90*1.5 to be robust
+            // against zero contamination (88% zeros + 12% non-zero → median=0).
+            // Percentile 90 ignores the zero tail and tracks actual noise level.
             float effective_threshold = d_threshold;
             if (d_use_adaptive) {
                 if (d_corr_window_filled >= 4096) {
-                    // Adaptive: median*10 over last 4096 samples
                     static float sorted_buf[4096];
                     memcpy(sorted_buf, d_corr_window, sizeof(sorted_buf));
                     std::sort(sorted_buf, sorted_buf + d_corr_window_filled);
-                    float median = sorted_buf[d_corr_window_filled / 2];
-                    d_adaptive_thresh = std::max(median * 10.0f, 0.01f);
+                    int p90_idx = d_corr_window_filled * 9 / 10;
+                    float p90 = sorted_buf[p90_idx];
+                    // Phase 98 (2026-07-05): floor adaptive_thresh at 0.05 because
+                    // Phase 89 T5c energy gate in sync_short_fused force-zeros all
+                    // noise samples (out2=0 for gated==1), making 90%+ of the
+                    // window zeros. Without a non-zero floor, p90=0 causes
+                    // effective_threshold to stick at 0.01, and every noise spike
+                    // fires "Frame detected!".
+                    //
+                    // Phase 99 (2026-07-05): floor raised to 0.2 because Phase 98
+                    // cable run showed residual noise spikes at 0.07-0.16 still
+                    // trigger "Frame detected!" at 0.05 floor. Real L-STF boxcar
+                    // values are ~1.4-2.3 (verified Phase 96-98 cable logs), so
+                    // 0.2 floor is below signal but above observed noise.
+                    d_adaptive_thresh = std::max(std::max(p90 * 1.5f, 0.01f), 0.2f);
                     effective_threshold = d_adaptive_thresh;
                     if (d_adaptive_dump) {
-                        fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] filled=%d median=%.6f "
+                        fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] filled=%d p90=%.6f "
                                 "adaptive_thresh=%.6f\n",
-                                d_corr_window_filled, median, d_adaptive_thresh);
+                                d_corr_window_filled, p90, d_adaptive_thresh);
                     }
                 } else {
                     // Phase 89 T5c: startup gate. Until window is fully populated,
