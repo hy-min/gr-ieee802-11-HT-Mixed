@@ -135,5 +135,5 @@ hierarchy applies:
 sync_short upstream (Phase 89 file-replay SUCCESS but cable FAILURE) CLOSED per
 user Option F. Phase 18 L-SIG-only FCS_OK=1 is final state. HARD CONSTRAINT
 NOT achieved. Code paths preserved for future continuation. Upstream attack
-plan: 30 dB attenuator → Schmidl-Cox → Park/Gezici → FFT-based L-STF → UHD
-stability fix.)*
+plan (30 dB attenuator EXCLUDED per user 2026-07-05): Schmidl-Cox →
+Park/Gezici → FFT-based L-STF → UHD stability fix → file-replay pipeline.)*

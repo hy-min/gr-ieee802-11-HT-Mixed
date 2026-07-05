@@ -33,5 +33,6 @@ Expected: HT-SIG viterbi metric 13-15 → 5-9 (recoverable below free-distance=1
 REFUTED territory (Phase 78c similar approach). Soft-LLR was REFUTED in
 Phase 77b at 5250 clean (n_nulls=0). Different from Phase 78c: this
 ONLY sets conf=0 for the 5 globally-null SCs, leaves the rest at full weight.
-If USRP fails: equalizer-layer confirmed CLOSED, redirect to Option E
-(30 dB attenuator) or stop.
+If USRP fails: equalizer-layer confirmed CLOSED, redirect to upstream
+sync_short re-architecture (Schmidl-Cox / Park-Gezici / FFT-based L-STF)
+or stop.
