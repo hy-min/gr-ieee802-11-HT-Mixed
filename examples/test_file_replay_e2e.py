@@ -63,8 +63,9 @@ class FcsLogger(gr.basic_block):
 
 
 class DiagLogger(gr.basic_block):
-    """Per-frame diagnostic logger. Writes (timestamp, sync_short_corr, sync_long_state,
-    avg_snr_lsig, avg_snr_htsig, ht_sig_cand_count) per detected frame."""
+    """Per-frame diagnostic logger. Writes (frame_idx, timestamp_s, msg_size, mac_crc)
+    per detected frame. msg_size is the PSDU byte count; mac_crc=1 means FCS_OK.
+    """
     def __init__(self, csv_path):
         gr.basic_block.__init__(self, name="diag_logger", in_sig=None, out_sig=None)
         self.message_port_register_in(pmt.intern("pdu"))
@@ -72,17 +73,16 @@ class DiagLogger(gr.basic_block):
         self.csv_path = csv_path
         self.frame_count = 0
         with open(csv_path, 'w') as f:
-            f.write("frame_idx,timestamp_s,msg_size,mac_crc,length\n")
+            f.write("frame_idx,timestamp_s,msg_size,mac_crc\n")
 
     def handle(self, msg):
         meta = pmt.car(msg)
         data = pmt.cdr(msg)
         self.frame_count += 1
         crc = pmt.to_long(pmt.dict_ref(meta, pmt.intern('crc'), pmt.from_long(0)))
-        length = pmt.to_long(pmt.dict_ref(meta, pmt.intern('length'), pmt.from_long(0)))
         size = len(pmt.u8vector_elements(data)) if pmt.is_u8vector(data) else 0
         with open(self.csv_path, 'a') as f:
-            f.write(f"{self.frame_count},{time.time():.3f},{size},{crc},{length}\n")
+            f.write(f"{self.frame_count},{time.time():.3f},{size},{crc}\n")
 
 
 class TxTop(gr.top_block):
