@@ -91,6 +91,18 @@ hierarchy applies:
   Recv=0, HT_SIG_CAND=16/16 crc_fail). C++ preserved for future use if
   upstream gates ever unblock. Equalizer layer is **CLOSED** — Phase 82
   must attack upstream per HARD CONSTRAINT.
+- **IEEE80211_FFT_WINDOW_DUMP=1** — Phase 108 diagnostic (opt-in, default OFF):
+  dumps abs_in_off, d_data_start_rel, sym_idx_at_h52, d_internal_symbol_counter
+  at the H52 compute site. Used to verify upstream FFT window alignment.
+  Confirmed upstream is sample-stable per-frame on USRP (all 8 frames have
+  identical d_data_start_rel=7). Verdict: 2026-07-06-phase108-fft-window-fix-verdict.md.
+- **IEEE80211_CONST_CPE_APPLY=1** — Phase 108 fix (opt-in, default OFF):
+  constant CPE rotation at L-SIG boundary to absorb a "static" phase offset.
+  **REFUTED on USRP** — per-SC phase_offset varies from -180° to +180° across
+  2733 measurements (linear std=81.6°, circular std=79.1° ≈ random); not a
+  constant 30° as Phase 107 hypothesized. Fix DOES reduce |eq|^2 max outlier
+  by ~100x (18827 → 175) but mean FCS_OK is unchanged (11 → 11 across 5 runs
+  each). Preserved as opt-in for debugging. Phase 108 verdict 2026-07-06.
 
 ## Reference
 
@@ -131,9 +143,11 @@ hierarchy applies:
 - **IEEE80211_SYNC_SHORT_FUSED_DUMP=1** — Phase 88 diagnostic: logs
   batch_power, noise_floor, max_cor, n>0.001, n>0.01 per call. Default OFF.
 
-*Last updated: 2026-07-05 (Phase 102 CLOSURE — equalizer-layer (28+ REFUTED) +
-sync_short upstream (Phase 89 file-replay SUCCESS but cable FAILURE) CLOSED per
-user Option F. Phase 18 L-SIG-only FCS_OK=1 is final state. HARD CONSTRAINT
-NOT achieved. Code paths preserved for future continuation. Upstream attack
-plan (30 dB attenuator EXCLUDED per user 2026-07-05): Schmidl-Cox →
-Park/Gezici → FFT-based L-STF → UHD stability fix → file-replay pipeline.)*
+*Last updated: 2026-07-06 (Phase 108 CLOSURE — FFT-window fix PARTIALLY REFUTED.
+IEEE80211_FFT_WINDOW_DUMP confirms upstream is sample-stable per-frame (not
+the misaligned block). IEEE80211_CONST_CPE_APPLY reduces |eq|^2 max outlier
+by 100x (18827→175) but Phase 107's "static 30° rotation" hypothesis is
+REFUTED — per-SC phase_offset is random across [-180°,+180°] across 2733
+measurements. Mean FCS_OK unchanged (11→11 across 5+5 runs). HARD CONSTRAINT
+NOT achieved. Phase 109+ plan: per-frame CFO/SFO estimator investigation +
+UHD streaming stability (Phase 55 revisit) + RF chain per-SC |H| check.)*
