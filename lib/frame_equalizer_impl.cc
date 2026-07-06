@@ -3677,6 +3677,25 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
+    // Phase 108: dump FFT window position at the H52 compute site (fires
+    // once per frame at d_sym_idx=kHtSig1Rel=4). Used to diagnose the
+    // upstream FFT window timing issue suspected to cause L-SIG viterbi
+    // decoding failures on USRP. Phase 107 found 30° constant phase rotation
+    // + 27-50% |H| CV on this dataset, and equalizer-layer fixes have been
+    // REFUTED 28+ times. We need to verify whether the FFT window is at the
+    // expected sample position relative to frame start, or whether there's
+    // drift in the upstream path (splitter, sync_long FRAME_START_BASE, UHD
+    // streaming). The helper script examples/dump_fft_windows.py parses
+    // these lines and reports drift via implied_lltf0_offset = abs_in_off
+    // - d_data_start_rel (constant = no drift, variable = upstream bug).
+    // Default OFF. Enable via IEEE80211_FFT_WINDOW_DUMP=1.
+    const char* env_fft_window_dump = std::getenv("IEEE80211_FFT_WINDOW_DUMP");
+    d_log_fft_window = (env_fft_window_dump && env_fft_window_dump[0] == '1');
+    if (d_log_fft_window) {
+        std::cout << "[FRAME_EQ] IEEE80211_FFT_WINDOW_DUMP=1 "
+                  << "(FFT window positions logged at H52 compute site)\n";
+    }
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
     // Bypasses Phase 38's 50× noise amplification at Hhdr52 channel nulls by
     // regularizing the denominator with a noise-floor estimate (25th percentile
@@ -6371,6 +6390,32 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                  std::abs(d_early_eqsym[kLltf0Rel][0]),
                                  std::abs(d_early_eqsym[kLltf0Rel][25]));
                         USRP_LOG("%s", buf);
+                    }
+
+                    // Phase 108: dump FFT window positions at H52 compute site.
+                    // Records (abs_in_off, d_data_start_rel, d_sym_idx,
+                    // d_internal_symbol_counter) at the moment the L-LTF0/L-LTF1
+                    // FFT vectors are read out of d_early_eqsym. Used to confirm
+                    // whether the L-LTF0/L-LTF1/L-SIG/HT-SIG FFT windows are at the
+                    // expected sample positions relative to frame start, or whether
+                    // there's drift in the upstream path. Flood-gated to the first
+                    // 8 H52 compute calls per run. env-var-gated via
+                    // IEEE80211_FFT_WINDOW_DUMP, default OFF.
+                    if (d_log_fft_window) {
+                        static int fft_window_call = 0;
+                        if (fft_window_call < 8) {
+                            char buf[256];
+                            snprintf(buf, sizeof(buf),
+                                     "[FFT_WINDOW] frame=%d sym_idx_at_h52=%d abs_in_off=%llu "
+                                     "d_data_start_rel=%d "
+                                     "d_internal_symbol_counter=%d\n",
+                                     fft_window_call, d_sym_idx,
+                                     (unsigned long long)abs_in_off,
+                                     d_data_start_rel,
+                                     d_internal_symbol_counter);
+                            USRP_LOG("%s", buf);
+                        }
+                        fft_window_call++;
                     }
 
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);

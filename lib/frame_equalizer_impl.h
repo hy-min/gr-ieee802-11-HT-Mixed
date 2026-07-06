@@ -101,6 +101,16 @@ private:
     // IEEE80211_H52_EQ_INPUT_DUMP=1.
     bool d_log_h52_input;
 
+    // Phase 108: FFT window position diagnostic. When true, dumps
+    // (abs_in_off, d_data_start_rel, d_sym_idx_at_h52, d_internal_symbol_counter)
+    // at the H52 compute site (once per frame at d_sym_idx=kHtSig1Rel=4,
+    // the moment L-LTF0/L-LTF1 FFT vectors are read from d_early_eqsym
+    // to feed estimate_header_channel_from_lltf52). Used to detect
+    // upstream drift in FFT window alignment (splitter, sync_long
+    // FRAME_START_BASE, UHD streaming). Default OFF. Enable via env var
+    // IEEE80211_FFT_WINDOW_DUMP=1.
+    bool d_log_fft_window;
+
     // HT-SIG diagnostic dumps (Phase 35): when true, dumps HT-SIG0/1
     // FFT bins and pilot phases for offline analysis. Two independent
     // env-vars targeting two layers of the HT-SIG chain:
