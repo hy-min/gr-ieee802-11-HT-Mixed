@@ -14,6 +14,8 @@ This isolates "is the algorithm chain correct?" from "does UHD streaming work?"
 which is the upstream blocker from Phase 87-102 chain.
 
 Pass criterion: FCS_OK >= 1 (any success means algorithm chain is correct).
+
+Run with --diag /tmp/p104_diag.csv to capture per-frame metrics.
 """
 import argparse
 import os
@@ -58,6 +60,29 @@ class FcsLogger(gr.basic_block):
         else:
             self.fail += 1
             print("[FCS_FAIL]", flush=True)
+
+
+class DiagLogger(gr.basic_block):
+    """Per-frame diagnostic logger. Writes (timestamp, sync_short_corr, sync_long_state,
+    avg_snr_lsig, avg_snr_htsig, ht_sig_cand_count) per detected frame."""
+    def __init__(self, csv_path):
+        gr.basic_block.__init__(self, name="diag_logger", in_sig=None, out_sig=None)
+        self.message_port_register_in(pmt.intern("pdu"))
+        self.set_msg_handler(pmt.intern("pdu"), self.handle)
+        self.csv_path = csv_path
+        self.frame_count = 0
+        with open(csv_path, 'w') as f:
+            f.write("frame_idx,timestamp_s,msg_size,mac_crc,length\n")
+
+    def handle(self, msg):
+        meta = pmt.car(msg)
+        data = pmt.cdr(msg)
+        self.frame_count += 1
+        crc = pmt.to_long(pmt.dict_ref(meta, pmt.intern('crc'), pmt.from_long(0)))
+        length = pmt.to_long(pmt.dict_ref(meta, pmt.intern('length'), pmt.from_long(0)))
+        size = len(pmt.u8vector_elements(data)) if pmt.is_u8vector(data) else 0
+        with open(self.csv_path, 'a') as f:
+            f.write(f"{self.frame_count},{time.time():.3f},{size},{crc},{length}\n")
 
 
 class TxTop(gr.top_block):
@@ -131,6 +156,9 @@ class RxTop(gr.top_block):
         self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
         self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
         self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.fcs, 'pdu'))
+        if args.diag:
+            self.diag = DiagLogger(args.diag)
+            self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.diag, 'pdu'))
 
 
 def phase1_generate(args):
@@ -175,6 +203,7 @@ def main():
     p.add_argument('--rx-duration', type=float, default=30.0, help='RX replay duration s')
     p.add_argument('--loop', type=int, default=1, help='Loop file in RX (>1 = repeat=True)')
     p.add_argument('--phase', choices=['tx', 'rx', 'both'], default='both')
+    p.add_argument('--diag', type=str, default='', help='Path to per-frame diagnostic CSV (appends per-frame metrics)')
     args = p.parse_args()
 
     print(f"[P103] Env: LSIG_RATE_FORCE={os.environ.get('IEEE80211_LSIG_RATE_FORCE')} "
