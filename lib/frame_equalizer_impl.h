@@ -153,6 +153,19 @@ private:
     // Enable via IEEE80211_LSIG_PILOT_CPE=1.
     bool d_apply_lsig_cpe;
 
+    // Phase 108: constant CPE at L-SIG boundary. When true, computes
+    // phi = arg(sum(eq_lsig[i])) over the 48 data SCs of the equalized
+    // L-SIG constellation (skipping the 4 pilot bins at {48..51}) and
+    // rotates all 52 bins of d_early_eqsym[kLSigRel] by exp(-j*phi).
+    // Absorbs the static 30° phase offset between L-LTF and L-SIG FFT
+    // windows (Phase 107 finding: 30° constant rotation, |H| CV 27-50%).
+    // Distinct from d_apply_lsig_cpe (Phase 77a) which uses only 4 pilots;
+    // this uses the full 48-SC ensemble average for a more stable phi.
+    // Applied BEFORE L-SIG viterbi decode (kLSigRel path in general_work)
+    // so the viterbi sees a phase-aligned constellation. Default OFF.
+    // Enable via env var IEEE80211_CONST_CPE_APPLY=1.
+    bool d_apply_const_cpe;
+
     // Phase 36: per-SC linear fit on HT-SIG pilots. Uses ht_expected_pilot
     // polarity-aware helper + linear regression on (sc_index, channel_phase)
     // to recover (a, b) coefficients. Replaces/supplements Phase 35 per-symbol

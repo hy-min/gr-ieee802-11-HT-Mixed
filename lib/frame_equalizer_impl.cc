@@ -3696,6 +3696,24 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                   << "(FFT window positions logged at H52 compute site)\n";
     }
 
+    // Phase 108: apply constant CPE at L-SIG boundary to absorb 30° rotation.
+    // Phase 107 found L-SIG eq output has 30° constant phase offset (arg
+    // clusters at ±30°). Phase 108 Task 3 confirmed upstream is sample-stable
+    // (no drift), so the offset is STATIC. A 1-tap CPE rotation at L-SIG
+    // equalizer output pulls the BPSK average onto the real axis.
+    // Computes phi = arg(sum(eq_lsig)) over the 48 data SCs (skipping the
+    // 4 pilot bins at {48..51} and any near-null H52 entries), then rotates
+    // all 52 bins of d_early_eqsym[kLSigRel] by exp(-j*phi). Distinct from
+    // IEEE80211_LSIG_PILOT_CPE (Phase 77a) which uses only 4 pilots — this
+    // uses the full data-SC ensemble. Default OFF preserves Phase 18/34
+    // baseline. Enable via IEEE80211_CONST_CPE_APPLY=1.
+    const char* env_const_cpe = std::getenv("IEEE80211_CONST_CPE_APPLY");
+    d_apply_const_cpe = (env_const_cpe && env_const_cpe[0] == '1');
+    if (d_apply_const_cpe) {
+        std::cout << "[FRAME_EQ] IEEE80211_CONST_CPE_APPLY=1 "
+                  << "(constant CPE at L-SIG boundary ENABLED)\n";
+    }
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
     // Bypasses Phase 38's 50× noise amplification at Hhdr52 channel nulls by
     // regularizing the denominator with a noise-floor estimate (25th percentile
@@ -5885,6 +5903,53 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     snprintf(lpcbuf, sizeof(lpcbuf),
                              "[LSIG_PILOT_CPE] phi=%.4f rad n_valid=%d\n", phi, n_valid);
                     USRP_LOG("%s", lpcbuf);
+                }
+            }
+
+            // Phase 108 Task 4: constant CPE at L-SIG boundary.
+            // Phase 107 found L-SIG eq output has 30° constant phase rotation
+            // + 27-50% |H| CV. Phase 108 Task 3 confirmed upstream is
+            // sample-stable (no drift), so the rotation is STATIC. Compute
+            // phi = arg(sum(eq_lsig)) over the 48 data SCs (averaging the
+            // full ensemble instead of just 4 pilots) and rotate all 52
+            // bins of d_early_eqsym[kLSigRel] by exp(-j*phi). Applied AFTER
+            // the Phase 77a pilot CPE (different estimator, can be combined
+            // or used standalone) and BEFORE the L-SIG viterbi decode so the
+            // viterbi sees a phase-aligned constellation. env-var-gated via
+            // IEEE80211_CONST_CPE_APPLY, default OFF.
+            if (d_apply_const_cpe && d_early_eqsym_valid[kLSigRel] &&
+                d_early_eqsym_valid[kLltf0Rel]) {
+                // Compute equalized L-SIG on-the-fly (don't disturb the
+                // existing eq_lsig[52] used in the frame-detect scope
+                // above). We need H52 to do the equalization; the L-LTF0
+                // (counter=0) is the channel reference.
+                gr_complex sum_eq(0.0f, 0.0f);
+                int n_valid = 0;
+                for (int i = 0; i < 48; i++) {  // data SCs only (skip 4 pilots)
+                    const gr_complex& H = d_early_eqsym[kLltf0Rel][i];
+                    if (std::abs(H) > 1e-3f) {
+                        gr_complex eq_i = d_early_eqsym[kLSigRel][i] / H;
+                        sum_eq += eq_i;
+                        n_valid++;
+                    }
+                }
+                if (n_valid >= 16) {  // need majority of data SCs valid
+                    float phi = std::arg(sum_eq);
+                    gr_complex rot = std::exp(gr_complex(0.0f, -phi));
+                    for (int i = 0; i < 52; i++) {
+                        d_early_eqsym[kLSigRel][i] *= rot;
+                    }
+                    // Atomic dump (snprintf + USRP_LOG per e90e3f5 lesson).
+                    char ccpebuf[256];
+                    snprintf(ccpebuf, sizeof(ccpebuf),
+                             "[CONST_CPE] L-SIG phase_offset=%.3f rad (%.1f deg) "
+                             "avg_eq_mag=%.3f n_valid=%d\n",
+                             phi, phi * 180.0f / 3.14159f,
+                             std::abs(sum_eq) / (float)n_valid, n_valid);
+                    USRP_LOG("%s", ccpebuf);
+                } else {
+                    // Skip if too many nulls; don't apply a meaningless rotation.
+                    USRP_LOG("[CONST_CPE] L-SIG skipped: n_valid=%d < 16\n", n_valid);
                 }
             }
 
