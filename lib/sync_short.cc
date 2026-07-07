@@ -167,7 +167,10 @@ public:
                     } else {
                         d_state = COPY;
                         d_copied = 0;
-                        d_freq_offset = arg(in_abs[i2]) / 16;
+                        // Phase 110: Set freq_offset to 0 (was arg(in_abs[i2]) / 16).
+                        // The ma_cc-based estimate is unreliable for CFO (random in [-π/16, π/16]
+                        // range). frame_equalizer handles its own CFO/SFO via L-LTF.
+                        d_freq_offset = 0;
                         d_plateau = 0;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i2);
                         dout << "SHORT Frame!" << std::endl;
