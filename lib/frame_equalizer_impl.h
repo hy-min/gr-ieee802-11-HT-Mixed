@@ -354,6 +354,46 @@ private:
     // Populated from IEEE80211_HTSIG_NULL_SCS env var (CSV of indices 0..51).
     uint8_t d_htsig_null_sc_mask[52];
 
+    // Phase 111: Kalman H52 tracker (per-frame symbol-by-symbol H refinement).
+    // Hypothesis: Phase 107 found per-SC argH std=108° (random walk, not static)
+    // and per-SC |H| CV=27-50%. Static equalizer H from L-LTF0+L-LTF1 cannot
+    // track per-symbol drift in H[k] over the 19+ DATA symbols.
+    //
+    // Approach: maintain d_h_kalman[64] in FFT bin order (matching equalizer's
+    // d_H[64]). Initialize from L-LTF0+L-LTF1 H52 estimate (in 64-bin order).
+    // After each DATA symbol equalization, extract 4 pilot measurements
+    // (rx_pilot[bin_i] / expected_polarity[i]) and run per-pilot Kalman update:
+    //   K = P / (P + R)
+    //   H_kalman[bin] = H_kalman[bin] + K * (H_meas - H_kalman[bin])
+    //   P[bin] = (1 - K) * P[bin] + Q      (random walk prediction)
+    // Then interpolate 4 pilot-bin updates to all 52 active bins (same scheme
+    // as Phase 39 estimate_H_from_htsig_pilots piecewise linear) and inject via
+    // d_equalizer->set_H(d_h_kalman) before the next symbol's equalize() call.
+    //
+    // Tunable: IEEE80211_H52_KALMAN_Q (process noise, default 0.01),
+    // IEEE80211_H52_KALMAN_R (measurement noise, default 0.1).
+    // Default OFF preserves Phase 18/34/35 baseline.
+    // Enable via IEEE80211_H52_KALMAN_TRACK=1.
+    bool  d_h52_kalman_track       = false;
+    gr_complex d_h_kalman[64]      = {};
+    float d_p_kalman[64]           = {};
+    float d_kalman_q               = 0.01f;
+    float d_kalman_r               = 0.1f;
+    int   d_kalman_initialized     = 0;
+
+    // Phase 111 T3: T3b = multi-symbol H averaging + δ correction.
+    // δ estimation noise from 4 pilots (~0.06-0.08 sample units) drives
+    // H drift in plain δ-correction (v3 REFUTED). Averaging over K
+    // symbols reduces δ_est noise by sqrt(K), enabling lower threshold.
+    // Enable: IEEE80211_H52_KALMAN_TRACK=1 + IEEE80211_H52_KALMAN_DELTA_CORRECT=1
+    // + IEEE80211_H52_KALMAN_AVG=1. K via IEEE80211_H52_KALMAN_AVG_K (default 5).
+    // Default OFF preserves v6 (threshold 10.0 no-op) behavior.
+    bool  d_h52_kalman_dc          = false;  // per-symbol δ correction
+    bool  d_h52_kalman_avg         = false;  // multi-symbol H averaging
+    int   d_kalman_avg_k           = 5;
+    gr_complex d_h_accum[4]        = {};
+    int   d_kalman_avg_count       = 0;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase

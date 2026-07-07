@@ -1507,6 +1507,161 @@ static bool viterbi_decode_133_171_soft(const float* rx_soft,
     return true;
 }
 
+// =====================================================================
+// Phase 111 T6a: List Viterbi (M-algorithm) — keep top-K paths per state
+// instead of only the best. This gives multiple decode candidates that
+// can be tried against CRC (8-bit), increasing chances of finding the
+// correct codeword even when raw BER is high (>4%).
+//
+// Per Phase 107: per-SC argH std = 108° produces 12-18 errors/96 bits.
+// Standard viterbi d_free=10 → max 4 correctable errors → fails.
+// CRC-8 has 1/256 false-positive rate; with K=64 paths × N candidates,
+// we explore the most likely paths through the trellis and check CRC.
+//
+// Algorithm: M-algorithm list Viterbi.
+//   At each step, for each state keep only the top `max_paths` incoming
+//   paths (pruned via nth_element).
+//   At the end, collect top `max_paths` paths across all 64 states.
+// =====================================================================
+struct list_viterbi_entry {
+    int metric;
+    int prev_state;
+    int prev_rank;
+    uint8_t bit;
+};
+
+static bool viterbi_decode_133_171_soft_list(const float* rx_soft,
+                                              int n_encoded_bits,
+                                              int max_paths,
+                                              std::vector<std::vector<uint8_t>>& decoded_paths_out,
+                                              std::vector<int>* out_metrics_q8 = nullptr)
+{
+    decoded_paths_out.clear();
+    if (out_metrics_q8) out_metrics_q8->clear();
+    if (n_encoded_bits <= 0 || (n_encoded_bits & 0x1)) {
+        return false;
+    }
+    if (max_paths < 1) max_paths = 1;
+    if (max_paths > 64) max_paths = 64;
+
+    const int n_steps = n_encoded_bits / 2;
+    const int INF = std::numeric_limits<int>::max() / 4;
+
+    // path_data[t][s][k] = k-th best path ending at state s after t steps
+    std::vector<std::array<std::vector<list_viterbi_entry>, 64>> path_data(n_steps + 1);
+    for (int t = 0; t <= n_steps; t++) {
+        for (int s = 0; s < 64; s++) {
+            path_data[t][s].clear();
+            path_data[t][s].reserve(max_paths);
+            for (int k = 0; k < max_paths; k++) {
+                list_viterbi_entry e;
+                e.metric = INF;
+                e.prev_state = -1;
+                e.prev_rank = -1;
+                e.bit = 0;
+                path_data[t][s].push_back(e);
+            }
+        }
+    }
+    path_data[0][0][0].metric = 0;
+
+    for (int t = 0; t < n_steps; t++) {
+        const int r0_q = (int)std::lroundf(rx_soft[2 * t] * 256.0f);
+        const int r1_q = (int)std::lroundf(rx_soft[2 * t + 1] * 256.0f);
+
+        std::array<std::vector<list_viterbi_entry>, 64> new_paths;
+        for (int s = 0; s < 64; s++) {
+            new_paths[s].reserve(max_paths * 2);
+        }
+
+        for (int s = 0; s < 64; s++) {
+            const auto& prev_paths = path_data[t][s];
+            for (int k = 0; k < max_paths; k++) {
+                if (prev_paths[k].metric >= INF) continue;
+                const int mp = prev_paths[k].metric;
+                for (int b = 0; b <= 1; b++) {
+                    const int reg = ((s << 1) | b) & 0x7f;
+                    const uint8_t o0 = ones8_local(reg & 0133) & 0x1;
+                    const uint8_t o1 = ones8_local(reg & 0171) & 0x1;
+                    const int ns = reg & 0x3f;
+                    const int ref0 = o0 ? 256 : -256;
+                    const int ref1 = o1 ? 256 : -256;
+                    const int err0 = r0_q - ref0;
+                    const int err1 = r1_q - ref1;
+                    const int bm = ((err0 * err0) >> 8) + ((err1 * err1) >> 8);
+                    const int mc = mp + bm;
+
+                    list_viterbi_entry e;
+                    e.metric = mc;
+                    e.prev_state = s;
+                    e.prev_rank = k;
+                    e.bit = b;
+                    new_paths[ns].push_back(e);
+                }
+            }
+        }
+
+        for (int s = 0; s < 64; s++) {
+            auto& v = new_paths[s];
+            if ((int)v.size() > max_paths) {
+                std::nth_element(v.begin(), v.begin() + max_paths, v.end(),
+                    [](const list_viterbi_entry& a, const list_viterbi_entry& b) {
+                        return a.metric < b.metric;
+                    });
+                v.resize(max_paths);
+            }
+            std::sort(v.begin(), v.end(),
+                [](const list_viterbi_entry& a, const list_viterbi_entry& b) {
+                    return a.metric < b.metric;
+                });
+            for (int k = 0; k < max_paths; k++) {
+                if (k < (int)v.size()) {
+                    path_data[t + 1][s][k] = v[k];
+                } else {
+                    path_data[t + 1][s][k].metric = INF;
+                    path_data[t + 1][s][k].prev_state = -1;
+                    path_data[t + 1][s][k].prev_rank = -1;
+                    path_data[t + 1][s][k].bit = 0;
+                }
+            }
+        }
+    }
+
+    // Collect all paths at final step, sort by metric, take top max_paths
+    std::vector<std::tuple<int, int, int>> all_paths;
+    all_paths.reserve(64 * max_paths);
+    for (int s = 0; s < 64; s++) {
+        for (int k = 0; k < max_paths; k++) {
+            const int m = path_data[n_steps][s][k].metric;
+            if (m < INF) {
+                all_paths.push_back(std::make_tuple(m, s, k));
+            }
+        }
+    }
+    std::sort(all_paths.begin(), all_paths.end());
+    int n_return = std::min((int)all_paths.size(), max_paths);
+
+    for (int i = 0; i < n_return; i++) {
+        const int final_metric = std::get<0>(all_paths[i]);
+        int state_idx = std::get<1>(all_paths[i]);
+        int rank_idx = std::get<2>(all_paths[i]);
+        if (out_metrics_q8) out_metrics_q8->push_back(final_metric);
+
+        std::vector<uint8_t> decoded(n_steps, 0);
+        for (int t = n_steps; t >= 1; t--) {
+            const list_viterbi_entry& e = path_data[t][state_idx][rank_idx];
+            decoded[t - 1] = e.bit;
+            int new_state = e.prev_state;
+            int new_rank = e.prev_rank;
+            state_idx = new_state;
+            rank_idx = new_rank;
+        }
+        decoded_paths_out.push_back(std::move(decoded));
+    }
+
+    return !decoded_paths_out.empty();
+}
+
 // Phase 44: Convert per-SC QBPSK equalized symbol + H magnitude into a
 // 48-element LLR array. LLR[i] = sign(eq.imag()) * |H[i]| / max(|H|).
 // The sign carries the bit decision; the magnitude carries confidence.
@@ -1579,6 +1734,64 @@ static uint8_t ht_sig_crc8_calc(const uint8_t* bits0_33)
         crc |= (uint8_t)(bit << j);
     }
     return crc;
+}
+
+// Phase 111 T6a D2: Helper that wraps list viterbi + CRC check for HT-SIG.
+// Takes 96 hard encoded bits, runs list viterbi to get top-K paths, and
+// returns the first path whose HT-SIG CRC-8 matches AND whose tail bits
+// are zero. Returns empty vector if no path passes.
+//
+// Converts hard bits to soft LLR (±1) before passing to list viterbi. With
+// hard bits the list viterbi still explores multiple paths, but every
+// branch metric is similar — so the path ranking reflects only the
+// convolutional code structure. This is a simpler baseline; can be
+// extended later to use real |H|-weighted LLR from compute_soft_llr_qbpsk.
+static bool try_htsig_list_viterbi(const uint8_t* enc96_hard,
+                                    int max_paths,
+                                    std::vector<uint8_t>& best_dec48_out,
+                                    int* out_best_metric_q8 = nullptr)
+{
+    best_dec48_out.clear();
+    if (out_best_metric_q8) *out_best_metric_q8 = -1;
+    if (max_paths < 1) max_paths = 1;
+    if (max_paths > 64) max_paths = 64;
+
+    float rx_soft[96];
+    for (int i = 0; i < 96; i++) {
+        rx_soft[i] = (enc96_hard[i] & 1) ? 1.0f : -1.0f;
+    }
+
+    std::vector<std::vector<uint8_t>> paths;
+    std::vector<int> metrics;
+    if (!viterbi_decode_133_171_soft_list(rx_soft, 96, max_paths, paths, &metrics)) {
+        return false;
+    }
+
+    for (size_t p = 0; p < paths.size(); p++) {
+        if (paths[p].size() != 48) continue;
+        const uint8_t* bits = paths[p].data();
+
+        // Tail bits must be zero
+        bool tail_ok = true;
+        for (int i = 42; i < 48; i++) {
+            if (bits[i] != 0) { tail_ok = false; break; }
+        }
+        if (!tail_ok) continue;
+
+        // CRC-8 check (HT-SIG uses bits[34:41] as received CRC)
+        uint8_t crc_rx = 0;
+        for (int i = 0; i < 8; i++) {
+            crc_rx |= ((bits[34 + i] & 1) << i);
+        }
+        const uint8_t crc_calc = ht_sig_crc8_calc(bits);
+        if (crc_rx != crc_calc) continue;
+
+        // Found a CRC-passing path
+        best_dec48_out.assign(bits, bits + 48);
+        if (out_best_metric_q8) *out_best_metric_q8 = metrics[p];
+        return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -1771,14 +1984,70 @@ static bool decode_htsig_candidate(const uint8_t* raw_bits52_a,
             snprintf(ht_audit + n, sizeof(ht_audit) - n, "\n");
             USRP_LOG("%s", ht_audit);
         }
+        // Phase 111 T6a: list viterbi fallback. If standard viterbi fails,
+        // try top-K paths and check CRC. Opt-in via
+        // IEEE80211_HTSIG_LIST_VITERBI=1 (or =K to set path count).
+        if (getenv("IEEE80211_HTSIG_LIST_VITERBI")) {
+            int K = 64;
+            const char* env_k = getenv("IEEE80211_HTSIG_LIST_VITERBI");
+            if (env_k[0] >= '0' && env_k[0] <= '9') {
+                int v = atoi(env_k);
+                if (v >= 1 && v <= 64) K = v;
+            }
+            int list_metric = -1;
+            std::vector<uint8_t> list_dec48;
+            if (try_htsig_list_viterbi(enc96, K, list_dec48, &list_metric)) {
+                USRP_LOG("[HTSIG_LIST_VITERBI] hit (candidate) inv_a=%d inv_b=%d K=%d metric=%d\n",
+                         inverted_a ? 1 : 0, inverted_b ? 1 : 0, K, list_metric);
+                dec48 = std::move(list_dec48);
+                vit_metric = list_metric;
+                goto htsig_list_viterbi_continue_cand;
+            }
+        }
         if (out_vit_metric) *out_vit_metric = vit_metric;
         if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
     }
+htsig_list_viterbi_continue_cand:
     if (out_vit_metric) *out_vit_metric = vit_metric;
     if ((int)dec48.size() != 48) {
         if (out_fail_reason) *out_fail_reason = "dec48_size";
         return false;
+    }
+
+    // Phase 111 T6a D3: If standard viterbi returned a path that fails
+    // structural validation (CRC, tail, bw40, etc.), try list viterbi to
+    // find an alternate path that may pass. Runs ONCE before the checks.
+    if (getenv("IEEE80211_HTSIG_LIST_VITERBI")) {
+        int K = 64;
+        const char* env_k = getenv("IEEE80211_HTSIG_LIST_VITERBI");
+        if (env_k[0] >= '0' && env_k[0] <= '9') {
+            int v = atoi(env_k);
+            if (v >= 1 && v <= 64) K = v;
+        }
+        int list_metric = -1;
+        std::vector<uint8_t> list_dec48;
+        if (try_htsig_list_viterbi(enc96, K, list_dec48, &list_metric)) {
+            // Only overwrite if list viterbi's path is BETTER (different CRC pass)
+            // than standard. Standard's path may have already passed CRC.
+            // Check if standard path's CRC was OK; if not, replace.
+            uint8_t std_crc_rx = 0;
+            for (int i = 0; i < 8; i++) std_crc_rx |= ((dec48[34 + i] & 1) << i);
+            const uint8_t std_crc_calc = ht_sig_crc8_calc(dec48.data());
+            if (std_crc_rx != std_crc_calc) {
+                USRP_LOG("[HTSIG_LIST_VITERBI] replace (candidate) inv_a=%d inv_b=%d K=%d metric=%d\n",
+                         inverted_a ? 1 : 0, inverted_b ? 1 : 0, K, list_metric);
+                dec48 = std::move(list_dec48);
+                vit_metric = list_metric;
+                if (out_vit_metric) *out_vit_metric = vit_metric;
+            } else {
+                USRP_LOG("[HTSIG_LIST_VITERBI] no-better (candidate) inv_a=%d inv_b=%d K=%d std_crc=ok\n",
+                         inverted_a ? 1 : 0, inverted_b ? 1 : 0, K);
+            }
+        } else {
+            USRP_LOG("[HTSIG_LIST_VITERBI] no-hit (candidate) inv_a=%d inv_b=%d K=%d\n",
+                     inverted_a ? 1 : 0, inverted_b ? 1 : 0, K);
+        }
     }
 
     const uint8_t* decoded_bits = dec48.data();
@@ -2588,14 +2857,67 @@ static bool decode_htsig_direct_from_header52(const gr_complex* rx52_a,
             snprintf(ht_audit + n, sizeof(ht_audit) - n, "\n");
             USRP_LOG("%s", ht_audit);
         }
+        // Phase 111 T6a: list viterbi fallback. If standard viterbi fails,
+        // try top-K paths and check CRC. Opt-in via
+        // IEEE80211_HTSIG_LIST_VITERBI=1 (or =K to set path count).
+        if (getenv("IEEE80211_HTSIG_LIST_VITERBI")) {
+            int K = 64;
+            const char* env_k = getenv("IEEE80211_HTSIG_LIST_VITERBI");
+            if (env_k[0] >= '0' && env_k[0] <= '9') {
+                int v = atoi(env_k);
+                if (v >= 1 && v <= 64) K = v;
+            }
+            int list_metric = -1;
+            std::vector<uint8_t> list_dec48;
+            if (try_htsig_list_viterbi(enc96, K, list_dec48, &list_metric)) {
+                USRP_LOG("[HTSIG_LIST_VITERBI] hit inv_a=%d inv_b=%d K=%d metric=%d\n",
+                         invert_a ? 1 : 0, invert_b ? 1 : 0, K, list_metric);
+                dec48 = std::move(list_dec48);
+                vit_metric = list_metric;
+                // Skip the viterbi_fail return — fall through to CRC/struct check.
+                goto htsig_list_viterbi_continue;
+            }
+        }
         if (out_vit_metric) *out_vit_metric = vit_metric;
         if (out_fail_reason) *out_fail_reason = "viterbi_fail";
         return false;
     }
+htsig_list_viterbi_continue:
     if (out_vit_metric) *out_vit_metric = vit_metric;
     if ((int)dec48.size() != 48) {
         if (out_fail_reason) *out_fail_reason = "dec48_size";
         return false;
+    }
+
+    // Phase 111 T6a D3: Try list viterbi if standard viterbi's path fails
+    // structural validation (CRC, tail, bw40, etc.).
+    if (getenv("IEEE80211_HTSIG_LIST_VITERBI")) {
+        int K = 64;
+        const char* env_k = getenv("IEEE80211_HTSIG_LIST_VITERBI");
+        if (env_k[0] >= '0' && env_k[0] <= '9') {
+            int v = atoi(env_k);
+            if (v >= 1 && v <= 64) K = v;
+        }
+        int list_metric = -1;
+        std::vector<uint8_t> list_dec48;
+        if (try_htsig_list_viterbi(enc96, K, list_dec48, &list_metric)) {
+            uint8_t std_crc_rx = 0;
+            for (int i = 0; i < 8; i++) std_crc_rx |= ((dec48[34 + i] & 1) << i);
+            const uint8_t std_crc_calc = ht_sig_crc8_calc(dec48.data());
+            if (std_crc_rx != std_crc_calc) {
+                USRP_LOG("[HTSIG_LIST_VITERBI] replace (direct) inv_a=%d inv_b=%d K=%d metric=%d\n",
+                         invert_a ? 1 : 0, invert_b ? 1 : 0, K, list_metric);
+                dec48 = std::move(list_dec48);
+                vit_metric = list_metric;
+                if (out_vit_metric) *out_vit_metric = vit_metric;
+            } else {
+                USRP_LOG("[HTSIG_LIST_VITERBI] no-better (direct) inv_a=%d inv_b=%d K=%d std_crc=ok\n",
+                         invert_a ? 1 : 0, invert_b ? 1 : 0, K);
+            }
+        } else {
+            USRP_LOG("[HTSIG_LIST_VITERBI] no-hit (direct) inv_a=%d inv_b=%d K=%d\n",
+                     invert_a ? 1 : 0, invert_b ? 1 : 0, K);
+        }
     }
 
     const uint8_t* decoded_bits = dec48.data();
@@ -3076,6 +3398,37 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     if ((int)dec48.size() != 48) {
         if (out_fail_reason) *out_fail_reason = "dec48_size";
         return false;
+    }
+
+    // Phase 111 T6a D3: Try list viterbi if standard viterbi's path fails
+    // structural validation (CRC, tail, bw40, etc.).
+    if (getenv("IEEE80211_HTSIG_LIST_VITERBI")) {
+        int K = 64;
+        const char* env_k = getenv("IEEE80211_HTSIG_LIST_VITERBI");
+        if (env_k[0] >= '0' && env_k[0] <= '9') {
+            int v = atoi(env_k);
+            if (v >= 1 && v <= 64) K = v;
+        }
+        int list_metric = -1;
+        std::vector<uint8_t> list_dec48;
+        if (try_htsig_list_viterbi(enc96, K, list_dec48, &list_metric)) {
+            uint8_t std_crc_rx = 0;
+            for (int i = 0; i < 8; i++) std_crc_rx |= ((dec48[34 + i] & 1) << i);
+            const uint8_t std_crc_calc = ht_sig_crc8_calc(dec48.data());
+            if (std_crc_rx != std_crc_calc) {
+                USRP_LOG("[HTSIG_LIST_VITERBI] replace (rotated) rot=%d inv_a=%d inv_b=%d K=%d metric=%d\n",
+                         rot, invert_a ? 1 : 0, invert_b ? 1 : 0, K, list_metric);
+                dec48 = std::move(list_dec48);
+                vit_metric = list_metric;
+                if (out_vit_metric) *out_vit_metric = vit_metric;
+            } else {
+                USRP_LOG("[HTSIG_LIST_VITERBI] no-better (rotated) rot=%d inv_a=%d inv_b=%d K=%d std_crc=ok\n",
+                         rot, invert_a ? 1 : 0, invert_b ? 1 : 0, K);
+            }
+        } else {
+            USRP_LOG("[HTSIG_LIST_VITERBI] no-hit (rotated) rot=%d inv_a=%d inv_b=%d K=%d\n",
+                     rot, invert_a ? 1 : 0, invert_b ? 1 : 0, K);
+        }
     }
 
     const uint8_t* decoded_bits = dec48.data();
@@ -3714,6 +4067,51 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                   << "(constant CPE at L-SIG boundary ENABLED)\n";
     }
 
+    // Phase 111: Kalman H52 tracker. Per-frame symbol-by-symbol H refinement
+    // using the 4 pilot SCs as measurements. Addresses Phase 107's per-SC
+    // argH std=108° (random walk) and |H| CV=27-50% findings that static
+    // L-LTF-based H cannot track. State = H[64] (FFT bin order), process =
+    // random walk (Q), measurement = pilots via kHtPilotPolarity127 polarity.
+    // Tunable: Q (process noise, default 0.01), R (meas noise, default 0.1).
+    // Default OFF preserves Phase 18/34/35 baseline.
+    // Enable via IEEE80211_H52_KALMAN_TRACK=1.
+    const char* env_kalman = std::getenv("IEEE80211_H52_KALMAN_TRACK");
+    d_h52_kalman_track = (env_kalman && env_kalman[0] == '1');
+    if (d_h52_kalman_track) {
+        // Tunable Q/R via env (default 0.01 / 0.1 per Phase 111 T1 sweep).
+        const char* env_q = std::getenv("IEEE80211_H52_KALMAN_Q");
+        if (env_q && env_q[0] != '\0') {
+            float q = std::atof(env_q);
+            if (q > 0.0f && q < 10.0f) d_kalman_q = q;
+        }
+        const char* env_r = std::getenv("IEEE80211_H52_KALMAN_R");
+        if (env_r && env_r[0] != '\0') {
+            float r = std::atof(env_r);
+            if (r > 0.0f && r < 10.0f) d_kalman_r = r;
+        }
+        std::cout << "[FRAME_EQ] IEEE80211_H52_KALMAN_TRACK=1 (Kalman H52 tracking ENABLED, Q="
+                  << d_kalman_q << " R=" << d_kalman_r << ")\n";
+
+        // Phase 111 T3: per-symbol δ correction + multi-symbol H averaging.
+        // δ_est noise from 4 pilots drives H drift (v3 REFUTED). Averaging over
+        // K symbols reduces δ_est noise by sqrt(K), enabling lower threshold.
+        const char* env_dc = std::getenv("IEEE80211_H52_KALMAN_DELTA_CORRECT");
+        d_h52_kalman_dc = (env_dc && env_dc[0] == '1');
+        const char* env_avg = std::getenv("IEEE80211_H52_KALMAN_AVG");
+        d_h52_kalman_avg = (env_avg && env_avg[0] == '1');
+        if (d_h52_kalman_avg) {
+            const char* env_k = std::getenv("IEEE80211_H52_KALMAN_AVG_K");
+            if (env_k && env_k[0] != '\0') {
+                int k = std::atoi(env_k);
+                if (k >= 2 && k <= 50) d_kalman_avg_k = k;
+            }
+        }
+        if (d_h52_kalman_dc || d_h52_kalman_avg) {
+            std::cout << "[FRAME_EQ] IEEE80211_H52_KALMAN_T3=1 (DC=" << d_h52_kalman_dc
+                      << " AVG=" << d_h52_kalman_avg << " K=" << d_kalman_avg_k << ")\n";
+        }
+    }
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
     // Bypasses Phase 38's 50× noise amplification at Hhdr52 channel nulls by
     // regularizing the denominator with a noise-floor estimate (25th percentile
@@ -4070,6 +4468,12 @@ void frame_equalizer_impl::reset_frame_state(void)
     std::memset(saved_ltf0_fft, 0, sizeof(saved_ltf0_fft));
     std::memset(saved_htltf_edge, 0, sizeof(saved_htltf_edge));
     d_equalizer->reset();
+
+    // Phase 111: reset Kalman state per frame. New L-LTF H52 will reinitialize.
+    d_kalman_initialized = 0;
+    // Phase 111 T3: reset multi-symbol H averaging accumulator per frame.
+    for (int p = 0; p < 4; p++) d_h_accum[p] = gr_complex(0.0f, 0.0f);
+    d_kalman_avg_count = 0;
 }
 
 bool frame_equalizer_impl::parse_signal(const uint8_t* decoded_bits,
@@ -4781,6 +5185,35 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 if (d_mmse_equalize) {
                     std::memcpy(d_h52_stash, H52, sizeof(H52));
                     d_h52_stash_valid = true;
+                }
+
+                // Phase 111: initialize Kalman H52 tracker from the just-computed
+                // L-LTF0+L-LTF1 H52 estimate. H52 is in 52-bin tx_order
+                // (kScIndex52 layout: 48 data + 4 pilots). Map to 64-bin FFT bin
+                // order (matching equalizer's d_H[64] layout) and seed uncertainty
+                // LOW (high trust on the L-LTF estimate) to avoid corrupting
+                // clean-static channels (synthetic, no drift). K = P/(P+R) starts
+                // at ~0.01 so updates apply minimal correction when H is stable.
+                // If channel drifts, P grows (Q process noise) and K rises, so
+                // tracker gradually catches up.
+                if (d_h52_kalman_track && !d_kalman_initialized) {
+                    // Zero the 64-bin state first (guard bins, DC stay at 0).
+                    for (int b = 0; b < 64; b++) {
+                        d_h_kalman[b] = gr_complex(0.0f, 0.0f);
+                        d_p_kalman[b] = 1e-4f;  // low initial uncertainty (high trust)
+                    }
+                    // Map 52-bin H52 -> 64-bin FFT bin order.
+                    for (int i = 0; i < 52; i++) {
+                        const int sc = kScIndex52[i];
+                        const int bin = sc_to_fft_bin(sc);
+                        d_h_kalman[bin] = H52[i];
+                        d_p_kalman[bin] = 1e-4f;  // trust the L-LTF init
+                    }
+                    d_kalman_initialized = 1;
+                    USRP_LOG("[KALMAN_INIT] Q=%.4f R=%.4f H[SC-21]=(%.3f%+.3fi) H[SC+21]=(%.3f%+.3fi)\n",
+                             d_kalman_q, d_kalman_r,
+                             d_h_kalman[43].real(), d_h_kalman[43].imag(),
+                             d_h_kalman[21].real(), d_h_kalman[21].imag());
                 }
 
                 USRP_LOG("[H_DIAG] lltf0[0]=(%.3f%+.3fi) lltf0[25]=(%.3f%+.3fi) "
@@ -6579,6 +7012,214 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             produced += 52;
+
+            // Phase 111: Kalman H52 tracker update per DATA symbol.
+            // SYSTEMATIC DEBUGGING OUTCOME (2026-07-07):
+            //   v1-v5 attempted: threshold tuning (0.5 → 10.0), various gates,
+            //   and per-symbol δ estimation + correction. ALL FAILED to
+            //   improve over plain threshold-10.0 baseline.
+            //
+            //   ROOT CAUSE: with only 4 pilots, per-symbol δ_est noise is
+            //   ~0.15-0.28 sample units. After correction, residual H
+            //   innovation is ~2-7 units (worse than uncorrected 4-5). The
+            //   Kalman tracker then "chases" this noise, drifting H away
+            //   from L-LTF truth and corrupting equalization.
+            //
+            //   ARCHITECTURAL CONCLUSION: 4-pilot Kalman H52 tracking is
+            //   not viable for clean static channels. Future architectures
+            //   to explore: (a) decision-directed tracking using decoded
+            //   data symbols, (b) multi-symbol H averaging, (c) using
+            //   HT-LTF pilots in addition to data pilots.
+            //
+            //   CURRENT IMPLEMENTATION: threshold 10.0 gates out all
+            //   δ-drift-driven updates; only true channel changes (>10)
+            //   trigger updates. This is the proven-working v2 behavior.
+            //   δ_est is computed (linear regression on 4 pilots) and
+            //   logged for diagnostic purposes, but NOT applied to H_meas.
+            //
+            // Steps:
+            //   1. Compute H_meas[4] = sym64[kPilot4Bin] / expected_polarity
+            //   2. Compute δ_est (linear regression, logged only)
+            //   3. Kalman update on RAW H_meas with threshold 10.0
+            //   4. Interp 4 pilots → 52 SCs, override H when significant
+            // Default OFF preserves Phase 18/34/35 baseline.
+            if (d_h52_kalman_track && d_kalman_initialized) {
+                static const int kPilotSc[4] = {-21, -7, 7, 21};
+                gr_complex H_meas[4];
+                bool pilot_valid[4] = {true, true, true, true};
+                for (int p = 0; p < 4; p++) {
+                    const int bin = kPilot4Bin[p];
+                    gr_complex rx_pilot = sym64[bin];
+                    if (std::abs(rx_pilot) < 1e-3f) {
+                        pilot_valid[p] = false;
+                        continue;
+                    }
+                    gr_complex expected = ht_expected_pilot(data_sym_idx, p);
+                    if (std::abs(expected) < 1e-6f) {
+                        pilot_valid[p] = false;
+                        continue;
+                    }
+                    H_meas[p] = rx_pilot / expected;
+                }
+                // Diagnostic δ_est (NOT applied to H_meas — see comment above).
+                float delta_observed[4];
+                int n_valid_delta = 0;
+                double sum_sc = 0.0, sum_sc2 = 0.0, sum_phi = 0.0, sum_sc_phi = 0.0;
+                for (int p = 0; p < 4; p++) {
+                    if (!pilot_valid[p]) continue;
+                    const int bin = kPilot4Bin[p];
+                    if (std::abs(d_h_kalman[bin]) < 1e-6f) {
+                        pilot_valid[p] = false;
+                        continue;
+                    }
+                    gr_complex ratio = H_meas[p] / d_h_kalman[bin];
+                    delta_observed[p] = std::arg(ratio);
+                    while (delta_observed[p] >  M_PI) delta_observed[p] -= 2.0f * (float)M_PI;
+                    while (delta_observed[p] < -M_PI) delta_observed[p] += 2.0f * (float)M_PI;
+                    sum_sc += (double)kPilotSc[p];
+                    sum_sc2 += (double)kPilotSc[p] * (double)kPilotSc[p];
+                    sum_phi += (double)delta_observed[p];
+                    sum_sc_phi += (double)kPilotSc[p] * (double)delta_observed[p];
+                    n_valid_delta++;
+                }
+                float delta_est = 0.0f;
+                if (n_valid_delta >= 2) {
+                    const double denom = (double)n_valid_delta * sum_sc2 - sum_sc * sum_sc;
+                    if (std::abs(denom) > 1e-6) {
+                        const double b = ((double)n_valid_delta * sum_sc_phi - sum_sc * sum_phi) / denom;
+                        delta_est = (float)(-b * 64.0 / (2.0 * M_PI));
+                        while (delta_est >  0.5f) delta_est -= 1.0f;
+                        while (delta_est < -0.5f) delta_est += 1.0f;
+                    }
+                }
+                // Phase 111 T3: Apply per-symbol δ correction if enabled.
+                // v3 REFUTED without averaging because δ_est noise drives H drift.
+                // With averaging (next step), noise is reduced by sqrt(K).
+                if (d_h52_kalman_dc) {
+                    for (int p = 0; p < 4; p++) {
+                        if (!pilot_valid[p]) continue;
+                        const float delta_k = -2.0f * (float)M_PI * (float)kPilotSc[p] * delta_est / 64.0f;
+                        H_meas[p] = H_meas[p] * gr_complex(std::cos(delta_k), std::sin(delta_k));
+                    }
+                }
+                // Phase 111 T3: Accumulate H_meas for multi-symbol averaging.
+                // After K symbols, average and apply Kalman update on smoothed
+                // H_meas. Reduces δ_est noise by sqrt(K), enabling lower threshold.
+                int skip_update = 0;
+                if (d_h52_kalman_avg) {
+                    for (int p = 0; p < 4; p++) {
+                        if (pilot_valid[p]) {
+                            d_h_accum[p] += H_meas[p];
+                        }
+                    }
+                    d_kalman_avg_count++;
+                    if (d_kalman_avg_count < d_kalman_avg_k) {
+                        skip_update = 1;  // wait for more data
+                    } else {
+                        // Average and reset accumulator
+                        for (int p = 0; p < 4; p++) {
+                            H_meas[p] = d_h_accum[p] / float(d_kalman_avg_count);
+                            d_h_accum[p] = gr_complex(0.0f, 0.0f);
+                        }
+                        d_kalman_avg_count = 0;
+                    }
+                }
+                // Kalman update with threshold that depends on averaging.
+                // If averaging: 1.0 (residual innovation ~0.4 after K=5).
+                // If no averaging: 10.0 (gates raw δ drift).
+                int any_significant = 0;
+                float max_innov_mag = 0.0f;
+                const float innov_thresh = d_h52_kalman_avg ? 1.0f : 10.0f;
+                if (skip_update) {
+                    // Only log diagnostic, don't run Kalman update this symbol.
+                    // consumed++ etc happen at end of while loop, so do nothing here.
+                    USRP_LOG("[KALMAN_ACCUM] data_sym_idx=%d delta_est=%.4f accum_count=%d/%d\n",
+                             data_sym_idx, delta_est, d_kalman_avg_count, d_kalman_avg_k);
+                } else {
+                    for (int p = 0; p < 4; p++) {
+                    if (!pilot_valid[p]) continue;
+                    const int bin = kPilot4Bin[p];
+                    float P = d_p_kalman[bin];
+                    float K = P / (P + d_kalman_r);
+                    gr_complex innov = H_meas[p] - d_h_kalman[bin];
+                    const float innov_mag = std::abs(innov);
+                    if (innov_mag > max_innov_mag) max_innov_mag = innov_mag;
+                    gr_complex h_before = d_h_kalman[bin];
+                    if (innov_mag < innov_thresh) {
+                        d_p_kalman[bin] = P + d_kalman_q;
+                        continue;
+                    }
+                    gr_complex h_after = h_before + gr_complex(K, 0.0f) * innov;
+                    d_h_kalman[bin] = h_after;
+                    d_p_kalman[bin] = (1.0f - K) * P + d_kalman_q;
+                    const float h_mag = std::abs(h_before);
+                    if (h_mag > 1e-6f && std::abs(h_after - h_before) / h_mag > 0.05f) {
+                        any_significant = 1;
+                    }
+                }
+                // Piecewise linear interp from 4 pilot anchors (in SC index) to
+                // all 52 active bins. Same scheme as estimate_H_from_htsig_pilots
+                // (Phase 39). For each data SC, find surrounding valid pilots
+                // and lerp in complex plane. Falls back to d_H52_tx_order when
+                // no anchors (shouldn't happen since all 4 are checked).
+                gr_complex H52_kalman[52];
+                auto lerp_c = [](gr_complex a, gr_complex b, float t) -> gr_complex {
+                    return a + (b - a) * t;
+                };
+                for (int i = 0; i < 48; i++) {
+                    const int sc = kScIndex52[i];
+                    int left_idx = -1, right_idx = -1;
+                    for (int p = 0; p < 4; p++) {
+                        if (kPilotSc[p] <= sc &&
+                            (left_idx == -1 || kPilotSc[p] > kPilotSc[left_idx])) {
+                            left_idx = p;
+                        }
+                        if (kPilotSc[p] >= sc &&
+                            (right_idx == -1 || kPilotSc[p] < kPilotSc[right_idx])) {
+                            right_idx = p;
+                        }
+                    }
+                    if (left_idx == right_idx && left_idx >= 0) {
+                        H52_kalman[i] = d_h_kalman[kPilot4Bin[left_idx]];
+                    } else if (left_idx >= 0 && right_idx >= 0) {
+                        const int sc_l = kPilotSc[left_idx];
+                        const int sc_r = kPilotSc[right_idx];
+                        const float t = (float)(sc - sc_l) / (float)(sc_r - sc_l);
+                        H52_kalman[i] = lerp_c(d_h_kalman[kPilot4Bin[left_idx]],
+                                               d_h_kalman[kPilot4Bin[right_idx]], t);
+                    } else {
+                        H52_kalman[i] = d_H52_tx_order[i];
+                    }
+                }
+                // Pilot bins at indices 48..51 (kScIndex52[48..51] = -21,-7,+7,+21).
+                for (int p = 0; p < 4; p++) {
+                    H52_kalman[48 + p] = d_h_kalman[kPilot4Bin[p]];
+                }
+                // Override d_H52_tx_order for HT frames (next symbol's
+                // extract_ht_data52_direct_tx_order uses this). Only when
+                // any_significant update fired; otherwise leave L-LTF H intact.
+                if (any_significant) {
+                    for (int i = 0; i < 52; i++) {
+                        d_H52_tx_order[i] = H52_kalman[i];
+                    }
+                    // Inject updated H into equalizer for non-HT path.
+                    gr_complex h_eq[64];
+                    for (int b = 0; b < 64; b++) h_eq[b] = gr_complex(0.0f, 0.0f);
+                    for (int i = 0; i < 52; i++) {
+                        const int bin = sc_to_fft_bin(kScIndex52[i]);
+                        h_eq[bin] = H52_kalman[i];
+                    }
+                    d_equalizer->set_H(h_eq);
+                }
+                USRP_LOG("[KALMAN_UPDATE] data_sym_idx=%d delta_est=%.4f max_innov=%.3f any_sig=%d "
+                         "P[-21]=%.4f P[-7]=%.4f P[+7]=%.4f P[+21]=%.4f "
+                         "H[-21]=(%.3f%+.3fi) H[+21]=(%.3f%+.3fi)\n",
+                         data_sym_idx, delta_est, max_innov_mag, any_significant,
+                         d_p_kalman[43], d_p_kalman[57], d_p_kalman[7], d_p_kalman[21],
+                         d_h_kalman[43].real(), d_h_kalman[43].imag(),
+                         d_h_kalman[21].real(), d_h_kalman[21].imag());
+                }  // close else (not skip_update)
+            }
         }
 
         consumed++;
