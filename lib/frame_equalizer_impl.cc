@@ -624,6 +624,63 @@ static void refine_h52_average_pilots_safe(
     }
 }
 
+// Phase 120a: Decision-Directed Equalizer (scalar DDE).
+// Uses BPSK hard decisions from HT-SIG0 (equalized with H52_in) to
+// re-estimate a single complex H value, averaged over 48 data + 4 pilot
+// SCs. Applied as a scalar H to all 52 SCs of H52_out (frequency
+// selectivity is lost, but per-frame noise is dramatically reduced).
+//
+// Math (assuming 80% bits correct, ~4/24 viterbi errors at metric 12-14):
+//   Per-SC H_est noise: 1.77 rad (Phase 112 R1 ceiling)
+//   Sum over 48 SCs: 48*1.77/sqrt(48) = 12.3 rad if independent
+//   But: 38 correct give +H, 10 wrong give -H, net = 28 H
+//   Noise: sqrt(48)*1.77 / 48 = 0.18 rad (vs 1.77 rad baseline)
+//   Magnitude: 28/48 = 0.58 (4.7 dB loss)
+//   Net: ~15 dB SNR improvement (10*log(0.34*(1.77/0.18)^2 / 1))
+//
+// Limitation: scalar H loses frequency selectivity. Best for flat
+// channels (cable). Air path may need per-SC DDE.
+static void refine_h52_dde_scalar(
+    const gr_complex* rx52_a,    // raw HT-SIG0 FFT (52 SCs)
+    const gr_complex* H52_in,    // initial H52 (for BPSK decision)
+    gr_complex* H52_out)         // output H52 (all SCs same scalar)
+{
+    gr_complex sum(0.0f, 0.0f);
+    int n = 0;
+
+    // Data SCs: BPSK decision on imag axis (QBPSK)
+    for (int i = 0; i < 48; i++) {
+        if (std::abs(H52_in[i]) < 1e-3f) continue;
+        const gr_complex eq = rx52_a[i] / H52_in[i];
+        const gr_complex constellation =
+            (eq.imag() >= 0.0f) ? gr_complex(0.0f, +1.0f)
+                                : gr_complex(0.0f, -1.0f);
+        sum += rx52_a[i] / constellation;
+        n++;
+    }
+
+    // Pilots at positions 48-51 (SCs -21, -7, +7, +21): known HT-SIG0
+    // QBPSK values [+j, +j, +j, -j]
+    const gr_complex pilot_vals[4] = {
+        gr_complex(0.0f, +1.0f), gr_complex(0.0f, +1.0f),
+        gr_complex(0.0f, +1.0f), gr_complex(0.0f, -1.0f)
+    };
+    for (int p = 0; p < 4; p++) {
+        const int i = 48 + p;
+        if (std::abs(H52_in[i]) < 1e-3f) continue;
+        sum += rx52_a[i] / pilot_vals[p];
+        n++;
+    }
+
+    if (n >= 4) {
+        const gr_complex H_avg = sum / float(n);
+        for (int i = 0; i < 52; i++) H52_out[i] = H_avg;
+    } else {
+        // DDE failed (too few SCs), use input H52
+        for (int i = 0; i < 52; i++) H52_out[i] = H52_in[i];
+    }
+}
+
 // Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
@@ -4101,6 +4158,17 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H_AVERAGE_SAFE=1 (H_AVERAGE with per-bin safety filter, 50% deviation threshold)\n";
     }
 
+    // Phase 120a: Decision-Directed Equalizer (scalar DDE). Uses
+    // BPSK hard decisions from HT-SIG0 to compute a single complex
+    // H value (averaged over 48 data + 4 pilot SCs), applied to
+    // all 52 SCs of HT-SIG1. Goal: break the 1.77 rad per-SC noise
+    // floor (Phase 112 R1) by averaging over many SCs. Default OFF.
+    const char* env_dde = std::getenv("IEEE80211_DDE_HT_SIG");
+    d_apply_dde_ht_sig = (env_dde && env_dde[0] == '1');
+    if (d_apply_dde_ht_sig) {
+        std::cout << "[FRAME_EQ] IEEE80211_DDE_HT_SIG=1 (Decision-Directed Equalizer ENABLED, scalar H from HT-SIG0 BPSK)\n";
+    }
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps
     // |H_htsig0|, |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC
     // for offline verification. Enable via IEEE80211_HTSIG_H52_DUMP=1.
@@ -7038,6 +7106,22 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     USRP_LOG("[HTSIG_H_AVERAGE_SAFE] a0=%s a1=%s (per-bin safety filter, 50%% dev threshold)\n",
                              a0_ok ? "ok" : "fallback",
                              a1_ok ? "ok" : "fallback");
+                }
+
+                // Phase 120a: Decision-Directed Equalizer. Use BPSK hard
+                // decisions from HT-SIG0 (equalized with H_a_ptr) to
+                // re-estimate a single complex H value. Applied as a
+                // scalar H to all 52 SCs of H_b_ptr (HT-SIG1).
+                // H_a_ptr remains the initial H (H_AVERAGE / Hhdr52) for
+                // HT-SIG0 viterbi. H_b_ptr gets the DDE-refined scalar H.
+                if (d_apply_dde_ht_sig &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    gr_complex H_dde[52];
+                    refine_h52_dde_scalar(
+                        d_early_eqsym[kHtSig0Rel], H_a_ptr, H_dde);
+                    H_b_ptr = H_dde;
+                    USRP_LOG("[DDE_HT_SIG] H_b_ptr = scalar from HT-SIG0 BPSK (48 data + 4 pilots averaged)\n");
                 }
 
                 // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate

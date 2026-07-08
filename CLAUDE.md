@@ -121,6 +121,19 @@ following hierarchy applies:
   improve metric (still 12-17). Pilot-based H does not overshoot significantly
   enough. Phase 118b H_AVERAGE already at theoretical per-symbol H refinement
   limit from 4 pilots. Verdict: `docs/superpowers/notes/2026-07-08-phase119-h-average-safe-verdict.md`.
+- **IEEE80211_DDE_HT_SIG=1** — Phase 120a Decision-Directed Equalizer
+  (scalar DDE, opt-in, default OFF). Uses BPSK hard decisions from HT-SIG0
+  to estimate a single complex H value (averaged over 48 data + 4 pilot
+  SCs), applied to all 52 SCs of HT-SIG1. Goal: break the 1.77 rad
+  per-SC noise floor (Phase 112 R1) via 52-sample averaging.
+  **REFUTED on USRP** (Phase 120a verdict 2026-07-08): metric 13-16/13-18
+  (no improvement over Phase 118b's 12-16). Scalar H loses frequency
+  selectivity; BPSK hard decisions at 1.77 rad noise give ~20% bit error
+  rate → magnitude loss 0.58 + noise 0.26 rad → effective per-bit SNR
+  -9.6 dB (worse than 1.77 rad baseline). Verdict:
+  `docs/superpowers/notes/2026-07-08-phase120-dde-verdict.md`. Next:
+  per-SC DDE with phase outlier filter / soft DDE with LLR weighting /
+  iterative DDE.
 - **IEEE80211_FFT_WINDOW_DUMP=1** — Phase 108 diagnostic (opt-in, default OFF):
   dumps abs_in_off, d_data_start_rel, sym_idx_at_h52, d_internal_symbol_counter
   at the H52 compute site. Used to verify upstream FFT window alignment.

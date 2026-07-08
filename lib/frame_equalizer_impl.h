@@ -198,6 +198,14 @@ private:
     // IEEE80211_HTSIG_H_AVERAGE_SAFE=1.
     bool d_apply_htsig_h_average_safe;
 
+    // Phase 120a: Decision-Directed Equalizer (scalar DDE). Uses BPSK
+    // hard decisions from HT-SIG0 to estimate a single complex H value
+    // (averaged over 48 data + 4 pilot SCs), applied to all 52 SCs of
+    // HT-SIG1. Goal: reduce per-SC noise from 1.77 rad (Phase 112 R1)
+    // toward 0.18 rad via 52-sample average. Default OFF. Enable via
+    // IEEE80211_DDE_HT_SIG=1.
+    bool d_apply_dde_ht_sig;
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
