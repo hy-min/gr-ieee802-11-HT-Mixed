@@ -4112,6 +4112,23 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
+    // Phase 112 T7e: multi-symbol H52 averaging + buffer-and-decode HT-SIG re-decode.
+    // Enable via IEEE80211_T7E_MULTISYM_H=1. K via IEEE80211_T7E_MULTISYM_K (default 10).
+    // Default OFF preserves baseline (Phase 18/34/35 behavior).
+    {
+        const char* env_t7e = std::getenv("IEEE80211_T7E_MULTISYM_H");
+        d_t7e_multisym_h = (env_t7e && env_t7e[0] == '1');
+        const char* env_t7e_k = std::getenv("IEEE80211_T7E_MULTISYM_K");
+        if (env_t7e_k && env_t7e_k[0] != '\0') {
+            int k = std::atoi(env_t7e_k);
+            if (k >= 1 && k <= 100) d_t7e_multisym_k = k;
+        }
+        if (d_t7e_multisym_h) {
+            std::cout << "[FRAME_EQ] IEEE80211_T7E_MULTISYM_H=1 K=" << d_t7e_multisym_k
+                      << " (multi-symbol H52 averaging + HT-SIG re-decode)\n";
+        }
+    }
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. eq = conj(H)·rx / (|H|² + N0).
     // Bypasses Phase 38's 50× noise amplification at Hhdr52 channel nulls by
     // regularizing the denominator with a noise-floor estimate (25th percentile
@@ -4441,6 +4458,23 @@ void frame_equalizer_impl::reset_frame_state(void)
     d_htsig0_rel = -1;
     d_htsig1_rel = -1;
     d_data_start_rel = kDataStartRel;
+
+    // Phase 112 T7e: reset multi-symbol H52 accumulator and D4 caches
+    // so the next frame starts fresh.
+    d_t7e_count = 0;
+    d_t7e_h_avg_valid = false;
+    d_t7e_l_ltf_h52_valid = false;
+    for (int s = 0; s < 52; s++) {
+        d_t7e_h_accum[s] = gr_complex(0.0f, 0.0f);
+        d_t7e_h_avg[s] = gr_complex(0.0f, 0.0f);
+        d_t7e_l_ltf_h52_tx_order[s] = gr_complex(0.0f, 0.0f);
+    }
+    d_t7e_htsig_iq_valid[0] = false;
+    d_t7e_htsig_iq_valid[1] = false;
+    d_t7e_l_ltf_iq_valid[0] = false;
+    d_t7e_l_ltf_iq_valid[1] = false;
+    d_t7e_redecode_done = false;
+    d_t7e_redecode_succeeded = false;
 
     d_cfo_phase_per_symbol = 0.0f;
     d_cfo_ref_current_symbol = 0;
@@ -4853,6 +4887,25 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // Use d_internal_symbol_counter for array indexing - it tracks actual symbol count
             extract_header52_from_sym64(sym64, d_early_eqsym[d_internal_symbol_counter]);
             d_early_eqsym_valid[d_internal_symbol_counter] = true;
+
+            // Phase 112 T7e cache: opportunistic raw sym64 caching for buffer-and-decode.
+            // Saves L-LTF0/1 (rel 0/1) and HT-SIG0/1 (rel 3/4) so that after K DATA
+            // symbols T7e D4 can re-decode HT-SIG with averaged H52. Opt-in via
+            // IEEE80211_T7E_MULTISYM_H=1. Default OFF preserves baseline.
+            if (d_t7e_multisym_h) {
+                if (d_internal_symbol_counter == kLltf0Rel ||
+                    d_internal_symbol_counter == kLltf1Rel) {
+                    std::memcpy(d_t7e_l_ltf_iq_buf[d_internal_symbol_counter],
+                                sym64, sizeof(gr_complex) * 64);
+                    d_t7e_l_ltf_iq_valid[d_internal_symbol_counter] = true;
+                } else if (d_internal_symbol_counter == kHtSig0Rel ||
+                           d_internal_symbol_counter == kHtSig1Rel) {
+                    const int idx = d_internal_symbol_counter - kHtSig0Rel;
+                    std::memcpy(d_t7e_htsig_iq_buf[idx],
+                                sym64, sizeof(gr_complex) * 64);
+                    d_t7e_htsig_iq_valid[idx] = true;
+                }
+            }
 
             // [LTF_WRITE_PER_FRAME] Phase 68 Task 1: capture d_early_eqsym[] at
             // the WRITE site (line 3736), immediately after extract_header52_from_sym64
@@ -5800,6 +5853,30 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                  d_early_eqsym_valid[kHtSig1Rel] ? 1 : 0);
                         USRP_LOG("%s", delta_buf);
                         g_delta_dump_counter++;
+                    }
+                }
+            }
+
+            // Phase 112 T7e cache: cache L-LTF H52 (Hhdr52) and L-LTF-equalized
+            // HT-SIG0/HT-SIG1 IQ (after CFO+SFO+δ correction). At re-decode we
+            // use these as OLD H/IQ; re-decode swaps H to averaged H52.
+            // Opt-in via IEEE80211_T7E_MULTISYM_H=1. Fires for every
+            // HT-capable frame (regardless of L-SIG/HT-SIG viterbi outcome).
+            if (d_t7e_multisym_h) {
+                std::memcpy(d_t7e_l_ltf_h52_tx_order, Hhdr52,
+                            sizeof(gr_complex) * 52);
+                d_t7e_l_ltf_h52_valid = true;
+                for (int i = 0; i < 52; i++) {
+                    if (std::abs(Hhdr52[i]) > 1e-3f &&
+                        d_early_eqsym_valid[kHtSig0Rel] &&
+                        d_early_eqsym_valid[kHtSig1Rel]) {
+                        d_t7e_htsig_eq52[0][i] =
+                            d_early_eqsym[kHtSig0Rel][i] / Hhdr52[i];
+                        d_t7e_htsig_eq52[1][i] =
+                            d_early_eqsym[kHtSig1Rel][i] / Hhdr52[i];
+                    } else {
+                        d_t7e_htsig_eq52[0][i] = gr_complex(0.0f, 0.0f);
+                        d_t7e_htsig_eq52[1][i] = gr_complex(0.0f, 0.0f);
                     }
                 }
             }
@@ -6849,6 +6926,146 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
         }
 
+        // Phase 112 T7e D4-fix: tentative DATA processing on HT-SIG CRC-fail frames.
+        // When L-SIG parses but HT-SIG CRC fails, allow DATA symbols through for
+        // T7e accumulator + re-decode — without writing to output buffer (output
+        // frame is still incomplete until re-decode succeeds). Symmetrical to the
+        // T7e block inside `use_direct_tx_order` but fires without d_have_ht_header.
+        // Opt-in via IEEE80211_T7E_MULTISYM_H=1.
+        const bool t7e_tentative =
+            d_t7e_multisym_h && d_in_frame && d_have_lsig && !d_have_ht_header &&
+            d_sym_idx >= d_data_start_rel &&
+            d_sym_idx < d_data_start_rel + d_t7e_multisym_k + 2;
+        if (t7e_tentative) {
+            const int t7e_data_sym_idx = d_sym_idx - d_data_start_rel;
+            gr_complex t7e_h_meas[4];
+            bool t7e_pv[4] = {true, true, true, true};
+            for (int p = 0; p < 4; p++) {
+                const int bin = kPilot4Bin[p];
+                const gr_complex rx_pilot = sym64[bin];
+                if (std::abs(rx_pilot) < 1e-3f) {
+                    t7e_pv[p] = false;
+                    continue;
+                }
+                const gr_complex expected =
+                    ht_expected_pilot(t7e_data_sym_idx, p);
+                if (std::abs(expected) < 1e-6f) {
+                    t7e_pv[p] = false;
+                    continue;
+                }
+                t7e_h_meas[p] = rx_pilot / expected;
+            }
+            gr_complex t7e_h52[52];
+            static const int t7e_pilot_sc[4] = {-21, -7, 7, 21};
+            auto t7e_lerp = [](gr_complex a, gr_complex b, float t)
+                                -> gr_complex {
+                return a + (b - a) * t;
+            };
+            for (int i = 0; i < 48; i++) {
+                const int sc = kScIndex52[i];
+                int left_idx = -1, right_idx = -1;
+                for (int p = 0; p < 4; p++) {
+                    if (t7e_pilot_sc[p] <= sc &&
+                        (left_idx == -1 ||
+                         t7e_pilot_sc[p] > t7e_pilot_sc[left_idx]))
+                        left_idx = p;
+                    if (t7e_pilot_sc[p] >= sc &&
+                        (right_idx == -1 ||
+                         t7e_pilot_sc[p] < t7e_pilot_sc[right_idx]))
+                        right_idx = p;
+                }
+                if (left_idx == right_idx && left_idx >= 0) {
+                    t7e_h52[i] = t7e_h_meas[left_idx];
+                } else if (left_idx >= 0 && right_idx >= 0) {
+                    const int sc_l = t7e_pilot_sc[left_idx];
+                    const int sc_r = t7e_pilot_sc[right_idx];
+                    const float t =
+                        (float)(sc - sc_l) / (float)(sc_r - sc_l);
+                    t7e_h52[i] = t7e_lerp(t7e_h_meas[left_idx],
+                                          t7e_h_meas[right_idx], t);
+                } else {
+                    t7e_h52[i] = d_H52_tx_order_valid
+                                     ? d_H52_tx_order[i]
+                                     : gr_complex(1, 0);
+                }
+            }
+            for (int p = 0; p < 4; p++) t7e_h52[48 + p] = t7e_h_meas[p];
+            for (int i = 0; i < 52; i++) d_t7e_h_accum[i] += t7e_h52[i];
+            d_t7e_count++;
+
+            // After K: try re-decode (D4).
+            if (d_t7e_count >= d_t7e_multisym_k) {
+                const float inv_k = 1.0f / (float)d_t7e_count;
+                for (int i = 0; i < 52; i++) {
+                    d_t7e_h_avg[i] = d_t7e_h_accum[i] * inv_k;
+                }
+                d_t7e_h_avg_valid = true;
+
+                if (!d_t7e_redecode_done) {
+                    d_t7e_redecode_done = true;
+                    if (d_t7e_l_ltf_h52_valid) {
+                        gr_complex new_rx52_a[52], new_rx52_b[52];
+                        for (int i = 0; i < 52; i++) {
+                            if (std::abs(d_t7e_h_avg[i]) > 1e-6f) {
+                                gr_complex factor =
+                                    d_t7e_l_ltf_h52_tx_order[i] /
+                                    d_t7e_h_avg[i];
+                                new_rx52_a[i] =
+                                    d_t7e_htsig_eq52[0][i] * factor;
+                                new_rx52_b[i] =
+                                    d_t7e_htsig_eq52[1][i] * factor;
+                            } else {
+                                new_rx52_a[i] = gr_complex(0, 0);
+                                new_rx52_b[i] = gr_complex(0, 0);
+                            }
+                        }
+                        int p_len = 0, p_mcs = -1;
+                        bool p_sgi = false, p_agg = false;
+                        bool p_ldpc = false;
+                        int cand_metric = -1;
+                        const char* cand_fail = "init";
+                        bool decode_ok = decode_htsig_from_rotated(
+                            new_rx52_a, new_rx52_b,
+                            d_t7e_h_avg, d_t7e_h_avg,
+                            false, false,
+                            p_len, p_mcs, p_sgi, p_agg, p_ldpc,
+                            0, &cand_metric, &cand_fail,
+                            d_use_soft_llr_viterbi,
+                            d_mmse_equalize ? d_mmse_n0_percentile : 0,
+                            d_apply_htsig_per_symbol_delta,
+                            false, nullptr, false, nullptr);
+                        if (decode_ok) {
+                            USRP_LOG(
+                                "[T7E_TENTATIVE_REDECODE_OK] d_sym_idx=%d "
+                                "metric=%d mcs=%d len=%d\n",
+                                d_sym_idx, cand_metric, p_mcs, p_len);
+                            d_t7e_redecode_succeeded = true;
+                            // Promote frame state: HT-SIG is now considered
+                            // parsed, normal DATA processing resumes from
+                            // next symbol. Early DATA symbols (before this
+                            // promotion) are missed — acceptable for testing.
+                            d_have_header = true;
+                            d_is_ht = true;
+                            set_ht_frame_params_from_mcs_len(
+                                p_mcs, p_len, p_ldpc);
+                            d_have_ht_header = true;
+                            d_htsig0_rel = kHtSig0Rel;
+                            d_htsig1_rel = kHtSig1Rel;
+                        } else {
+                            USRP_LOG(
+                                "[T7E_TENTATIVE_REDECODE_FAIL] d_sym_idx=%d "
+                                "metric=%d fail=%s\n",
+                                d_sym_idx, cand_metric, cand_fail);
+                        }
+                    } else {
+                        USRP_LOG(
+                            "[T7E_TENTATIVE_REDECODE_SKIP] d_sym_idx=%d "
+                            "reason=lltf_h52_not_valid\n", d_sym_idx);
+                    }
+                }
+            }
+        }
+
         if (emit_this_symbol && (produced + 52) <= noutput_items) {
             gr_complex* out52 = out + produced;
 
@@ -7012,6 +7229,151 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
 
             produced += 52;
+
+            // Phase 112 T7e: multi-symbol H52 averaging + HT-SIG re-decode.
+            //   D2: per DATA symbol, 4-pilot H estimation + interp 4→52 SCs.
+            //   D3: integrated in D2 (per-SC averaging after K symbols).
+            //   D4: after K accumulations, average + log + try re-decode
+            //       HT-SIG with averaged H52 (vs cached L-LTF H52). opt-in via
+            //       IEEE80211_T7E_MULTISYM_H=1. K via IEEE80211_T7E_MULTISYM_K.
+            if (d_t7e_multisym_h) {
+                gr_complex t7e_h_meas[4];
+                bool t7e_pilot_valid[4] = {true, true, true, true};
+                for (int p = 0; p < 4; p++) {
+                    const int bin = kPilot4Bin[p];
+                    const gr_complex rx_pilot = sym64[bin];
+                    if (std::abs(rx_pilot) < 1e-3f) {
+                        t7e_pilot_valid[p] = false;
+                        continue;
+                    }
+                    const gr_complex expected =
+                        ht_expected_pilot(data_sym_idx, p);
+                    if (std::abs(expected) < 1e-6f) {
+                        t7e_pilot_valid[p] = false;
+                        continue;
+                    }
+                    t7e_h_meas[p] = rx_pilot / expected;
+                }
+                // Piecewise linear interp 4 pilots → 48 data SCs.
+                gr_complex t7e_h52[52];
+                static const int t7e_pilot_sc[4] = {-21, -7, 7, 21};
+                auto t7e_lerp = [](gr_complex a, gr_complex b, float t)
+                                    -> gr_complex {
+                    return a + (b - a) * t;
+                };
+                for (int i = 0; i < 48; i++) {
+                    const int sc = kScIndex52[i];
+                    int left_idx = -1, right_idx = -1;
+                    for (int p = 0; p < 4; p++) {
+                        if (t7e_pilot_sc[p] <= sc &&
+                            (left_idx == -1 ||
+                             t7e_pilot_sc[p] > t7e_pilot_sc[left_idx]))
+                            left_idx = p;
+                        if (t7e_pilot_sc[p] >= sc &&
+                            (right_idx == -1 ||
+                             t7e_pilot_sc[p] < t7e_pilot_sc[right_idx]))
+                            right_idx = p;
+                    }
+                    if (left_idx == right_idx && left_idx >= 0) {
+                        t7e_h52[i] = t7e_h_meas[left_idx];
+                    } else if (left_idx >= 0 && right_idx >= 0) {
+                        const int sc_l = t7e_pilot_sc[left_idx];
+                        const int sc_r = t7e_pilot_sc[right_idx];
+                        const float t =
+                            (float)(sc - sc_l) / (float)(sc_r - sc_l);
+                        t7e_h52[i] = t7e_lerp(t7e_h_meas[left_idx],
+                                              t7e_h_meas[right_idx], t);
+                    } else {
+                        t7e_h52[i] = d_H52_tx_order[i];
+                    }
+                }
+                for (int p = 0; p < 4; p++) t7e_h52[48 + p] = t7e_h_meas[p];
+                // Accumulate.
+                for (int i = 0; i < 52; i++) {
+                    d_t7e_h_accum[i] += t7e_h52[i];
+                }
+                d_t7e_count++;
+
+                // After K: average + log + try re-decode (D4).
+                if (d_t7e_count >= d_t7e_multisym_k) {
+                    const float inv_k = 1.0f / (float)d_t7e_count;
+                    for (int i = 0; i < 52; i++) {
+                        d_t7e_h_avg[i] = d_t7e_h_accum[i] * inv_k;
+                    }
+                    d_t7e_h_avg_valid = true;
+
+                    double sum_diff_sq = 0.0;
+                    for (int i = 0; i < 52; i++) {
+                        const gr_complex diff =
+                            d_t7e_h_avg[i] - d_H52_tx_order[i];
+                        sum_diff_sq +=
+                            (double)diff.real() * diff.real() +
+                            (double)diff.imag() * diff.imag();
+                    }
+                    const float rms =
+                        std::sqrt((float)(sum_diff_sq / 52.0));
+                    USRP_LOG(
+                        "[T7E_AVG] data_sym_idx=%d count=%d "
+                        "avg_H_vs_L_LTF_rms=%.3f (%.1f deg)\n",
+                        data_sym_idx, d_t7e_count, rms,
+                        rms * 180.0f / 3.14159f);
+
+                    if (!d_t7e_redecode_done) {
+                        d_t7e_redecode_done = true;
+                        if (d_t7e_l_ltf_h52_valid) {
+                            gr_complex new_rx52_a[52], new_rx52_b[52];
+                            for (int i = 0; i < 52; i++) {
+                                if (std::abs(d_t7e_h_avg[i]) > 1e-6f) {
+                                    gr_complex factor =
+                                        d_t7e_l_ltf_h52_tx_order[i] /
+                                        d_t7e_h_avg[i];
+                                    new_rx52_a[i] =
+                                        d_t7e_htsig_eq52[0][i] * factor;
+                                    new_rx52_b[i] =
+                                        d_t7e_htsig_eq52[1][i] * factor;
+                                } else {
+                                    new_rx52_a[i] = gr_complex(0, 0);
+                                    new_rx52_b[i] = gr_complex(0, 0);
+                                }
+                            }
+
+                            int p_len = 0, p_mcs = -1;
+                            bool p_sgi = false, p_agg = false;
+                            bool p_ldpc = false;
+                            int cand_metric = -1;
+                            const char* cand_fail = "init";
+                            bool decode_ok = decode_htsig_from_rotated(
+                                new_rx52_a, new_rx52_b,
+                                d_t7e_h_avg, d_t7e_h_avg,
+                                false, false,
+                                p_len, p_mcs, p_sgi, p_agg, p_ldpc,
+                                0, &cand_metric, &cand_fail,
+                                d_use_soft_llr_viterbi,
+                                d_mmse_equalize ? d_mmse_n0_percentile : 0,
+                                d_apply_htsig_per_symbol_delta,
+                                false, nullptr, false, nullptr);
+
+                            if (decode_ok) {
+                                USRP_LOG(
+                                    "[T7E_REDECODE_OK] data_sym_idx=%d "
+                                    "metric=%d\n",
+                                    data_sym_idx, cand_metric);
+                                d_t7e_redecode_succeeded = true;
+                            } else {
+                                USRP_LOG(
+                                    "[T7E_REDECODE_FAIL] data_sym_idx=%d "
+                                    "metric=%d fail=%s\n",
+                                    data_sym_idx, cand_metric, cand_fail);
+                            }
+                        } else {
+                            USRP_LOG(
+                                "[T7E_REDECODE_SKIP] data_sym_idx=%d "
+                                "reason=lltf_h52_not_valid\n",
+                                data_sym_idx);
+                        }
+                    }
+                }
+            }
 
             // Phase 111: Kalman H52 tracker update per DATA symbol.
             // SYSTEMATIC DEBUGGING OUTCOME (2026-07-07):
@@ -7236,10 +7598,37 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 d_in_frame = false;
             }
         } else if (d_in_frame && !d_have_ht_header && d_sym_idx >= d_data_start_rel + 5) {
-            USRP_LOG( "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d, discarding remaining symbols until next wifi_start\n", d_sym_idx);
-            reset_frame_state();
-            d_discard_until_wifi_start = true;
-            d_in_frame = false;
+            // Phase 112 T7e D4-fix: extend timeout when T7e is enabled and the
+            // re-decode window is still open. d_data_start_rel + 5 + K + 2 lets
+            // T7e-tentative accumulate K DATA symbols + 2 = K+2 syms of
+            // headroom after the standard +5 before we discard the frame.
+            const int t7e_timeout_rel =
+                d_data_start_rel + 5 + d_t7e_multisym_k + 2;
+            const int timeout_rel =
+                d_t7e_multisym_h ? t7e_timeout_rel : d_data_start_rel + 5;
+            if (d_sym_idx < timeout_rel) {
+                // T7e still has time — keep frame alive.
+            } else {
+                if (d_t7e_multisym_h && d_t7e_redecode_done) {
+                    USRP_LOG(
+                        "[EQ_FRAME_END] HT-SIG timeout (T7e mode) sym_idx=%d "
+                        "t7e_redecode_succeeded=%d\n",
+                        d_sym_idx, d_t7e_redecode_succeeded ? 1 : 0);
+                } else if (d_t7e_multisym_h) {
+                    USRP_LOG(
+                        "[EQ_FRAME_END] HT-SIG timeout (T7e mode) sym_idx=%d "
+                        "t7e_count=%d/K=%d\n",
+                        d_sym_idx, d_t7e_count, d_t7e_multisym_k);
+                } else {
+                    USRP_LOG(
+                        "[EQ_FRAME_END] HT-SIG timeout sym_idx=%d, "
+                        "discarding remaining symbols until next wifi_start\n",
+                        d_sym_idx);
+                }
+                reset_frame_state();
+                d_discard_until_wifi_start = true;
+                d_in_frame = false;
+            }
         }
 
         if (d_in_frame && d_sym_idx > kMaxFrameRel) {
