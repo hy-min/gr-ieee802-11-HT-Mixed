@@ -394,6 +394,42 @@ private:
     gr_complex d_h_accum[4]        = {};
     int   d_kalman_avg_count       = 0;
 
+    // Phase 112 T7e: decision-directed + multi-symbol H tracking.
+    // R1 confirmed USRP analog chain phase noise std = 1.77 rad (101°) per
+    // SC per OFDM symbol. L-LTF H52 carries this full noise. DATA symbols
+    // have 4 pilots each = 4 SCs of clean-ish measurement. Averaging H52
+    // across K DATA symbols reduces noise by sqrt(K).
+    //   K=1: std=1.77 rad (101°) — same as L-LTF
+    //   K=10: std=0.56 rad (32°) — partial reduction
+    //   K=30: std=0.32 rad (18°) — close to viterbi capacity 4 error limit
+    // Enable: IEEE80211_T7E_MULTISYM_H=1.
+    // K via IEEE80211_T7E_MULTISYM_K (default 10).
+    bool  d_t7e_multisym_h         = false;
+    int   d_t7e_multisym_k         = 10;
+    int   d_t7e_count              = 0;       // DATA symbols accumulated
+    gr_complex d_t7e_h_accum[52]   = {};        // accumulator
+    gr_complex d_t7e_h_avg[52]     = {};        // averaged H52 in active SC order
+    bool  d_t7e_h_avg_valid        = false;
+    // Phase 112 T7e D4: HT-SIG IQ buffer for buffer-and-decode.
+    // Cache HT-SIG0/HT-SIG1 raw sym64 (64-bin FFT, before any compensation)
+    // and L-LTF0/L-LTF1 raw sym64 so that after K DATA symbols we can
+    // re-estimate H52 from L-LTF (or use averaged H52 from DATA) and
+    // re-decode HT-SIG with the refined channel estimate.
+    gr_complex d_t7e_htsig_iq_buf[2][64];       // [HT-SIG0, HT-SIG1]
+    bool  d_t7e_htsig_iq_valid[2]  = {false, false};
+    gr_complex d_t7e_l_ltf_iq_buf[2][64];       // [L-LTF0, L-LTF1] raw sym64
+    bool  d_t7e_l_ltf_iq_valid[2]  = {false, false};
+    // L-LTF H52 estimate in tx_order (52 SCs) — what was used for the
+    // original HT-SIG decode. We need this to derive rx from the cached
+    // equalized HT-SIG IQ.
+    gr_complex d_t7e_l_ltf_h52_tx_order[52] = {};
+    bool  d_t7e_l_ltf_h52_valid    = false;
+    // Original HT-SIG IQ in tx_order (after L-LTF H52 equalization).
+    // This is what `decode_htsig_from_rotated` expects — already equalized.
+    gr_complex d_t7e_htsig_eq52[2][52] = {};
+    bool  d_t7e_redecode_done      = false;
+    bool  d_t7e_redecode_succeeded = false;
+
     // Compensated copies of L-LTF0 and L-LTF1 used for H estimation.
     // Populated in general_work() AFTER CFO/SFO estimation so that H and
     // the (also-compensated) L-SIG/HT-SIG symbols are in the same phase

@@ -36,6 +36,24 @@ def internal_run(args):
     os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
     os.environ['GR_RPC_ENABLE'] = 'False'
 
+    # === Phase 110: Bake in standard env vars (matches examples/capture_usrp_loopback_to_file.py) ===
+    # Phase 18: L-SIG viterbi force rate=0xD (HT-Mixed)
+    os.environ.setdefault('IEEE80211_LSIG_RATE_FORCE', '0xD')
+    # Phase 34: δ timing offset correction at frame_equalizer
+    os.environ.setdefault('IEEE80211_TIMING_OFFSET_APPLY', '1')
+    # Phase 89: sync_short boxcar detector (replaces REFUTED MA(48)/MA(64) ratio)
+    os.environ.setdefault('IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR', '1')
+    # Phase 89: sync_short adaptive threshold (median*10 with 3.0 startup gate)
+    os.environ.setdefault('IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH', '1')
+
+    # Phase 112: T7e (opt-in via --t7e-on). Default OFF to preserve baseline.
+    if args.t7e_on:
+        os.environ['IEEE80211_T7E_MULTISYM_H'] = '1'
+        os.environ['IEEE80211_T7E_MULTISYM_K'] = str(args.t7e_k)
+        print(f"[TEST] T7e ENABLED K={args.t7e_k} "
+              "(IEEE80211_T7E_MULTISYM_H=1, IEEE80211_T7E_MULTISYM_K={})".format(args.t7e_k),
+              flush=True)
+
     from gnuradio import gr, blocks, uhd
     import pmt
     import ieee802_11
@@ -124,8 +142,11 @@ def internal_run(args):
             # USRP TX. Channel 0 = A:0 subdev (slot A, subdev 0).
             # USRP X310 has 2 daughterboard slots: A and B. Each has its own UBX-160.
             # Per UHD RFNoC mapping: ch 0 -> A:0, ch 1 -> B:0.
+            # Phase 112: Explicit send_buff_size=1048576 to avoid RFNOC graph failure
+            # when net.core.wmem_max=1048576 (sysctl cannot be raised without sudo).
+            # Default UHD requests 2453333, fails with "IO Error during GSM initialization".
             self.uhd_usrp_sink = uhd.usrp_sink(
-                device_addr="addr=192.168.10.2",
+                device_addr="addr=192.168.10.2,send_buff_size=1048576,recv_buff_size=1048576",
                 stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
             )
             self.uhd_usrp_sink.set_samp_rate(args.rate * 1e6)
@@ -283,6 +304,9 @@ def main():
     parser.add_argument('--capture', type=str, default='', help='Capture raw IQ to file')
     parser.add_argument('--cross-board', action='store_true', help='Use A:0 TX -> B:0 RX (cross-daughterboard, no internal leak)')
     parser.add_argument('--rx-subdev', type=str, default='A:0', help='RX subdev spec (default A:0, use B:0 for cross-board)')
+    # Phase 112: T7e multi-symbol H52 averaging + HT-SIG re-decode
+    parser.add_argument('--t7e-on', action='store_true', help='Enable T7e (IEEE80211_T7E_MULTISYM_H=1)')
+    parser.add_argument('--t7e-k', type=int, default=5, help='T7e K (number of DATA symbols to average, default 5)')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 

@@ -6894,6 +6894,25 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 } else {
                     // L-SIG succeeded (enc=0 BPSK 1/2) but HT-SIG decode failed across
                     // all 16 candidates.
+                    // Phase 112 T7e D4-fix CRITICAL: this is the only branch where
+                    // d_have_lsig gets set when HT-SIG CRC fails. Without this,
+                    // the T7e D4-fix sibling block at line ~6935 would NEVER fire
+                    // because its gate is `d_in_frame && d_have_lsig &&
+                    // !d_have_ht_header`. L-SIG success means we have a valid
+                    // HT-Mixed header; HT-SIG brute-force failed but the channel
+                    // can still be estimated. T7e will average K DATA H52 and
+                    // re-attempt HT-SIG decode with the better H. Per R1 root
+                    // cause, this is unlikely to fix the metric gap (1.77 rad
+                    // noise floor), but it provides a mechanism for any future
+                    // Phase 113+ that CAN fix the channel.
+                    d_have_lsig = true;
+                    d_lsig_rel = kLSigRel;
+                    d_hdr_reorder_mode = 0;
+                    d_hdr_inverted = false;
+                    d_htsig0_rel = kHtSig0Rel;
+                    d_htsig1_rel = kHtSig1Rel;
+                    d_data_start_rel = kDataStartRel;
+                    d_chan_est_mode = 0;
                     USRP_LOG("[HT_SIG_PARSE_FAIL] timeout_sym=%d n_candidates=%d "
                              "best_metric=N/A threshold=N/A avg_snr_lsig=%.2f "
                              "avg_snr_htsig=%.2f lsig_rate=0x%X lsig_len=%d "
