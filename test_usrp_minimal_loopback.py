@@ -194,10 +194,11 @@ def internal_run(args):
                     # (not set_rx_dc_offset as in raw UHD C++ API).
                     # Disabling auto-calibration may reduce per-SC phase noise floor.
                     # set_rx_agc not supported on UBX-160 (per Task 4 test) — omit.
-                    # set_lo_source signature: (src, name, chan) — not (src, chan).
+                    # set_lo_source: UBX-160 ONLY supports internal, UHD rejects explicit
+                    # set with "This device only supports setting internal source on all LOs".
+                    # Hence omit set_lo_source from the block.
                     self.uhd_usrp_source.set_auto_dc_offset(False, 0)
                     self.uhd_usrp_source.set_auto_iq_balance(False, 0)
-                    self.uhd_usrp_source.set_lo_source('internal', 'RX2', 0)
                     print("[TEST] UHD micro-tunings applied successfully")
                 except (RuntimeError, AttributeError) as e:
                     print(f"[TEST] UHD API micro-tuning failed (non-fatal): {e}")
