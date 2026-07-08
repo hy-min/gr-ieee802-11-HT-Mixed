@@ -134,6 +134,17 @@ following hierarchy applies:
   `docs/superpowers/notes/2026-07-08-phase120-dde-verdict.md`. Next:
   per-SC DDE with phase outlier filter / soft DDE with LLR weighting /
   iterative DDE.
+- **IEEE80211_DDE_HT_SIG_PER_SC=1** — Phase 121 Per-SC DDE with dot-product
+  filter (opt-in, default OFF). H_est[sc] = rx52_a[sc] / constellation[sc],
+  filter `Re(conj(Hhdr52)*H_est) > 0` to reject wrong-bit SCs (inverted H).
+  Goal: preserve per-SC frequency selectivity + reject inverted H from
+  wrong bits. **REFUTED on USRP** (Phase 121 verdict 2026-07-08): metric
+  14-17 (WORSE than Phase 118b's 12-16 and Phase 120a's 13-18). H_est and
+  Hhdr52 have same noise level (1.77 rad); per-SC DDE keeps inverted H at
+  50% of wrong-bit SCs (filter noise margin too small at 1.77 rad). DDE
+  fundamentally limited at 1.77 rad ceiling. Verdict:
+  `docs/superpowers/notes/2026-07-08-phase121-dde-per-sc-verdict.md`.
+  **Phase 118b H_AVERAGE remains the best equalizer-layer result (metric 12)**.
 - **IEEE80211_FFT_WINDOW_DUMP=1** — Phase 108 diagnostic (opt-in, default OFF):
   dumps abs_in_off, d_data_start_rel, sym_idx_at_h52, d_internal_symbol_counter
   at the H52 compute site. Used to verify upstream FFT window alignment.
