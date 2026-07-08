@@ -182,6 +182,21 @@ def internal_run(args):
             self.uhd_usrp_source.set_center_freq(args.freq * 1e6, rx_ch)
             self.uhd_usrp_source.set_bandwidth(args.rate * 1e6, rx_ch)
 
+            # Phase 113 T5.A: UHD API micro-tunings (default OFF via --uhd-tune flag)
+            # Direct low-level UHD calls to attack 1.77 rad per-SC phase noise floor
+            # (Phase 112 R1 ceiling). try/except prevents experiment interruption if
+            # UHD 4.7.0.HEAD rejects any specific API on this hardware/driver combo.
+            if args.uhd_tune:
+                print("[TEST] UHD micro-tunings ENABLED (Phase 113 T5.A): "
+                      "DC=off, IQ=off, LO=internal")
+                try:
+                    self.uhd_usrp_source.set_rx_dc_offset(False, 0)
+                    self.uhd_usrp_source.set_rx_iq_balance(False, 0)
+                    self.uhd_usrp_source.set_rx_lo_source('internal', 0)
+                    print("[TEST] UHD micro-tunings applied successfully")
+                except RuntimeError as e:
+                    print(f"[TEST] UHD API micro-tuning failed (non-fatal): {e}")
+
             # Phase 52: Diagnostic print of cross-board wiring
             print(f"[TEST] RX subdev_spec: {self.uhd_usrp_source.get_subdev_spec(rx_ch)}")
             print(f"[TEST] RX antenna: {self.uhd_usrp_source.get_antenna(rx_ch)}")
