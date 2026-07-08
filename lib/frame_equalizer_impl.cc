@@ -521,6 +521,109 @@ static bool estimate_H_from_htsig_pilots(
     return true;
 }
 
+// Phase 118b: HT-SIG pilot-augmented H52 averaging. Takes the OUTPUTS of
+// estimate_H_from_htsig_pilots (which has 4→52 linear interpolation that
+// can overshoot at non-pilot SCs) and averages with Hhdr52 to dampen the
+// overshoot while preserving pilot refinement.
+//
+// Per-bin averaging math (assuming Phase 39 produces 1 H_estimate per bin
+// from interpolation, with noise dominated by 4 pilots):
+//   Hhdr52: 1.77 / sqrt(2) = 1.25 rad (2 LTS averaged)
+//   H_htsig: ~1.77 rad per bin (1 virtual estimate from 4 pilot SCs)
+//   H_averaged: 1/sqrt(2/1.25^2 + 1/1.77^2 + 1/1.77^2) = ~0.84 rad
+//                 (when h0_ok && h1_ok)
+//                 vs 1.25 rad baseline (2 LTS only)
+//
+// Falls back gracefully if h0_ok / h1_ok is false (uses Hhdr52 only).
+static void refine_h52_average_pilots(
+    const gr_complex* Hhdr52,
+    const gr_complex* H_htsig0,    // from estimate_H_from_htsig_pilots
+    const gr_complex* H_htsig1,    // from estimate_H_from_htsig_pilots
+    bool h0_ok,
+    bool h1_ok,
+    gr_complex* H52_out)
+{
+    for (int i = 0; i < 52; i++) {
+        if (h0_ok && h1_ok) {
+            // 2 LTS + 1 H_htsig0 + 1 H_htsig1 = 4 estimates weighted average
+            const gr_complex sum = Hhdr52[i] * 2.0f + H_htsig0[i] + H_htsig1[i];
+            H52_out[i] = sum * 0.25f;
+        } else if (h0_ok) {
+            const gr_complex sum = Hhdr52[i] * 2.0f + H_htsig0[i];
+            H52_out[i] = sum * (1.0f / 3.0f);
+        } else if (h1_ok) {
+            const gr_complex sum = Hhdr52[i] * 2.0f + H_htsig1[i];
+            H52_out[i] = sum * (1.0f / 3.0f);
+        } else {
+            H52_out[i] = Hhdr52[i];
+        }
+    }
+}
+
+// Phase 119: Per-bin safety filter. Same averaging formula as
+// refine_h52_average_pilots, but for each SC checks if the pilot-based
+// H deviates from Hhdr52 by more than `safety_thresh * |Hhdr52|`. If
+// yes, uses Hhdr52 (avoids Phase 39 piecewise-linear interpolation
+// overshoot at non-pilot SCs). Goal: improve HT_SIG metric distribution
+// beyond Phase 118b's metric=12 toward <=10 viterbi wall.
+//
+// Math (h0_ok && h1_ok):
+//   H_pilot_mean[i] = (H_htsig0[i] + H_htsig1[i]) * 0.5
+//   dev = |H_pilot_mean[i] - Hhdr52[i]|
+//   if dev < safety_thresh * |Hhdr52[i]|: use H_average formula
+//   else: use Hhdr52[i] (reject pilot refinement)
+static void refine_h52_average_pilots_safe(
+    const gr_complex* Hhdr52,
+    const gr_complex* H_htsig0,
+    const gr_complex* H_htsig1,
+    bool h0_ok,
+    bool h1_ok,
+    gr_complex* H52_out)
+{
+    const float safety_thresh = 0.5f;  // 50% deviation → reject pilot
+    for (int i = 0; i < 52; i++) {
+        // Compute pilot-derived H for this bin (mean if both available)
+        bool use_pilot_refine = false;
+        if (h0_ok && h1_ok) {
+            const gr_complex H_pilot_mean = (H_htsig0[i] + H_htsig1[i]) * 0.5f;
+            const float dev = std::abs(H_pilot_mean - Hhdr52[i]);
+            const float ref = std::abs(Hhdr52[i]);
+            if (ref > 1e-3f && dev < safety_thresh * ref) {
+                use_pilot_refine = true;
+            }
+        } else if (h0_ok) {
+            const float dev = std::abs(H_htsig0[i] - Hhdr52[i]);
+            const float ref = std::abs(Hhdr52[i]);
+            if (ref > 1e-3f && dev < safety_thresh * ref) {
+                use_pilot_refine = true;
+            }
+        } else if (h1_ok) {
+            const float dev = std::abs(H_htsig1[i] - Hhdr52[i]);
+            const float ref = std::abs(Hhdr52[i]);
+            if (ref > 1e-3f && dev < safety_thresh * ref) {
+                use_pilot_refine = true;
+            }
+        }
+
+        if (use_pilot_refine) {
+            // Apply averaging formula (same as refine_h52_average_pilots)
+            if (h0_ok && h1_ok) {
+                const gr_complex sum = Hhdr52[i] * 2.0f + H_htsig0[i] + H_htsig1[i];
+                H52_out[i] = sum * 0.25f;
+            } else if (h0_ok) {
+                const gr_complex sum = Hhdr52[i] * 2.0f + H_htsig0[i];
+                H52_out[i] = sum * (1.0f / 3.0f);
+            } else { // h1_ok
+                const gr_complex sum = Hhdr52[i] * 2.0f + H_htsig1[i];
+                H52_out[i] = sum * (1.0f / 3.0f);
+            }
+        } else {
+            // Safety filter rejected: use Hhdr52 only
+            H52_out[i] = Hhdr52[i];
+        }
+    }
+}
+
 // Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
@@ -3981,6 +4084,23 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H_REESTIMATE=1 (HT-SIG pilot-based H re-estimation ENABLED)\n";
     }
 
+    // Phase 118b: HT-SIG pilot-augmented H52 averaging. Default OFF.
+    const char* env_havg = std::getenv("IEEE80211_HTSIG_H_AVERAGE");
+    d_apply_htsig_h_average = (env_havg && env_havg[0] == '1');
+    if (d_apply_htsig_h_average) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H_AVERAGE=1 (HT-SIG pilot-averaged H52 ENABLED, blend Phase 39 with Hhdr52)\n";
+    }
+
+    // Phase 119: per-bin safety filter on H_AVERAGE. Rejects pilot
+    // refinement at SCs where Phase 39's interpolation overshoots
+    // (>50% deviation from Hhdr52). Goal: reduce metric=12 candidates
+    // further toward <=10 viterbi threshold. Default OFF.
+    const char* env_havg_safe = std::getenv("IEEE80211_HTSIG_H_AVERAGE_SAFE");
+    d_apply_htsig_h_average_safe = (env_havg_safe && env_havg_safe[0] == '1');
+    if (d_apply_htsig_h_average_safe) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H_AVERAGE_SAFE=1 (H_AVERAGE with per-bin safety filter, 50% deviation threshold)\n";
+    }
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps
     // |H_htsig0|, |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC
     // for offline verification. Enable via IEEE80211_HTSIG_H52_DUMP=1.
@@ -6824,6 +6944,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // brute-force loop.
                 gr_complex H_htsig0[52];
                 gr_complex H_htsig1[52];
+                // Phase 118b: combined H from 2 LTS + HT-SIG0/1 pilots
+                // (declared at outer scope so H_a_ptr/H_b_ptr stay valid).
+                gr_complex H_avg_combined[52];
                 const gr_complex* H_a_ptr = Hhdr52;
                 const gr_complex* H_b_ptr = Hhdr52;
                 if (d_apply_htsig_h_reestimate &&
@@ -6869,6 +6992,52 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             hhtsig_dump_counter++;
                         }
                     }
+                }
+
+                // Phase 118b: HT-SIG pilot-augmented H52 averaging.
+                // Uses Phase 39's estimate_H_from_htsig_pilots as inner
+                // kernel (which can overshoot at non-pilot SCs), then
+                // averages its output with Hhdr52 to dampen overshoot.
+                // Math: 2 LTS (1.25 rad) + 1 H_htsig0 + 1 H_htsig1 = 0.84 rad
+                //   effective per-SC noise (below 1 rad viterbi wall).
+                if (d_apply_htsig_h_average &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    gr_complex H_avg0[52];
+                    gr_complex H_avg1[52];
+                    bool a0_ok = estimate_H_from_htsig_pilots(
+                        d_early_eqsym[kHtSig0Rel], Hhdr52, H_avg0);
+                    bool a1_ok = estimate_H_from_htsig_pilots(
+                        d_early_eqsym[kHtSig1Rel], Hhdr52, H_avg1);
+                    refine_h52_average_pilots(
+                        Hhdr52, H_avg0, H_avg1, a0_ok, a1_ok, H_avg_combined);
+                    H_a_ptr = H_avg_combined;
+                    H_b_ptr = H_avg_combined;
+                    USRP_LOG("[HTSIG_H_AVERAGE] a0=%s a1=%s (2 LTS + 2x pilots blended)\n",
+                             a0_ok ? "ok" : "fallback",
+                             a1_ok ? "ok" : "fallback");
+                }
+
+                // Phase 119: H_AVERAGE + per-bin safety filter. Rejects
+                // pilot refinement at SCs where |H_pilot - Hhdr52| > 50%
+                // of |Hhdr52|. Goal: avoid Phase 39 interpolation
+                // overshoot at non-pilot SCs.
+                if (d_apply_htsig_h_average_safe &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    gr_complex H_avg0[52];
+                    gr_complex H_avg1[52];
+                    bool a0_ok = estimate_H_from_htsig_pilots(
+                        d_early_eqsym[kHtSig0Rel], Hhdr52, H_avg0);
+                    bool a1_ok = estimate_H_from_htsig_pilots(
+                        d_early_eqsym[kHtSig1Rel], Hhdr52, H_avg1);
+                    refine_h52_average_pilots_safe(
+                        Hhdr52, H_avg0, H_avg1, a0_ok, a1_ok, H_avg_combined);
+                    H_a_ptr = H_avg_combined;
+                    H_b_ptr = H_avg_combined;
+                    USRP_LOG("[HTSIG_H_AVERAGE_SAFE] a0=%s a1=%s (per-bin safety filter, 50%% dev threshold)\n",
+                             a0_ok ? "ok" : "fallback",
+                             a1_ok ? "ok" : "fallback");
                 }
 
                 // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate

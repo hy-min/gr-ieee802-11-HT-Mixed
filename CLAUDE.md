@@ -1,12 +1,16 @@
 # gr-ieee802-11 Project Instructions
 
-## Project Goal: USRP End-to-End Validation (HARD CONSTRAINT)
+## Project Goal: USRP Realtime FCS_OK (ABSOLUTE — DO NOT ACCEPT CLOSURE)
 
-**The goal of this project is USRP realtime end-to-end validation.**
-Loopback-only verification is **NOT acceptable** as a final outcome.
+**This is the user's explicit, binding goal: 实现 USRP realtime FCS_OK
+(end-to-end through USRP X310 + UBX-160 hardware).**
 
-When evaluating any proposed solution, investigation, or verdict, the following
-hierarchy applies:
+The user has explicitly rejected "closure" / "现状" / "止损" as a final
+state of this project. After Phase 110 (2026-07-07), the user stated
+verbatim: **"不可能接受现状，我的目标是实现USRP FCS OK"**.
+
+When evaluating any proposed solution, investigation, or verdict, the
+following hierarchy applies:
 
 1. **Primary success metric**: USRP realtime `FCS_OK ≥ Sent/N` (per-frame
    success ratio on actual air path through X310 + UBX-160 hardware).
@@ -15,23 +19,36 @@ hierarchy applies:
      sufficient alone)
    - Synthetic unit tests / cross-check (algorithm correctness validation
      only — not sufficient alone)
-3. **NOT acceptable**:
+3. **NOT acceptable** (and these are not acceptable as **final** states):
    - Concluding "BLOCKED" without an upstream-attack plan that targets
      the actual USRP gate
    - Closing an investigation with "use loopback for verification" as the
      final state
    - Treating `d_is_ht=false` (HT-SIG viterbi upstream gate) as a permanent
      architectural barrier — it is a problem to solve, not to accept
+   - Suggesting "equalizer layer is CLOSED" / "stop attacking equalizer" /
+     "30+ REFUTED so accept closure" — these are FORBIDDEN as final states
+   - Phrases like "the project has reached its limit", "we have done
+     everything possible", "give up on USRP realtime", or any variant
 
-## Implications for Phase 60+
+## Implications for Phase 111+
 
-- Any verdict ending in BLOCKED must include a concrete Phase 60+
-  attack plan that operates **upstream** of the blocker (L-LTF0 path,
-  splitter port, RF chain, etc.) — not just "leave the code as opt-in".
+- **Equalizer layer is NOT closed** despite 30+ REFUTED fixes. The user's
+  goal is USRP realtime FCS_OK, and equalizer attacks must continue.
+- Any verdict ending in BLOCKED must include a concrete Phase 111+
+  attack plan that operates **on or upstream of** the blocker (equalizer,
+  L-LTF0 path, splitter port, RF chain, new architecture, etc.) — not
+  just "leave the code as opt-in".
 - Accepting USRP HT-SIG as "not solvable" is NOT an acceptable project
   outcome. The project's success criterion is USRP realtime FCS_OK.
 - Software loopback 3/3 PASS is preserved as a regression check, but
   cannot substitute for USRP verification.
+- **Each new equalizer attack hypothesis must be tried with discipline**:
+  single-variable change, verifiable on synthetic first, then USRP.
+  REFUTED is a step toward the goal, not a reason to stop.
+- **New architecture proposals are welcome**: decision-directed equalizer,
+  Kalman-filter H tracking, alternative channel estimation algorithms,
+  per-frame phase tracking, etc. The user wants these explored.
 
 ## Project-Specific Conventions
 
@@ -75,8 +92,10 @@ hierarchy applies:
   rate=0xD — no clean shift. SNR on this capture (-2.6 dB) is 10 dB
   below Phase 81's reported 7.11 dB; LTF ref division (T3.5) confirmed
   it is NOT a Python analysis bug. **Equalizer-layer attack surface
-  EXHAUSTED (20+ REFUTED including Phase 82).** No further cable runs
-  pending a deliberate upstream-attack plan.
+  EXHAUSTED on δ-tuning (20+ REFUTED including Phase 82).** Despite this,
+  per user's 2026-07-07 directive "不可能接受现状", equalizer-layer attacks
+  with NEW architectures (DD / Kalman / alternative H estimation) MUST
+  continue — no closure.
 - **IEEE80211_HTSIG_PER_SYMBOL_DELTA=1** — Phase 79 per-symbol δ tracking
   for HT-SIG0/1 + data symbols (QBPSK-aware grid-search over 64-point δ).
   Default OFF. **REFUTED on USRP** (Phase 79 verdict 2026-07-02,
@@ -89,8 +108,19 @@ hierarchy applies:
   data symbol equalizer output). Default OFF (env unset). **REFUTED on USRP**
   (Phase 80b verdict 2026-07-04, USRP 5250 MHz 60s tx-gain 0: Sent=120
   Recv=0, HT_SIG_CAND=16/16 crc_fail). C++ preserved for future use if
-  upstream gates ever unblock. Equalizer layer is **CLOSED** — Phase 82
-  must attack upstream per HARD CONSTRAINT.
+  upstream gates ever unblock. **Equalizer attacks MUST continue** despite
+  this REFUTED — see Project Goal section.
+- **IEEE80211_HTSIG_H_AVERAGE=1** — Phase 118b HT-SIG pilot-augmented H52 averaging
+  (opt-in, default OFF). Computes 2 LTS + 1 H_htsig0 + 1 H_htsig1 weighted average
+  using Phase 39's estimate_H_from_htsig_pilots inner kernel, dampening 4→52
+  interpolation overshoot. Goal: reduce HT_SIG metric from 13 (Phase 117) toward
+  ≤10 viterbi threshold. **PARTIAL** (Phase 118b verdict 2026-07-08): metric 13→12
+  (best 4 candidates), 5 HTSIG_H_AVERAGE fires, HT_SIG_CAND 144→48, avg_snr_ht
+  2.81→2.58. C++ preserved as opt-in. **Phase 119 (per-bin safety filter)
+  REFUTED on USRP** — safety filter rejecting |H_pilot-Hhdr52|>50% did NOT
+  improve metric (still 12-17). Pilot-based H does not overshoot significantly
+  enough. Phase 118b H_AVERAGE already at theoretical per-symbol H refinement
+  limit from 4 pilots. Verdict: `docs/superpowers/notes/2026-07-08-phase119-h-average-safe-verdict.md`.
 - **IEEE80211_FFT_WINDOW_DUMP=1** — Phase 108 diagnostic (opt-in, default OFF):
   dumps abs_in_off, d_data_start_rel, sym_idx_at_h52, d_internal_symbol_counter
   at the H52 compute site. Used to verify upstream FFT window alignment.
@@ -132,22 +162,24 @@ hierarchy applies:
   viterbi). Loopback 1/1 PASS unchanged.
 - 5250 MHz cable run still required for USRP realtime FCS_OK ≥ 1 (HARD CONSTRAINT).
   HT-SIG viterbi needs avg_snr_htsig > 6 dB (currently 2-3 dB at 5890 air).
-- 21+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
-  `禁止方向` section. **Equalizer layer is CLOSED** — Phase 87 found root
-  cause UPSTREAM: sync_short fails L-STF detection → sync_long correlation
-  search fallback (sync_long.cc:555) produces 156 NOISE frames in
-  /tmp/p28_loopback_iq.fc32. **Phase 84 51% rate=0x9 was the equalizer's
-  response to NOISE, not a channel property.** Phase 88 IDENTIFIED the
-  algorithm flaw; **Phase 89 must replace the detector** (not just threshold
-  tune) before any equalizer-layer validation on this dataset.
+- 30+ REFUTED equalizer-layer hypotheses documented in MEMORY.md
+  `禁止方向` section. **Equalizer layer is NOT closed** — per user's 2026-07-07
+  directive "不可能接受现状", equalizer attacks MUST continue. New
+  architectures (DD + Kalman + alternative H estimation + per-frame phase
+  tracking) must be tried. Phase 87 found root cause UPSTREAM: sync_short
+  fails L-STF detection → sync_long correlation search fallback
+  (sync_long.cc:555) produced 156 NOISE frames in /tmp/p28_loopback_iq.fc32.
+  **Phase 84 51% rate=0x9 was the equalizer's response to NOISE, not a
+  channel property.** Phase 88 IDENTIFIED the algorithm flaw; Phase 89
+  REPLACED the detector (not just threshold tune) — sync_short now works
+  on USRP IQ (corr=3.163 detected). Equalizer itself is the next target.
 - **IEEE80211_SYNC_SHORT_FUSED_DUMP=1** — Phase 88 diagnostic: logs
   batch_power, noise_floor, max_cor, n>0.001, n>0.01 per call. Default OFF.
 
-*Last updated: 2026-07-06 (Phase 108 CLOSURE — FFT-window fix PARTIALLY REFUTED.
-IEEE80211_FFT_WINDOW_DUMP confirms upstream is sample-stable per-frame (not
-the misaligned block). IEEE80211_CONST_CPE_APPLY reduces |eq|^2 max outlier
-by 100x (18827→175) but Phase 107's "static 30° rotation" hypothesis is
-REFUTED — per-SC phase_offset is random across [-180°,+180°] across 2733
-measurements. Mean FCS_OK unchanged (11→11 across 5+5 runs). HARD CONSTRAINT
-NOT achieved. Phase 109+ plan: per-frame CFO/SFO estimator investigation +
-UHD streaming stability (Phase 55 revisit) + RF chain per-SC |H| check.)*
+*Last updated: 2026-07-07 (Phase 110 — user explicitly rejected closure.
+**USRP realtime FCS_OK is the absolute goal.** "Equalizer layer is CLOSED"
+language REMOVED; equalizer attacks MUST continue. After 30+ REFUTED at
+equalizer layer, equalizer layer is **STILL THE TARGET** — new architectures
+(DD + Kalman + alternative H estimation) must be tried. Loopback-only
+verification is NOT an acceptable outcome. Per user directive: "不可能接受
+现状，我的目标是实现USRP FCS OK".)*

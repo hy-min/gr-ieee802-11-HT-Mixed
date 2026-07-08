@@ -181,6 +181,23 @@ private:
     // IEEE80211_HTSIG_H_REESTIMATE=1.
     bool d_apply_htsig_h_reestimate;
 
+    // Phase 118b: HT-SIG pilot-augmented H52 averaging. Uses Phase 39's
+    // estimate_H_from_htsig_pilots inner kernel, then averages its output
+    // with Hhdr52 to dampen 4→52 interpolation overshoot. Math:
+    //   2 LTS (1.25 rad) + 1 H_htsig0 (~1.77 rad) + 1 H_htsig1 (~1.77 rad)
+    //   = 0.84 rad effective per-SC noise (below 1 rad viterbi wall).
+    // Default OFF (no loopback regression). Enable via
+    // IEEE80211_HTSIG_H_AVERAGE=1.
+    bool d_apply_htsig_h_average;
+
+    // Phase 119: H_AVERAGE with per-bin safety filter. Same averaging
+    // formula as Phase 118b, but rejects pilot refinement at SCs where
+    // |H_pilot - Hhdr52| > 50% * |Hhdr52|. Goal: avoid Phase 39
+    // interpolation overshoot at non-pilot SCs that hurts metric
+    // distribution. Default OFF. Enable via
+    // IEEE80211_HTSIG_H_AVERAGE_SAFE=1.
+    bool d_apply_htsig_h_average_safe;
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
