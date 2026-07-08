@@ -54,6 +54,21 @@ def internal_run(args):
               "(IEEE80211_T7E_MULTISYM_H=1, IEEE80211_T7E_MULTISYM_K={})".format(args.t7e_k),
               flush=True)
 
+    # Phase 114: T5.A + T3.B (Step 1) + T4.D (Step 2) stack (opt-in via --uhd-tune).
+    # Step 1 re-tests Phase 77c SNR-weighted L-LTF averaging under T5.A's cleaned-up
+    # analog chain state. Phase 77c was REFUTED before T5.A; signal quality has
+    # changed since (LSIG_DECODE OK 1→11). Default OFF preserves baseline.
+    if args.uhd_tune:
+        os.environ['IEEE80211_H52_SNR_WEIGHTED'] = '1'
+        # Step 2 (HT-LTF 2x averaging) requires explicit --htltf-avg flag
+        # to keep Step 1 test isolation. Default OFF.
+        if args.htltf_avg:
+            os.environ['IEEE80211_HTLTF_AVG'] = '1'
+            print(f"[TEST] Phase 114 Step 2 ENABLED: "
+                  "IEEE80211_HTLTF_AVG=1 (HT-LTF 2x averaging)")
+        print(f"[TEST] Phase 114 Step 1 ENABLED: "
+              "IEEE80211_H52_SNR_WEIGHTED=1 (L-LTF0+L-LTF1 SNR-weighted)")
+
     from gnuradio import gr, blocks, uhd
     import pmt
     import ieee802_11
@@ -334,6 +349,11 @@ def main():
                         help='Phase 113 T5.A: disable RX DC offset + IQ balance '
                              'calibration, force LO source internal. Attacks 1.77 rad '
                              'analog chain noise floor (Phase 112 R1 ceiling).')
+    # Phase 114: T4.D HT-LTF 2x averaging (opt-in via --htltf-avg, requires --uhd-tune).
+    # Uses 2 HT-LTF symbols for cleaner H52 estimation. Default OFF.
+    parser.add_argument('--htltf-avg', action='store_true',
+                        help='Phase 114 Step 2: enable HT-LTF 2x averaging '
+                             '(IEEE80211_HTLTF_AVG=1). Requires --uhd-tune.')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
