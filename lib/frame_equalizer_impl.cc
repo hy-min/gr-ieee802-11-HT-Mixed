@@ -752,6 +752,7 @@ extern bool ltf0_saved;
 extern bool ltf0_ever_saved;
 extern bool g_log_ltf0_fft;
 
+
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
                                               const gr_complex* H52_tx_order,
@@ -3990,6 +3991,101 @@ static void apply_per_sc_phase_correction(
 
 } // anonymous namespace
 
+// Phase 123: cross-frame H52 averaging. Member function (not static) because
+// it needs to read/write the per-instance history buffer d_h52_history and
+// the counter d_h52_history_count.
+//
+// Inputs:
+//   h_cur: refined H_a_ptr from current frame (after H_AVERAGE / H_REESTIMATE / etc.)
+//   freq_key: current carrier frequency (used to detect frequency change and
+//             reset history if needed)
+//   h_out: output buffer for averaged H52 (52 elements)
+//
+// Behavior:
+//   1. If freq_key differs from d_h52_history_freq_key (or first time),
+//      reset history (clear count, store freq_key).
+//   2. Compute uniform mean of (h_cur + d_h52_history[0..count-1]).
+//   3. Push h_cur into the FIFO at position d_h52_history_count (or wrap).
+//   4. Increment count (capped at d_h52_history_depth).
+//
+// Math: σ_per_SC ~ σ_post_avg / sqrt(1 + count). For Phase 118b H_AVERAGE
+// (σ ~ 0.88 rad) with N=4, σ ~ 0.44 rad — theoretical break below 1 rad
+// viterbi wall.
+void frame_equalizer_impl::ref_h52_cross_frame_average(const gr_complex* h_cur,
+                                                       double freq_key,
+                                                       gr_complex* h_out)
+{
+    if (!d_apply_htsig_h_cross_frame || d_h52_history_depth < 1) {
+        // Should not happen (gated by apply site), but defensive.
+        for (int i = 0; i < 52; i++) h_out[i] = h_cur[i];
+        return;
+    }
+
+    // 1) Frequency-keyed reset detection. Allow tiny float drift (1 Hz).
+    const double freq_delta = std::abs(freq_key - d_h52_history_freq_key);
+    const bool first_call = (d_h52_history_count == 0);
+    const bool freq_changed = !first_call && (freq_delta > 1.0);
+
+    if (freq_changed) {
+        USRP_LOG("[H52_CROSS_FRAME] freq change detected (%.0f -> %.0f Hz), "
+                 "resetting history (was count=%d)\n",
+                 d_h52_history_freq_key, freq_key, d_h52_history_count);
+        d_h52_history_count = 0;
+    }
+    if (first_call || freq_changed) {
+        d_h52_history_freq_key = freq_key;
+    }
+
+    // 2) Compute averaged H52 across (h_cur + history[0..count-1]).
+    const int n_avg = 1 + d_h52_history_count;  // current + history
+    const float inv_n = 1.0f / (float)n_avg;
+    for (int i = 0; i < 52; i++) {
+        gr_complex sum = h_cur[i];
+        for (int j = 0; j < d_h52_history_count; j++) {
+            sum += d_h52_history[j][i];
+        }
+        h_out[i] = sum * inv_n;
+    }
+
+    // 3) Push h_cur into history (FIFO). If history is full, shift older
+    // entries down (FIFO eviction). With depth <= 8 this is cheap.
+    if (d_h52_history_count >= d_h52_history_depth) {
+        // Full: shift down by 1, drop oldest.
+        for (int j = 0; j < d_h52_history_depth - 1; j++) {
+            for (int i = 0; i < 52; i++) {
+                d_h52_history[j][i] = d_h52_history[j + 1][i];
+            }
+        }
+        d_h52_history_count = d_h52_history_depth - 1;
+    }
+    // Insert h_cur at position [count]
+    for (int i = 0; i < 52; i++) {
+        d_h52_history[d_h52_history_count][i] = h_cur[i];
+    }
+    d_h52_history_count++;
+
+    // 4) Diagnostic: log variance of |h_cur| vs averaged (cheap proxy for
+    // whether averaging is helping or hurting). Per-SC arg std would be
+    // better but needs more code; mean magnitude is enough for the
+    // "channel stable?" check.
+    {
+        double cur_mag_sum = 0.0, avg_mag_sum = 0.0;
+        for (int i = 0; i < 52; i++) {
+            cur_mag_sum += std::abs(h_cur[i]);
+            avg_mag_sum += std::abs(h_out[i]);
+        }
+        const float cur_mag_mean = (float)(cur_mag_sum / 52.0);
+        const float avg_mag_mean = (float)(avg_mag_sum / 52.0);
+        static int cft_log_count = 0;
+        if (cft_log_count < 10) {
+            USRP_LOG("[H52_CROSS_FRAME] n_avg=%d depth=%d cur_mag=%.4f "
+                     "avg_mag=%.4f freq=%.0f\n",
+                     n_avg, d_h52_history_depth, cur_mag_mean, avg_mag_mean,
+                     freq_key);
+            cft_log_count++;
+        }
+    }
+}
 // ======================================================================
 
 frame_equalizer::sptr
@@ -4242,6 +4338,39 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_apply_dde_ht_sig_per_sc = (env_dde_persc && env_dde_persc[0] == '1');
     if (d_apply_dde_ht_sig_per_sc) {
         std::cout << "[FRAME_EQ] IEEE80211_DDE_HT_SIG_PER_SC=1 (Per-SC DDE with phase filter, dot-product test against Hhdr52)\n";
+    }
+
+    // Phase 123: Cross-frame H52 tracking. Stores H_a_ptr from previous
+    // N frames and averages with current frame's H52 to reduce per-SC
+    // noise. N is configurable via env var (default unset = OFF).
+    // Recommended values: 2 (σ~0.62 rad), 4 (σ~0.44 rad, theoretical
+    // break below 1 rad viterbi wall), 8 (σ~0.31 rad).
+    d_apply_htsig_h_cross_frame = false;
+    d_h52_history_depth = 0;
+    d_h52_history_count = 0;
+    d_h52_history_freq_key = 0.0;
+    {
+        const char* env_cft = std::getenv("IEEE80211_H52_CROSS_FRAME_TRACK");
+        if (env_cft && env_cft[0] != '\0') {
+            int n = atoi(env_cft);
+            if (n >= 1 && n <= kMaxH52History) {
+                d_apply_htsig_h_cross_frame = true;
+                d_h52_history_depth = n;
+                std::cout << "[FRAME_EQ] IEEE80211_H52_CROSS_FRAME_TRACK="
+                          << n << " (cross-frame H52 averaging with N=" << n
+                          << ", theoretical sigma reduction 1/sqrt(N))\n";
+            } else {
+                std::cout << "[FRAME_EQ] IEEE80211_H52_CROSS_FRAME_TRACK="
+                          << env_cft << " (out of range 1.." << kMaxH52History
+                          << ", disabled)\n";
+            }
+        }
+        // Zero-initialize history buffer (defensive)
+        for (int i = 0; i < kMaxH52History; i++) {
+            for (int k = 0; k < 52; k++) {
+                d_h52_history[i][k] = gr_complex(0.0f, 0.0f);
+            }
+        }
     }
 
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps
@@ -7211,6 +7340,29 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         d_early_eqsym[kHtSig0Rel], Hhdr52, H_a_ptr, H_dde_persc);
                     H_b_ptr = H_dde_persc;
                     USRP_LOG("[DDE_HT_SIG_PER_SC] H_b_ptr = per-SC with phase filter (dot>0)\n");
+                }
+
+                // Phase 123: Cross-frame H52 tracking. Averages current
+                // H_a_ptr with the previous d_h52_history_count frames'
+                // H_a_ptr values (FIFO). For Phase 118b H_AVERAGE input
+                // (σ ~ 0.88 rad), N=4 yields σ ~ 0.44 rad theoretically,
+                // breaking the 1 rad viterbi wall. Chain AFTER all other
+                // refinements so history stores the BEST estimate per
+                // frame. Reassigns BOTH H_a_ptr and H_b_ptr (HT-SIG1 uses
+                // the same averaged H — this is intentional, since they
+                // are 4us apart and per-symbol channel drift is part of
+                // the 1.77 rad floor).
+                if (d_apply_htsig_h_cross_frame &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    gr_complex H_cft[52];
+                    ref_h52_cross_frame_average(
+                        H_a_ptr, d_freq_offset_from_synclong, H_cft);
+                    H_a_ptr = H_cft;
+                    H_b_ptr = H_cft;
+                    USRP_LOG("[H52_CROSS_FRAME] H_a_ptr = H_b_ptr = mean of "
+                             "current + %d prior frames (N=%d)\n",
+                             d_h52_history_count - 1, d_h52_history_depth);
                 }
 
                 // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate

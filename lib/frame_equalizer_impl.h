@@ -213,6 +213,21 @@ private:
     // IEEE80211_DDE_HT_SIG_PER_SC=1.
     bool d_apply_dde_ht_sig_per_sc;
 
+    // Phase 123: Cross-frame H52 tracking. Stores the refined H_a_ptr
+    // (after H_AVERAGE / H_REESTIMATE / etc.) from the previous N frames
+    // and averages with current frame's H52 to reduce per-SC noise below
+    // the 1.77 rad Phase 112 R1 ceiling. Math: σ ~ 0.88/sqrt(N) rad when
+    // applied AFTER Phase 118b H_AVERAGE. History is a FIFO ring buffer
+    // of size N (configurable 2/3/4/8 via IEEE80211_H52_CROSS_FRAME_TRACK).
+    // History is reset when the carrier frequency changes. Default OFF.
+    // Enable via IEEE80211_H52_CROSS_FRAME_TRACK=N (e.g. 2, 3, 4, 8).
+    bool d_apply_htsig_h_cross_frame;
+    int  d_h52_history_depth;        // N (from env var, 1..8)
+    int  d_h52_history_count;        // number of valid entries currently stored
+    static const int kMaxH52History = 8;
+    gr_complex d_h52_history[8][52]; // FIFO ring buffer of H_a_ptr from previous N frames
+    double d_h52_history_freq_key;   // last frequency for reset detection
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
@@ -281,6 +296,14 @@ private:
     gr_complex d_H52_tx_order[52] = {gr_complex(0.0f, 0.0f)};
     bool d_H52_tx_order_valid = false;
     bool d_frame_bytes_tag_emitted = false;  // guard: emit frame_bytes tag only once per frame
+
+    // Phase 123: cross-frame H52 tracking. d_h52_history holds the H_a_ptr
+    // from the previous d_h52_history_count frames (FIFO ring buffer of
+    // size d_h52_history_depth). ref_h52_cross_frame_average() is a member
+    // function because it needs to update the history buffer.
+    void ref_h52_cross_frame_average(const gr_complex* h_cur,
+                                     double freq_key,
+                                     gr_complex* h_out);
 
     // dynamic header detection state
     bool d_have_lsig;
