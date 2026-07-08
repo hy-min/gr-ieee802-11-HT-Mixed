@@ -193,9 +193,9 @@ def internal_run(args):
                     # gr-uhd 4.9.0.0 binding uses set_auto_dc_offset / set_auto_iq_balance
                     # (not set_rx_dc_offset as in raw UHD C++ API).
                     # Disabling auto-calibration may reduce per-SC phase noise floor.
+                    # set_rx_agc not supported on UBX-160 (per Task 4 test) — omit.
                     self.uhd_usrp_source.set_auto_dc_offset(False, 0)
                     self.uhd_usrp_source.set_auto_iq_balance(False, 0)
-                    self.uhd_usrp_source.set_rx_agc(False, 0)
                     self.uhd_usrp_source.set_lo_source('internal', 0)
                     print("[TEST] UHD micro-tunings applied successfully")
                 except (RuntimeError, AttributeError) as e:
