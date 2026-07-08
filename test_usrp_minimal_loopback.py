@@ -190,9 +190,13 @@ def internal_run(args):
                 print("[TEST] UHD micro-tunings ENABLED (Phase 113 T5.A): "
                       "DC=off, IQ=off, LO=internal")
                 try:
-                    self.uhd_usrp_source.set_rx_dc_offset(False, 0)
-                    self.uhd_usrp_source.set_rx_iq_balance(False, 0)
-                    self.uhd_usrp_source.set_rx_lo_source('internal', 0)
+                    # gr-uhd 4.9.0.0 binding uses set_auto_dc_offset / set_auto_iq_balance
+                    # (not set_rx_dc_offset as in raw UHD C++ API).
+                    # Disabling auto-calibration may reduce per-SC phase noise floor.
+                    self.uhd_usrp_source.set_auto_dc_offset(False, 0)
+                    self.uhd_usrp_source.set_auto_iq_balance(False, 0)
+                    self.uhd_usrp_source.set_rx_agc(False, 0)
+                    self.uhd_usrp_source.set_lo_source('internal', 0)
                     print("[TEST] UHD micro-tunings applied successfully")
                 except (RuntimeError, AttributeError) as e:
                     print(f"[TEST] UHD API micro-tuning failed (non-fatal): {e}")
