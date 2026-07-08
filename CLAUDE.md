@@ -153,6 +153,16 @@ following hierarchy applies:
   HT-LTF (5-6 symbols). 3-way averaging adds drift penalty > noise reduction.
   **2 LTS only (Phase 117 baseline) is best for cross-board**. Verdict:
   `docs/superpowers/notes/2026-07-08-phase122-htltf-avg-revisit-verdict.md`.
+- **IEEE80211_H52_CROSS_FRAME_TRACK=N** — Phase 123 cross-frame H52 tracking
+  (opt-in, default OFF). N ∈ {1..8}. Stores refined H_a_ptr from previous N
+  frames in FIFO ring buffer; averages with current frame's H_a_ptr.
+  Chains AFTER Phase 118b H_AVERAGE: σ_post_avg / sqrt(N). N=4 → σ ~ 0.44 rad
+  (theoretical break below 1 rad viterbi wall). Frequency-keyed reset (1 Hz
+  threshold). **Phase 123 verdict 2026-07-08: INCONCLUSIVE on USRP** —
+  implementation correct (compile OK, loopback 1/1 PASS), but USRP test
+  Recv=0/120 due to sync_short detection starving the HT-SIG chain (apply
+  block is gated behind `if (lsig_ok)`). File-replay validation needed for
+  Phase 124. Verdict: `docs/superpowers/notes/2026-07-08-phase123-cross-frame-h-verdict.md`.
 - **IEEE80211_FFT_WINDOW_DUMP=1** — Phase 108 diagnostic (opt-in, default OFF):
   dumps abs_in_off, d_data_start_rel, sym_idx_at_h52, d_internal_symbol_counter
   at the H52 compute site. Used to verify upstream FFT window alignment.
