@@ -681,6 +681,71 @@ static void refine_h52_dde_scalar(
     }
 }
 
+// Phase 121: Per-SC Decision-Directed Equalizer with phase filter.
+// Per-SC H estimation: H_est[sc] = rx52_a[sc] / constellation[sc].
+//
+// Phase filter: compute dot product of conj(Hhdr52[sc]) * H_est[sc]
+// (real part). If positive, H_est agrees with Hhdr52 phase (likely
+// correct bit). If negative, H_est is inverted (likely wrong bit, since
+// wrong bits give H_est = -H_true).
+//
+// Filter behavior:
+//   - Correct bit (80%): use H_est[sc] (per-SC, preserves frequency
+//     selectivity + closer in time to HT-SIG1 than Hhdr52)
+//   - Wrong bit (20%): use Hhdr52[sc] (fallback to L-LTF estimate)
+//
+// Math: H_est noise per SC = 1.77 rad (same as Hhdr52). Filter doesn't
+// reduce noise but accepts only the in-phase estimate. For USRP, if
+// channel drift dominates, H_est (HT-SIG0, 1 symbol before HT-SIG1)
+// may have lower drift than Hhdr52 (HT-LTF, 3-4 symbols before).
+static void refine_h52_dde_per_sc(
+    const gr_complex* rx52_a,    // raw HT-SIG0 FFT (52 SCs)
+    const gr_complex* Hhdr52,    // L-LTF-based H52 (reference for filter)
+    const gr_complex* H52_in,    // initial H52 (for BPSK decision)
+    gr_complex* H52_out)         // output H52 (per-SC with filter)
+{
+    // Pilots at positions 48-51 (SCs -21, -7, +7, +21): known HT-SIG0
+    // QBPSK values [+j, +j, +j, -j]. Always trust pilots (no BPSK
+    // decision needed; they are the "anchors" for the filter).
+    const gr_complex pilot_vals[4] = {
+        gr_complex(0.0f, +1.0f), gr_complex(0.0f, +1.0f),
+        gr_complex(0.0f, +1.0f), gr_complex(0.0f, -1.0f)
+    };
+    for (int p = 0; p < 4; p++) {
+        const int i = 48 + p;
+        if (std::abs(Hhdr52[i]) < 1e-3f) {
+            H52_out[i] = H52_in[i];
+            continue;
+        }
+        H52_out[i] = rx52_a[i] / pilot_vals[p];
+    }
+
+    // Data SCs (0..47): BPSK decision + dot product filter
+    for (int i = 0; i < 48; i++) {
+        if (std::abs(Hhdr52[i]) < 1e-3f || std::abs(H52_in[i]) < 1e-3f) {
+            H52_out[i] = H52_in[i];
+            continue;
+        }
+        // Step 1: BPSK decision on equalized HT-SIG0
+        const gr_complex eq = rx52_a[i] / H52_in[i];
+        const gr_complex constellation =
+            (eq.imag() >= 0.0f) ? gr_complex(0.0f, +1.0f)
+                                : gr_complex(0.0f, -1.0f);
+        // Step 2: H estimate
+        const gr_complex H_est = rx52_a[i] / constellation;
+        // Step 3: dot product filter (Re(conj(Hhdr52) * H_est) > 0?)
+        const float dot = (Hhdr52[i].real() * H_est.real() +
+                           Hhdr52[i].imag() * H_est.imag());
+        if (dot > 0.0f) {
+            // Phase agrees with Hhdr52: trust DDE
+            H52_out[i] = H_est;
+        } else {
+            // Phase inverted: bit was likely wrong, use Hhdr52 fallback
+            H52_out[i] = Hhdr52[i];
+        }
+    }
+}
+
 // Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
@@ -4169,6 +4234,16 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_DDE_HT_SIG=1 (Decision-Directed Equalizer ENABLED, scalar H from HT-SIG0 BPSK)\n";
     }
 
+    // Phase 121: Per-SC DDE with phase filter. Per-SC H estimation
+    // from HT-SIG0 BPSK decisions, with dot-product filter to reject
+    // wrong-bit SCs (inverted H). Preserves per-SC frequency
+    // selectivity. Default OFF.
+    const char* env_dde_persc = std::getenv("IEEE80211_DDE_HT_SIG_PER_SC");
+    d_apply_dde_ht_sig_per_sc = (env_dde_persc && env_dde_persc[0] == '1');
+    if (d_apply_dde_ht_sig_per_sc) {
+        std::cout << "[FRAME_EQ] IEEE80211_DDE_HT_SIG_PER_SC=1 (Per-SC DDE with phase filter, dot-product test against Hhdr52)\n";
+    }
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps
     // |H_htsig0|, |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC
     // for offline verification. Enable via IEEE80211_HTSIG_H52_DUMP=1.
@@ -7122,6 +7197,20 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         d_early_eqsym[kHtSig0Rel], H_a_ptr, H_dde);
                     H_b_ptr = H_dde;
                     USRP_LOG("[DDE_HT_SIG] H_b_ptr = scalar from HT-SIG0 BPSK (48 data + 4 pilots averaged)\n");
+                }
+
+                // Phase 121: Per-SC DDE with phase filter. Per-SC H
+                // estimation from HT-SIG0 BPSK decisions. Dot-product
+                // filter (Re(conj(Hhdr52)*H_est) > 0) rejects wrong-bit
+                // SCs. Preserves frequency selectivity.
+                if (d_apply_dde_ht_sig_per_sc &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    gr_complex H_dde_persc[52];
+                    refine_h52_dde_per_sc(
+                        d_early_eqsym[kHtSig0Rel], Hhdr52, H_a_ptr, H_dde_persc);
+                    H_b_ptr = H_dde_persc;
+                    USRP_LOG("[DDE_HT_SIG_PER_SC] H_b_ptr = per-SC with phase filter (dot>0)\n");
                 }
 
                 // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate

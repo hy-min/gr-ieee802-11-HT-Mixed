@@ -206,6 +206,13 @@ private:
     // IEEE80211_DDE_HT_SIG=1.
     bool d_apply_dde_ht_sig;
 
+    // Phase 121: Per-SC DDE with phase filter. Per-SC H estimation from
+    // HT-SIG0 BPSK decisions, with dot-product filter (against Hhdr52)
+    // to reject wrong-bit SCs (inverted H). Preserves per-SC frequency
+    // selectivity. Default OFF. Enable via
+    // IEEE80211_DDE_HT_SIG_PER_SC=1.
+    bool d_apply_dde_ht_sig_per_sc;
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
