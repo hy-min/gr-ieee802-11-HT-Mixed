@@ -669,6 +669,14 @@ static bool have_saved_ltf0_raw52 = false;
 static gr_complex saved_htltf_edge[4] = {{0,0},{0,0},{0,0},{0,0}};
 static bool htltf_edge_saved = false;
 
+// Phase 114 T4.D (alt): saved full HT-LTF 52 SCs (in tx_order, not natural
+// FFT bin order). Populated at extract_call==6 when IEEE80211_HTLTF_AVG=1.
+// Used by estimate_header_channel_from_lltf52() as third |H|-weighted
+// source alongside LTS0/LTS1.
+static gr_complex saved_htltf_52[52] = {{0,0}};
+static bool htltf_52_saved = false;
+static bool g_htltf_avg = false;  // Bridge from d_apply_htltf_avg to static estimator
+
 // Compute channel estimate H for 52 HT data subcarriers in tx_order from L-LTF0.
 // lltf0_52: 48 data SCs in kHeader48Sc order + 4 pilots in kPilot4Sc order.
 static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out)
@@ -959,6 +967,19 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
         saved_htltf_edge[2] = sym64[27];  // SC +27
         saved_htltf_edge[3] = sym64[28];  // SC +28
         htltf_edge_saved = true;
+
+        // Phase 114 T4.D (alt): save full 52 SCs in tx_order for 3-way
+        // SNR-weighted averaging. Only when IEEE80211_HTLTF_AVG=1 to avoid
+        // wasting CPU on default-OFF paths.
+        if (g_htltf_avg) {
+            for (int i = 0; i < 48; i++) {
+                saved_htltf_52[i] = sym64[kHeader48Bin[i]];
+            }
+            for (int i = 0; i < 4; i++) {
+                saved_htltf_52[48 + i] = sym64[kPilot4Bin[i]];
+            }
+            htltf_52_saved = true;
+        }
     }
 
     extract_call_count++;
@@ -1120,6 +1141,63 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     }
     USRP_LOG("[H52_SNR_WEIGHTED] w0=%.4f w1=%.4f ratio=%.3f\n",
              w0, w1, (w0 + 1e-12) / (w1 + 1e-12));
+
+    // Phase 114 T4.D (alt): if IEEE80211_HTLTF_AVG=1 AND HT-LTF 52 SCs were
+    // captured, blend H_HTLTF into the weighted average as a third source.
+    // 3-way: H52 = (w0'*H_LTS0 + w1'*H_LTS1 + w_htltf*H_HTLTF) / total3
+    // Recompute weights so all 3 sources compete; global |H|-weight scheme.
+    if (g_htltf_avg && htltf_52_saved) {
+        gr_complex H_HTLTF[52];
+        // Compute H from HT-LTF using HT-LTF TX reference (+1 for all SCs
+        // after Phase 34-style normalization; HT-LTF P matrix is +1/-1 per
+        // 802.11n Table G.13 — but for |H| estimation only magnitude matters
+        // and PHT_LTF[bin]≈+1 for most active SCs). We use kLltf48TX as a
+        // rough proxy (same shape as L-LTF in HT-Mixed), good enough for
+        // H estimation refinement. Pilot sign uses kLltfPilotTX.
+        for (int i = 0; i < 48; i++) {
+            const gr_complex ht = saved_htltf_52[i];
+            const gr_complex tx = kLltf48TX[i];
+            if (std::abs(tx) > 0.001f) {
+                H_HTLTF[i] = ht / tx;
+            } else {
+                H_HTLTF[i] = ht;
+            }
+        }
+        for (int i = 0; i < 4; i++) {
+            const gr_complex ht = saved_htltf_52[48 + i];
+            const gr_complex tx = gr_complex((float)kLltfPilotTX[i], 0.0f);
+            if (std::abs(tx) > 0.001f) {
+                H_HTLTF[48 + i] = ht / tx;
+            } else {
+                H_HTLTF[48 + i] = ht;
+            }
+        }
+        // Recompute weights using all 3 sources.
+        double wt0 = 0.0, wt1 = 0.0, wt_ht = 0.0;
+        for (int i = 0; i < 52; i++) {
+            wt0 += std::abs(H_LTS0[i]);
+            wt1 += std::abs(H_LTS1[i]);
+            wt_ht += std::abs(H_HTLTF[i]);
+        }
+        double total3 = wt0 + wt1 + wt_ht;
+        if (total3 > 1e-9) {
+            for (int i = 0; i < 52; i++) {
+                // Each weight is the OTHER two sources' magnitudes (so that
+                // the highest-magnitude source contributes MOST — same scheme
+                // as Phase 77c 2-way).
+                H52[i] = gr_complex(
+                    (wt1 * H_LTS0[i].real() + wt0 * H_LTS1[i].real() +
+                     wt_ht * H_HTLTF[i].real()) / total3,
+                    (wt1 * H_LTS0[i].imag() + wt0 * H_LTS1[i].imag() +
+                     wt_ht * H_HTLTF[i].imag()) / total3);
+            }
+            USRP_LOG("[H52_3WAY_AVG] wt0=%.4f wt1=%.4f wt_ht=%.4f "
+                     "ratio_ltf01=%.3f ratio_ltf0ht=%.3f\n",
+                     wt0, wt1, wt_ht,
+                     (wt0 + 1e-12) / (wt1 + 1e-12),
+                     (wt0 + 1e-12) / (wt_ht + 1e-12));
+        }
+    }
 }
 
 // Phase 34: estimate per-frame sub-sample timing offset δ from H52.
@@ -3911,6 +3989,15 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_H52_SNR_WEIGHTED=1 (SNR-weighted H52 ENABLED)\n";
     }
 
+    // Phase 114 T4.D (alt): include HT-LTF as a third SNR-weighted source.
+    // Requires H52_SNR_WEIGHTED to be effective. Independent flag for safety.
+    const char* env_htltf_avg = std::getenv("IEEE80211_HTLTF_AVG");
+    d_apply_htltf_avg = (env_htltf_avg && env_htltf_avg[0] == '1');
+    g_htltf_avg = d_apply_htltf_avg;  // Propagate to static estimator
+    if (d_apply_htltf_avg) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTLTF_AVG=1 (3-way SNR-weighted H52 with HT-LTF ENABLED)\n";
+    }
+
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
     // error rotates BPSK constellation, causing viterbi_fail. Dump the
@@ -4497,10 +4584,12 @@ void frame_equalizer_impl::reset_frame_state(void)
 
     g_extract_call_count = 0;
     htltf_edge_saved = false;
+    htltf_52_saved = false;  // Phase 114 T4.D (alt): reset HT-LTF 52 SCs flag
     ltf0_ever_saved = false;
     ltf0_saved = false;
     std::memset(saved_ltf0_fft, 0, sizeof(saved_ltf0_fft));
     std::memset(saved_htltf_edge, 0, sizeof(saved_htltf_edge));
+    std::memset(saved_htltf_52, 0, sizeof(saved_htltf_52));
     d_equalizer->reset();
 
     // Phase 111: reset Kalman state per frame. New L-LTF H52 will reinitialize.

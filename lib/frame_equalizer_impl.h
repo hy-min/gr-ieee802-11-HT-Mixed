@@ -197,6 +197,17 @@ private:
     // Enable via IEEE80211_H52_SNR_WEIGHTED=1.
     bool d_apply_h52_snr_weighted;
 
+    // Phase 114 T4.D (alt): include HT-LTF as a third SNR-weighted source.
+    // HT-Mixed single-stream frames have ONE HT-LTF symbol (extract_call==6),
+    // so "2x averaging" was architecturally wrong. Instead, when enabled,
+    // extract_header_channel_from_lltf52() blends H_HTLTF into the Phase 77c
+    // |H|-weighted framework as a third source:
+    //   H52 = (w_htl*H_LTS0 + w_ltf1*H_LTS1 + w_htltf*H_HTLTF) / sum(w)
+    // Reduces per-SC H estimation noise from 2-way → 3-way averaging.
+    // Default OFF preserves Phase 18/34/77c baseline. Enable via
+    // IEEE80211_HTLTF_AVG=1 (requires IEEE80211_H52_SNR_WEIGHTED=1).
+    bool d_apply_htltf_avg;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the
