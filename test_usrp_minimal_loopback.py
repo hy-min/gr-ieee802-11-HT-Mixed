@@ -307,6 +307,12 @@ def main():
     # Phase 112: T7e multi-symbol H52 averaging + HT-SIG re-decode
     parser.add_argument('--t7e-on', action='store_true', help='Enable T7e (IEEE80211_T7E_MULTISYM_H=1)')
     parser.add_argument('--t7e-k', type=int, default=5, help='T7e K (number of DATA symbols to average, default 5)')
+    # Phase 113: T5.A UHD API micro-tunings (DC offset, IQ balance, LO source)
+    # Default OFF — Phase 112 baseline preserved when flag absent.
+    parser.add_argument('--uhd-tune', action='store_true',
+                        help='Phase 113 T5.A: disable RX DC offset + IQ balance '
+                             'calibration, force LO source internal. Attacks 1.77 rad '
+                             'analog chain noise floor (Phase 112 R1 ceiling).')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
