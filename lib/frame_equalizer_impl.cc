@@ -676,6 +676,7 @@ static bool htltf_edge_saved = false;
 static gr_complex saved_htltf_52[52] = {{0,0}};
 static bool htltf_52_saved = false;
 static bool g_htltf_avg = false;  // Bridge from d_apply_htltf_avg to static estimator
+static bool g_log_htltf_avg_debug = false;  // Phase 114 root cause diag
 
 // Compute channel estimate H for 52 HT data subcarriers in tx_order from L-LTF0.
 // lltf0_52: 48 data SCs in kHeader48Sc order + 4 pilots in kPilot4Sc order.
@@ -985,6 +986,15 @@ static void extract_header52_from_sym64(const gr_complex* sym64, gr_complex* out
     extract_call_count++;
     g_extract_call_count = extract_call_count;
 
+    // Phase 114 T4D root cause: track each call's extract_call_count value
+    // to diagnose why extract_call==6 never fires on USRP 5250 cable.
+    if (g_log_htltf_avg_debug) {
+        std::cout << "[T4D_DIAG] extract_call_count=" << extract_call_count
+                  << " (post-increment) g_htltf_avg=" << g_htltf_avg
+                  << " htltf_52_saved=" << htltf_52_saved
+                  << " extract_call_count_pre=" << (extract_call_count - 1) << "\n";
+    }
+
     for (int i = 0; i < 48; i++) {
         out52[i] = sym64[kHeader48Bin[i]];  // EXPLICIT bin mapping!
     }
@@ -1146,6 +1156,10 @@ static void estimate_header_channel_from_lltf52(const gr_complex* lltf0_52,
     // captured, blend H_HTLTF into the weighted average as a third source.
     // 3-way: H52 = (w0'*H_LTS0 + w1'*H_LTS1 + w_htltf*H_HTLTF) / total3
     // Recompute weights so all 3 sources compete; global |H|-weight scheme.
+    if (g_log_htltf_avg_debug) {
+        std::cout << "[T4D_DIAG] 3way check: g_htltf_avg=" << g_htltf_avg
+                  << " htltf_52_saved=" << htltf_52_saved << "\n";
+    }
     if (g_htltf_avg && htltf_52_saved) {
         gr_complex H_HTLTF[52];
         // Compute H from HT-LTF using HT-LTF TX reference (+1 for all SCs
@@ -3994,6 +4008,10 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     const char* env_htltf_avg = std::getenv("IEEE80211_HTLTF_AVG");
     d_apply_htltf_avg = (env_htltf_avg && env_htltf_avg[0] == '1');
     g_htltf_avg = d_apply_htltf_avg;  // Propagate to static estimator
+    // Phase 114 root cause diag: separate flag to enable diagnostic logging
+    // without affecting 3-way logic itself. Enable via IEEE80211_HTLTF_AVG_DEBUG=1.
+    const char* env_htltf_avg_debug = std::getenv("IEEE80211_HTLTF_AVG_DEBUG");
+    g_log_htltf_avg_debug = (env_htltf_avg_debug && env_htltf_avg_debug[0] == '1');
     if (d_apply_htltf_avg) {
         std::cout << "[FRAME_EQ] IEEE80211_HTLTF_AVG=1 (3-way SNR-weighted H52 with HT-LTF ENABLED)\n";
     }
@@ -5172,6 +5190,72 @@ int frame_equalizer_impl::general_work(int noutput_items,
                          d_sfo_per_sc_est,
                          d_ltf_compensated_valid[0] ? 1 : 0,
                          d_ltf_compensated_valid[1] ? 1 : 0);
+            }
+
+            // Phase 115 T2: HT-LTF 3-way H52 estimation at counter=6.
+            // This is the FIX for the Phase 114 root cause: previously the
+            // saved_htltf_52 buffer was populated at extract_call==6 (in
+            // extract_header52_from_sym64) but estimate_header_channel_from_lltf52()
+            // was only called at counter==3 (HT-SIG0) and counter>=4 (HT-SIG1),
+            // so htltf_52_saved was always false at those call sites. Here we
+            // add a NEW call at counter==6 (HT-LTF arrival), AFTER the extract
+            // save has fired (extract_call_count has been incremented to 7 by
+            // the time we reach this block, so htltf_52_saved is now true).
+            //
+            // The function uses L-LTF0/L-LTF1 as the 2-way baseline and, when
+            // g_htltf_avg && htltf_52_saved, blends in H_HTLTF as a 3rd
+            // |H|-weighted source (per Phase 77c SNR-weighted scheme).
+            // Result is stored in d_H52_tx_order and d_H52_tx_order_valid is
+            // set to true so the DATA path at line ~7202 uses the 3-way H52
+            // instead of the lazy L-LTF0-only compute_H52_tx_order.
+            if (d_apply_htltf_avg &&
+                d_internal_symbol_counter == 6 &&
+                d_early_eqsym_valid[kLltf0Rel] &&
+                d_early_eqsym_valid[kLltf1Rel] &&
+                d_early_eqsym_valid[6] &&
+                htltf_52_saved) {
+                gr_complex H52_3way[52];
+                // Pass L-LTF0/L-LTF1 (compensated) for 2-way baseline; the
+                // function reads the static saved_htltf_52 internally for
+                // the 3rd source.
+                const gr_complex* lltf0_3way = d_ltf_compensated_valid[0]
+                    ? d_ltf_compensated[0]
+                    : d_early_eqsym[kLltf0Rel];
+                const gr_complex* lltf1_3way = d_ltf_compensated_valid[1]
+                    ? d_ltf_compensated[1]
+                    : d_early_eqsym[kLltf1Rel];
+                estimate_header_channel_from_lltf52(lltf0_3way, lltf1_3way,
+                                                    H52_3way);
+
+                // T3: override d_H52_tx_order so the DATA path uses 3-way.
+                // The existing lazy compute at line ~7202 checks
+                // !d_H52_tx_order_valid; pre-setting valid=true here makes
+                // the DATA path skip the L-LTF0-only compute.
+                for (int i = 0; i < 52; i++) {
+                    d_H52_tx_order[i] = H52_3way[i];
+                }
+                d_H52_tx_order_valid = true;
+
+                // T3: also inject 3-way H into the gr::digital equalizer
+                // for the d_equalizer->equalize() path (line ~5544).
+                if (d_equalizer) {
+                    gr_complex h_eq_3way[64];
+                    for (int b = 0; b < 64; b++) h_eq_3way[b] = gr_complex(0.0f, 0.0f);
+                    for (int i = 0; i < 52; i++) {
+                        const int bin = sc_to_fft_bin(kScIndex52[i]);
+                        h_eq_3way[bin] = H52_3way[i];
+                    }
+                    d_equalizer->set_H(h_eq_3way);
+                }
+
+                if (g_log_htltf_avg_debug) {
+                    std::cout << "[T4D_DIAG] 3way stored: counter=6 "
+                              << "d_H52_tx_order_valid=" << d_H52_tx_order_valid
+                              << " |H3way[-26]|=" << std::abs(H52_3way[0])
+                              << " |H3way[0]|=" << std::abs(H52_3way[26])
+                              << " |H3way[+26]|=" << std::abs(H52_3way[51])
+                              << "\n";
+                }
             }
 
             // Header CFO+SFO compensation is applied above using d_phase_diff_per_sc.
