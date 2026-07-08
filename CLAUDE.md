@@ -145,6 +145,14 @@ following hierarchy applies:
   fundamentally limited at 1.77 rad ceiling. Verdict:
   `docs/superpowers/notes/2026-07-08-phase121-dde-per-sc-verdict.md`.
   **Phase 118b H_AVERAGE remains the best equalizer-layer result (metric 12)**.
+- **IEEE80211_HTLTF_AVG=1** — Phase 114/115 3-way H52 averaging: 2 LTS + 1 HT-LTF
+  (opt-in, default OFF). Phase 115 same-board verdict: 3-way fires 2x, metric
+  14-16 (slight improvement). **Phase 122 cross-daughterboard verdict 2026-07-08:
+  REFUTED** — 3-way BREAKS L-SIG viterbi (LSIG_DECODE_OK 27→0, HT_SIG_CAND
+  144→0). Cross-board has INDEPENDENT LOs → 0.5-1 rad drift between L-LTF and
+  HT-LTF (5-6 symbols). 3-way averaging adds drift penalty > noise reduction.
+  **2 LTS only (Phase 117 baseline) is best for cross-board**. Verdict:
+  `docs/superpowers/notes/2026-07-08-phase122-htltf-avg-revisit-verdict.md`.
 - **IEEE80211_FFT_WINDOW_DUMP=1** — Phase 108 diagnostic (opt-in, default OFF):
   dumps abs_in_off, d_data_start_rel, sym_idx_at_h52, d_internal_symbol_counter
   at the H52 compute site. Used to verify upstream FFT window alignment.
