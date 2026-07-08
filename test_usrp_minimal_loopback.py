@@ -194,7 +194,7 @@ def internal_run(args):
                     self.uhd_usrp_source.set_rx_iq_balance(False, 0)
                     self.uhd_usrp_source.set_rx_lo_source('internal', 0)
                     print("[TEST] UHD micro-tunings applied successfully")
-                except RuntimeError as e:
+                except (RuntimeError, AttributeError) as e:
                     print(f"[TEST] UHD API micro-tuning failed (non-fatal): {e}")
 
             # Phase 52: Diagnostic print of cross-board wiring
