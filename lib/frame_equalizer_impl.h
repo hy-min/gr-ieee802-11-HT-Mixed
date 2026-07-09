@@ -398,6 +398,19 @@ private:
     // Enable via IEEE80211_SOFT_LLR_VITERBI=1.
     bool d_use_soft_llr_viterbi       = false;
 
+    // Phase 129 v2: proper log-likelihood ratio LLR = 4·Im(eq)·|H|²/σ²_channel.
+    // σ²_channel estimated from null SCs (d_htsig_null_sc_mask or bottom-quartile |H|²).
+    // Hypothesis: Phase 44 discards absolute magnitude; v2 keeps it and uses
+    // correct noise normalization, giving ~0.5 dB decoder-internal SNR gain.
+    // T1 synthetic benchmark (Phase 129): +12pp gain at σ_per_sc=1.0 rad.
+    // Default OFF (preserves Phase 44 baseline). Enable via IEEE80211_HTSIG_SOFT_LLR_V2=1.
+    // Requires IEEE80211_SOFT_LLR_VITERBI=1 to be set (gates the soft viterbi path).
+    bool d_use_soft_llr_v2            = false;
+    // Phase 129 v2: σ² estimates logged per HT-SIG symbol for diagnostic.
+    // Stashed so [HTSIG_SOFT_LLR_V2] log line can include both σ²_a and σ²_b.
+    float d_sigma2_htsig_a            = 0.0f;
+    float d_sigma2_htsig_b            = 0.0f;
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. When true, the HT-SIG0/1
     // bit-extraction path uses eq = conj(H)·rx / (|H|² + N0) instead of
     // safe_div(rx, H). Bypasses Phase 38's 50× noise amplification at

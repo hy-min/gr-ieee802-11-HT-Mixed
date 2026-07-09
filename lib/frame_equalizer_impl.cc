@@ -3364,12 +3364,15 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        int* out_vit_metric = nullptr,
                                        const char** out_fail_reason = nullptr,
                                        bool use_soft_llr = false,
+                                       bool use_soft_llr_v2 = false,    // Phase 129: 4·Im(eq)·|H|²/σ² LLR formula
                                        int  n0_percentile = 0,         // Phase 47: 0=disabled, 1-49=enabled
                                        bool apply_htsig_per_symbol_delta = false,  // Phase 79: δ tracking
                                        bool log_htsig_delta_dump = false,         // Phase 79: δ dump
                                        const gr_complex* per_sc_lut52 = nullptr,  // Phase 80b: per-SC LUT (52 entries, nullptr=disabled)
                                        bool per_sc_lut_valid = false,             // Phase 80b: gate
-                                       const uint8_t* htsig_null_sc_mask = nullptr)  // Phase 102: 52-bit mask (nullptr=disabled)
+                                       const uint8_t* htsig_null_sc_mask = nullptr,  // Phase 102: 52-bit mask (nullptr=disabled)
+                                       float* out_sigma2_a = nullptr,    // Phase 129 v2: σ² est for HT-SIG0 (nullptr=skip)
+                                       float* out_sigma2_b = nullptr)    // Phase 129 v2: σ² est for HT-SIG1 (nullptr=skip)
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -3454,6 +3457,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         if (n0_percentile > 0) {
             mmse_equalize_htsig(rx52_a, H52_a, eq_mmse_a, n0_percentile);
         }
+        // Phase 129 v2: stash equalized symbols for σ² estimation from null SCs.
+        // Need |eq_null|² · |H_null|² for masked SCs; σ²_channel = mean.
+        // Use the same post-correction eq as the bit-extraction path.
+        gr_complex eq_stash_a[48];
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_a[i]);
             gr_complex eq;
@@ -3472,6 +3479,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             if (per_sc_lut_valid && per_sc_lut52) {
                 apply_per_sc_correction(eq, kScIndex52[i], per_sc_lut52);
             }
+            eq_stash_a[i] = eq;
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             // bit 0 → -j (imag < 0), bit 1 → +j (imag >= 0)
             eqbits48_a[i] = (eq.imag() >= 0.0f) ? 1 : 0;
@@ -3487,11 +3495,68 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
                     llr48_a[i] = 0.0f;
                 } else {
+                    // Phase 44 formula: sign(eq.imag()) * |H|/max(|H|)
                     float conf = h_mag / max_h_a;
                     float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
                     llr48_a[i] = s * conf;
                 }
             }
+        }
+        // Phase 129 v2: σ²_channel from null SCs (overrides Phase 44 LLRs).
+        // Done AFTER the loop because σ² requires summing all masked SCs first.
+        // σ²_channel = mean(|eq_null|² · |H_null|²) over masked SCs.
+        // Fall back to bottom-quartile |H|² if no mask.
+        if (use_soft_llr && use_soft_llr_v2) {
+            float sigma2_a = 0.0f;
+            int n_null_a = 0;
+            if (htsig_null_sc_mask) {
+                for (int i = 0; i < 48; i++) {
+                    if (htsig_null_sc_mask[i]) {
+                        float hm2 = std::abs(H52_a[i]) * std::abs(H52_a[i]);
+                        sigma2_a += (std::abs(eq_stash_a[i]) * std::abs(eq_stash_a[i])) * hm2;
+                        n_null_a++;
+                    }
+                }
+            }
+            // Fallback: use bottom 6 SCs by |H|² as null estimate
+            if (n_null_a == 0) {
+                int idx_sorted[48];
+                float h2_sorted[48];
+                for (int i = 0; i < 48; i++) {
+                    idx_sorted[i] = i;
+                    h2_sorted[i] = std::abs(H52_a[i]) * std::abs(H52_a[i]);
+                }
+                // Partial selection sort for bottom 6 (by |H|² ascending)
+                for (int j = 0; j < 6; j++) {
+                    int min_idx = j;
+                    for (int k = j + 1; k < 48; k++) {
+                        if (h2_sorted[k] < h2_sorted[min_idx]) min_idx = k;
+                    }
+                    float tmp = h2_sorted[j];
+                    h2_sorted[j] = h2_sorted[min_idx];
+                    h2_sorted[min_idx] = tmp;
+                    int itmp = idx_sorted[j];
+                    idx_sorted[j] = idx_sorted[min_idx];
+                    idx_sorted[min_idx] = itmp;
+                    int sc = idx_sorted[j];
+                    float hm2 = h2_sorted[j];
+                    sigma2_a += (std::abs(eq_stash_a[sc]) * std::abs(eq_stash_a[sc])) * hm2;
+                }
+                n_null_a = 6;
+            }
+            if (n_null_a > 0) sigma2_a /= float(n_null_a);
+            // Guard against div-by-zero / impossibly small σ²
+            if (sigma2_a < 1e-3f) sigma2_a = 1e-3f;
+            // Now compute LLR = 4·Im(eq)·|H|²/σ² for non-null SCs
+            for (int i = 0; i < 48; i++) {
+                if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
+                    llr48_a[i] = 0.0f;
+                } else {
+                    float hm2 = std::abs(H52_a[i]) * std::abs(H52_a[i]);
+                    llr48_a[i] = 4.0f * eq_stash_a[i].imag() * hm2 / sigma2_a;
+                }
+            }
+            if (out_sigma2_a) *out_sigma2_a = sigma2_a;
         }
     }
 
@@ -3606,6 +3671,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         if (n0_percentile > 0) {
             mmse_equalize_htsig(rx52_b, H52_b, eq_mmse_b, n0_percentile);
         }
+        // Phase 129 v2: stash equalized symbols for σ² estimation from null SCs.
+        gr_complex eq_stash_b[48];
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_b[i]);
             gr_complex eq;
@@ -3627,6 +3694,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             if (per_sc_lut_valid && per_sc_lut52) {
                 apply_per_sc_correction(eq, kScIndex52[i], per_sc_lut52);
             }
+            eq_stash_b[i] = eq;
             // QBPSK: HT-SIG is rotated by 90° (mult by j), so bits are on IMAG axis
             eqbits48_b[i] = (eq.imag() >= 0.0f) ? 1 : 0;
             if (use_soft_llr) {
@@ -3635,11 +3703,63 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
                     llr48_b[i] = 0.0f;
                 } else {
+                    // Phase 44 formula: sign(eq.imag()) * |H|/max(|H|)
                     float conf = h_mag / max_h_b;
                     float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
                     llr48_b[i] = s * conf;
                 }
             }
+        }
+        // Phase 129 v2: σ²_channel from null SCs for HT-SIG1, overrides Phase 44 LLRs.
+        // σ²_channel = mean(|eq_null|² · |H_null|²) over masked SCs.
+        // Fall back to bottom-quartile |H|² if no mask.
+        if (use_soft_llr && use_soft_llr_v2) {
+            float sigma2_b = 0.0f;
+            int n_null_b = 0;
+            if (htsig_null_sc_mask) {
+                for (int i = 0; i < 48; i++) {
+                    if (htsig_null_sc_mask[i]) {
+                        float hm2 = std::abs(H52_b[i]) * std::abs(H52_b[i]);
+                        sigma2_b += (std::abs(eq_stash_b[i]) * std::abs(eq_stash_b[i])) * hm2;
+                        n_null_b++;
+                    }
+                }
+            }
+            if (n_null_b == 0) {
+                int idx_sorted[48];
+                float h2_sorted[48];
+                for (int i = 0; i < 48; i++) {
+                    idx_sorted[i] = i;
+                    h2_sorted[i] = std::abs(H52_b[i]) * std::abs(H52_b[i]);
+                }
+                for (int j = 0; j < 6; j++) {
+                    int min_idx = j;
+                    for (int k = j + 1; k < 48; k++) {
+                        if (h2_sorted[k] < h2_sorted[min_idx]) min_idx = k;
+                    }
+                    float tmp = h2_sorted[j];
+                    h2_sorted[j] = h2_sorted[min_idx];
+                    h2_sorted[min_idx] = tmp;
+                    int itmp = idx_sorted[j];
+                    idx_sorted[j] = idx_sorted[min_idx];
+                    idx_sorted[min_idx] = itmp;
+                    int sc = idx_sorted[j];
+                    float hm2 = h2_sorted[j];
+                    sigma2_b += (std::abs(eq_stash_b[sc]) * std::abs(eq_stash_b[sc])) * hm2;
+                }
+                n_null_b = 6;
+            }
+            if (n_null_b > 0) sigma2_b /= float(n_null_b);
+            if (sigma2_b < 1e-3f) sigma2_b = 1e-3f;
+            for (int i = 0; i < 48; i++) {
+                if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
+                    llr48_b[i] = 0.0f;
+                } else {
+                    float hm2 = std::abs(H52_b[i]) * std::abs(H52_b[i]);
+                    llr48_b[i] = 4.0f * eq_stash_b[i].imag() * hm2 / sigma2_b;
+                }
+            }
+            if (out_sigma2_b) *out_sigma2_b = sigma2_b;
         }
     }
 
@@ -3713,6 +3833,20 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         vit_ok = viterbi_decode_133_171_soft(enc96_soft, 96, dec48, &vit_metric_soft);
         // Map Q8.8 metric back to an int (best-effort) for logging parity.
         vit_metric = vit_metric_soft;
+        // Phase 129 v2: log σ² estimate so we can validate the noise model.
+        // Fires once per candidate (16×/frame); useful for verifying that σ² is
+        // stable across frames (not wildly varying per candidate).
+        if (use_soft_llr_v2 && (out_sigma2_a || out_sigma2_b)) {
+            char sbuf[160];
+            snprintf(sbuf, sizeof(sbuf),
+                     "[HTSIG_SOFT_LLR_V2] rot=%d inv_a=%d inv_b=%d "
+                     "sigma2_a=%.4f sigma2_b=%.4f metric=%d\n",
+                     rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
+                     out_sigma2_a ? *out_sigma2_a : 0.0f,
+                     out_sigma2_b ? *out_sigma2_b : 0.0f,
+                     vit_metric_soft);
+            USRP_LOG("%s", sbuf);
+        }
     } else {
         vit_ok = viterbi_decode_133_171(enc96, 96, dec48, &vit_metric);
     }
@@ -4649,6 +4783,24 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_use_soft_llr_viterbi = (env_sllr && env_sllr[0] == '1');
     if (d_use_soft_llr_viterbi) {
         std::cout << "[FRAME_EQ] IEEE80211_SOFT_LLR_VITERBI=1 (HT-SIG soft-LLR viterbi ENABLED)\n";
+    }
+
+    // Phase 129 v2: proper log-likelihood ratio LLR = 4·Im(eq)·|H|²/σ²_channel.
+    // Requires IEEE80211_SOFT_LLR_VITERBI=1 to be set (this just selects WHICH
+    // LLR formula to feed to the soft viterbi). T1 synthetic benchmark: +12pp
+    // gain at σ_per_sc=1.0 rad (vs Phase 44 sign·|H|/max|H| formula).
+    // Default OFF preserves Phase 44 baseline.
+    const char* env_sllr_v2 = std::getenv("IEEE80211_HTSIG_SOFT_LLR_V2");
+    d_use_soft_llr_v2 = (env_sllr_v2 && env_sllr_v2[0] == '1');
+    if (d_use_soft_llr_v2) {
+        if (!d_use_soft_llr_viterbi) {
+            std::cout << "[FRAME_EQ] WARNING: IEEE80211_HTSIG_SOFT_LLR_V2=1 requires "
+                      << "IEEE80211_SOFT_LLR_VITERBI=1; ignoring v2 setting.\n";
+            d_use_soft_llr_v2 = false;
+        } else {
+            std::cout << "[FRAME_EQ] IEEE80211_HTSIG_SOFT_LLR_V2=1 (proper log-likelihood ratio "
+                      << "LLR = 4·Im(eq)·|H|²/σ²_channel; σ² estimated from null SCs)\n";
+        }
     }
 
     // Phase 102: parse null-SC positions from env var (CSV of HT-SIG data loop
@@ -7692,12 +7844,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            &cand_metric,
                                                            &cand_fail,
                                                            d_use_soft_llr_viterbi,
+                                                           d_use_soft_llr_v2,
                                                            d_mmse_equalize ? d_mmse_n0_percentile : 0,
                                                            d_apply_htsig_per_symbol_delta,
                                                            d_log_htsig_delta_dump,
                                                            d_htsig_per_sc_lut_data,
                                                            d_htsig_per_sc_lut_valid,
-                                                           d_htsig_null_sc_mask);
+                                                           d_htsig_null_sc_mask,
+                                                           &d_sigma2_htsig_a,
+                                                           &d_sigma2_htsig_b);
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
@@ -7994,9 +8149,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             p_len, p_mcs, p_sgi, p_agg, p_ldpc,
                             0, &cand_metric, &cand_fail,
                             d_use_soft_llr_viterbi,
+                            d_use_soft_llr_v2,
                             d_mmse_equalize ? d_mmse_n0_percentile : 0,
                             d_apply_htsig_per_symbol_delta,
-                            false, nullptr, false, nullptr);
+                            false, nullptr, false, nullptr,
+                            &d_sigma2_htsig_a,
+                            &d_sigma2_htsig_b);
                         if (decode_ok) {
                             USRP_LOG(
                                 "[T7E_TENTATIVE_REDECODE_OK] d_sym_idx=%d "
@@ -8312,9 +8470,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                 p_len, p_mcs, p_sgi, p_agg, p_ldpc,
                                 0, &cand_metric, &cand_fail,
                                 d_use_soft_llr_viterbi,
+                                d_use_soft_llr_v2,
                                 d_mmse_equalize ? d_mmse_n0_percentile : 0,
                                 d_apply_htsig_per_symbol_delta,
-                                false, nullptr, false, nullptr);
+                                false, nullptr, false, nullptr,
+                                &d_sigma2_htsig_a,
+                                &d_sigma2_htsig_b);
 
                             if (decode_ok) {
                                 USRP_LOG(
