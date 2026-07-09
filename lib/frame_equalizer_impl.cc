@@ -7569,6 +7569,79 @@ int frame_equalizer_impl::general_work(int noutput_items,
                              d_htsig_h_freq_smooth_tap);
                 }
 
+                // Phase 128: CFO/SFO re-estimation from HT-LTF. Use the
+                // 4 HT-LTF pilots (SC -21,-7,+7,+21, kScIndex52 indices
+                // 48..51) to estimate the channel at the HT-LTF timing
+                // (kHtTrain1Rel=6, ~4us after HT-SIG1). The phase slope
+                // argH(sc) reflects residual CFO/SFO that the L-LTF-based
+                // δ estimation may have missed due to LO drift over the
+                // 5-6 symbols between L-LTF and HT-LTF (Phase 122:
+                // cross-board LO drift ~0.5-1 rad / 5-6 sym). Convert
+                // the slope into a δ_htltf (1/64 sample units), then
+                // pre-rotate d_early_eqsym[kHtSig0Rel] and [kHtSig1Rel]
+                // by exp(+j*2π·sc·δ_htltf/64) so the viterbi sees the
+                // corrected constellation. Chained BEFORE viterbi.
+                // Goal: reduce metric from 13-16 toward ≤10 viterbi wall.
+                if (d_apply_htsig_cfo_reest_htltf &&
+                    d_early_eqsym_valid[kHtTrain1Rel] &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    // 1) Build H_htltf from the 4 HT-LTF pilots.
+                    //    Use same polarity as kPilot4TX in
+                    //    compute_H52_tx_order() (L-LTF pilot values are
+                    //    a reasonable approximation; HT-LTF P matrix per
+                    //    802.11n Table G.13 may differ in sign at SC -7
+                    //    but magnitude is preserved).
+                    static const gr_complex kHtLtfPilotVal[4] = {
+                        gr_complex(+1.0f, 0.0f),   // SC -21 (kScIndex52[48])
+                        gr_complex(-1.0f, 0.0f),   // SC -7  (kScIndex52[49])
+                        gr_complex(+1.0f, 0.0f),   // SC +7  (kScIndex52[50])
+                        gr_complex(+1.0f, 0.0f),   // SC +21 (kScIndex52[51])
+                    };
+                    gr_complex H_htltf[52];
+                    // Init to zero so unscanned SCs don't bias slope fit.
+                    for (int i = 0; i < 52; i++) {
+                        H_htltf[i] = gr_complex(0.0f, 0.0f);
+                    }
+                    // d_early_eqsym[kHtTrain1Rel] is the equalized symbol
+                    // at HT-LTF, divided by H_a_ptr (Hhdr52-based) inside
+                    // the equalize() call. To recover raw H_htltf (before
+                    // equalization), we multiply by H_a_ptr at pilot SCs.
+                    // However, since H_a_ptr IS our best L-LTF-based H,
+                    // and we want the CHANNEL H seen at HT-LTF timing,
+                    // we must re-multiply: H_htltf = eq_pilot * H_pilot_LLTF.
+                    for (int p = 0; p < 4; p++) {
+                        const int idx = 48 + p;
+                        if (std::abs(H_a_ptr[idx]) > 1e-9f) {
+                            // eq = rx / H_LLTF, so H_HTLTF = rx / P_HTLTF
+                            //   = (eq * H_LLTF) / P_HTLTF.
+                            // We use H_a_ptr[idx] (L-LTF-based H) as
+                            // proxy. Since P_HTLTF ≈ kHtLtfPilotVal[p],
+                            // H_htltf[idx] = eq[idx] * H_a_ptr[idx] / P.
+                            gr_complex P = kHtLtfPilotVal[p];
+                            gr_complex H_a = H_a_ptr[idx];
+                            gr_complex eq = d_early_eqsym[kHtTrain1Rel][idx];
+                            // Multiply: eq*H_a gives rx (approx), divide by P.
+                            H_htltf[idx] = (eq * H_a) / P;
+                        }
+                    }
+                    // 2) Estimate δ via weighted linear regression
+                    //    argH(sc) = a + b·sc. Pilot SCs only (4 points).
+                    float delta_htltf = estimate_timing_offset_from_h52(H_htltf);
+                    // 3) Pre-rotate HT-SIG eq arrays by exp(+j·2π·sc·δ/64).
+                    for (int i = 0; i < 52; i++) {
+                        const int sc = kScIndex52[i];
+                        const float delta_phase =
+                            2.0f * (float)M_PI * (float)sc * delta_htltf / 64.0f;
+                        const gr_complex rot = std::polar(1.0f, +delta_phase);
+                        d_early_eqsym[kHtSig0Rel][i] *= rot;
+                        d_early_eqsym[kHtSig1Rel][i] *= rot;
+                    }
+                    USRP_LOG("[HTSIG_CFO_REEST_HTLTF] delta_htltf=%.4f "
+                             "(1/64 sample units, applied to HT-SIG0/1)\n",
+                             delta_htltf);
+                }
+
                 // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate
                 // search to 8 rotations × 2 inv_a × 2 inv_b = 32 candidates
                 // at 45° step. Targets rotated-constellation HT-SIG frames
