@@ -227,28 +227,44 @@ public:
             } else {
                 std::string tag_key = pmt::symbol_to_string(d_tags.front().key);
 
-                // CRITICAL FIX for USRP continuous streaming:
-                // In loopback mode, sync_long finds frame via correlation search in SYNC state.
-                // In USRP mode, data arrives in small chunks (< 64 samples), preventing the
-                // while loop from running. When wifi_start tag arrives (offset <= nread),
-                // we can't complete correlation search. Direct SYNC->COPY transition using
-                // the tag preserves frame detection.
+                // Phase 135 (2026-07-09): REMOVED wifi_start fast-path SYNC->COPY direct
+                // transition (was lines 236-249 in pre-Phase-135). The fast-path
+                // BYPASSED Phase 133's multi-feature Schmidl-Cox gate, leaving the
+                // gate inert during USRP continuous streaming.
+                //
+                // Phase 87 verdict noted sync_long produces 156 NOISE frames per 80M
+                // samples — structured USRP noise (DC offset, LO spurs) makes FIR peaks
+                // match L-LTF plateau criteria. The fast-path amplified this by
+                // accepting every wifi_start tag regardless of FIR+Schmidl-Cox
+                // multi-feature verification.
+                //
+                // Phase 135 fix: route ALL transitions through search_frame_start()
+                // (which now includes P133 multi-feature gate). wifi_start tag during
+                // SYNC is now logged + IGNORED for state purposes. The SYNC state's
+                // correlation accumulator continues uninterrupted; transition to COPY
+                // happens only after SYNC_LENGTH samples + gate validation.
+                //
+                // Performance: Phase 14 set_output_multiple=80 already mitigates the
+                // scheduler-deadlock risk that originally motivated the fast-path.
                 if (d_state == SYNC && tag_key == "wifi_start") {
                     d_freq_offset_short = pmt::to_double(d_tags.front().value);
                     d_freq_offset = static_cast<float>(d_freq_offset_short);
-                    // UNIFIED TIMING: Consume SYNC_LENGTH samples before outputting,
-                    // just like the correlation-search path does during SYNC state.
-                    d_tag_skip_count = SYNC_LENGTH;
-                    d_sync_samples = SYNC_LENGTH;  // Virtually consumed via skip
-                    d_frame_start = FRAME_START_BASE + get_frame_start_offset();  // Same as correlation-search path (with opt-in offset)
-                    d_state = COPY;
-                    d_offset = 0;
-                    d_count = 0;
-                    d_wifi_start_added = false;
-                    fprintf(stderr, "[SYNC_LONG] SYNC->COPY via wifi_start tag at offset=%llu\n",
-                            (unsigned long long)offset);
+                    fprintf(stderr, "[SYNC_LONG_P135] wifi_start tag IGNORED during SYNC "
+                            "(offset=%llu nread=%llu, gate validation deferred to "
+                            "search_frame_start() at SYNC_LENGTH boundary)\n",
+                            (unsigned long long)offset, (unsigned long long)nread);
+                    // DO NOT transition to COPY. Continue accumulating correlation
+                    // samples. The Phase 133 multi-feature gate validates the
+                    // transition at the SYNC_LENGTH boundary.
                 } else if (d_offset && (d_state == SYNC)) {
-                    throw std::runtime_error("wtf");
+                    fprintf(stderr, "[SYNC_LONG_P135] Non-wifi_start tag during SYNC "
+                            "(offset=%llu d_offset=%d key=%s) — accumulated through "
+                            "end of SYNC_LENGTH, ignored as data\n",
+                            (unsigned long long)offset, d_offset, tag_key.c_str());
+                    // Phase 135: replaced throw() with logging. Any tag arriving mid-SYNC
+                    // is informational; the SYNC state's correlation accumulator
+                    // processes samples normally. search_frame_start() validates
+                    // frame_start at SYNC_LENGTH boundary.
                 } else if (d_state == COPY) {
                     // FIX: Don't transition to RESET when wifi_start arrives during HT-Mixed preamble!
                     // In Legacy mode (802.11a/g), wifi_start at end of preamble means DATA follows.
