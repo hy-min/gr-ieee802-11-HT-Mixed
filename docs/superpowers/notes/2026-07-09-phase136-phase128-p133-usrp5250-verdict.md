@@ -93,6 +93,23 @@ reset between frames. The viterbi fires at the first sym=5 encountered,
 before sym=6 is processed. The original kHtTrain1Rel condition is
 always FALSE.
 
+## File-Replay Validation (T6)
+
+After fix, file-replay with `--loop 5` shows:
+- `[HTSIG_CFO_REEST_HTLTF] delta_htltf=0.9648 (1/64 sample units, applied to HT-SIG0/1)` — Phase 128 actively fires!
+- HT_SIG_CAND events at sym=5 and sym=8 (multiple viterbi passes per loop)
+- 61 delta_htltf fires in `--loop 10 --rx-duration 30`
+
+**Full stack** (Phase 128 + H_AVERAGE + FreqSmooth TAP=5) on file-replay:
+- 61 delta_htltf fires
+- **2 metric=10 occurrences** (matches Phase 128 verdict's 3/10 runs metric=10)
+- Metric distribution: 2×metric=10, 4×metric=11, 12×metric=12, 62×metric=13, 205×metric=14, 268×metric=15, 266×metric=16, 138×metric=17, 19×metric=18
+
+**Fix is confirmed working on file-replay**. USRP validation remained
+inconclusive due to extreme signal variability (ratio_ht 0.199-8.575)
+which causes HT-SIG viterbi to rarely fire even without Phase 128
+enabled (baseline also has 0 HT_SIG_CAND).
+
 ## Implementation Correctness (after fix)
 
 Code change verified by `git diff`:
