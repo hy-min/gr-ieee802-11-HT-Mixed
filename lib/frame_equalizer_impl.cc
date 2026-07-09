@@ -3372,7 +3372,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        bool per_sc_lut_valid = false,             // Phase 80b: gate
                                        const uint8_t* htsig_null_sc_mask = nullptr,  // Phase 102: 52-bit mask (nullptr=disabled)
                                        float* out_sigma2_a = nullptr,    // Phase 129 v2: σ² est for HT-SIG0 (nullptr=skip)
-                                       float* out_sigma2_b = nullptr)    // Phase 129 v2: σ² est for HT-SIG1 (nullptr=skip)
+                                       float* out_sigma2_b = nullptr,    // Phase 129 v2: σ² est for HT-SIG1 (nullptr=skip)
+                                       bool apply_htsig_null_pilot_mask = false)  // Phase 137: skip null pilots in CPE + data-SC fallback
 {
     if (out_vit_metric) *out_vit_metric = -1;
     if (out_fail_reason) *out_fail_reason = "init";
@@ -3628,6 +3629,12 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         int n_pilots = 0;
         for (int p = 0; p < 4; p++) {
             int sc = pilot_sc[p];
+            // Phase 137: skip null pilots when opt-in flag is set AND mask is on.
+            // Phase 78b stable nulls {-21,-7,+7,+21} are exactly these 4 pilots.
+            if (apply_htsig_null_pilot_mask &&
+                htsig_null_sc_mask && htsig_null_sc_mask[sc]) {
+                continue;
+            }
             float h_mag = std::abs(H52_a[sc]);
             if (h_mag >= 0.001f) {
                 gr_complex eq_p = safe_div(rx52_a[sc], H52_a[sc]);
@@ -3635,6 +3642,33 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 gr_complex ref = gr_complex(0.0f, (eq_p.imag() >= 0.0f) ? 1.0f : -1.0f);
                 pilot_sum += eq_p / ref;
                 n_pilots++;
+            }
+        }
+        // Phase 137: if all 4 pilots masked/invalid, fallback to data-SC CPE.
+        // Use top data SCs (skipping null + low-|H|) to estimate the residual phase.
+        if (n_pilots == 0 && apply_htsig_null_pilot_mask && htsig_null_sc_mask) {
+            gr_complex data_sum(0.0f, 0.0f);
+            int n_data = 0;
+            for (int i = 0; i < 48; i++) {
+                if (htsig_null_sc_mask[i]) continue;  // skip null data SCs
+                float h_mag = std::abs(H52_a[i]);
+                if (h_mag >= 0.1f) {  // stricter threshold for data SCs
+                    gr_complex eq_d = safe_div(rx52_a[i], H52_a[i]);
+                    // QBPSK data is on imag axis (same convention as pilots)
+                    gr_complex ref = gr_complex(0.0f,
+                                                (eq_d.imag() >= 0.0f) ? 1.0f : -1.0f);
+                    data_sum += eq_d / ref;
+                    n_data++;
+                }
+            }
+            if (n_data > 0) {
+                pilot_sum = data_sum;
+                n_pilots = n_data;
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                         "[FRAME_EQ] Phase 137 data-SC CPE fallback: n_pilots=%d\n",
+                         n_data);
+                USRP_LOG("%s", buf);
             }
         }
         if (n_pilots > 0) {
@@ -7902,7 +7936,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            d_htsig_per_sc_lut_valid,
                                                            d_htsig_null_sc_mask,
                                                            &d_sigma2_htsig_a,
-                                                           &d_sigma2_htsig_b);
+                                                           &d_sigma2_htsig_b,
+                                                           d_apply_htsig_null_pilot_mask);  // Phase 137
                             // Per-rotation metric trace: log ALL 16 candidates so we can
                             // see which rotations produce a meaningful viterbi best-path
                             // metric, vs. metrics that are saturated (RANDOM-like).
@@ -8204,7 +8239,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             d_apply_htsig_per_symbol_delta,
                             false, nullptr, false, nullptr,
                             &d_sigma2_htsig_a,
-                            &d_sigma2_htsig_b);
+                            &d_sigma2_htsig_b,
+                            d_apply_htsig_null_pilot_mask);  // Phase 137
                         if (decode_ok) {
                             USRP_LOG(
                                 "[T7E_TENTATIVE_REDECODE_OK] d_sym_idx=%d "
@@ -8525,7 +8561,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                 d_apply_htsig_per_symbol_delta,
                                 false, nullptr, false, nullptr,
                                 &d_sigma2_htsig_a,
-                                &d_sigma2_htsig_b);
+                                &d_sigma2_htsig_b,
+                                d_apply_htsig_null_pilot_mask);  // Phase 137
 
                             if (decode_ok) {
                                 USRP_LOG(
