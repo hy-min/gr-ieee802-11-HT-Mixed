@@ -4818,16 +4818,43 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
             int n_parsed = 0;
             const char* p = env_ns;
             while (*p && n_parsed < 52) {
-                int idx = 0;
+                int val = 0;
                 bool got_digit = false;
+                bool negative = false;
+                // Phase 137: optional leading '-' for signed SC values
+                if (*p == '-') {
+                    negative = true;
+                    p++;
+                }
                 while (*p >= '0' && *p <= '9') {
-                    idx = idx * 10 + (*p - '0');
+                    val = val * 10 + (*p - '0');
                     p++;
                     got_digit = true;
                 }
-                if (got_digit && idx >= 0 && idx < 52) {
-                    d_htsig_null_sc_mask[idx] = 1;
-                    n_parsed++;
+                if (negative) val = -val;
+                if (got_digit) {
+                    int loop_pos = -1;
+                    // Phase 137: accept either loop position (0..51) or signed SC value (-26..+26)
+                    if (val >= 0 && val < 52) {
+                        loop_pos = val;  // old format (direct loop position)
+                    } else if (val >= -26 && val <= 26 && val != 0) {
+                        // New format: search kScIndex52 for matching SC value
+                        // kScIndex52 is declared at line 307 as a 52-element array
+                        for (int i = 0; i < 52; i++) {
+                            if (kScIndex52[i] == val) {
+                                loop_pos = i;
+                                break;
+                            }
+                        }
+                        if (loop_pos < 0) {
+                            std::cout << "[FRAME_EQ] IEEE80211_HTSIG_NULL_SCS WARNING: "
+                                      << "SC value " << val << " not in kScIndex52\n";
+                        }
+                    }
+                    if (loop_pos >= 0 && loop_pos < 52) {
+                        d_htsig_null_sc_mask[loop_pos] = 1;
+                        n_parsed++;
+                    }
                 }
                 if (*p == ',' || *p == ' ') p++;
                 else if (*p != '\0') break;
