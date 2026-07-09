@@ -4885,6 +4885,19 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                   << "(FFT window positions logged at H52 compute site)\n";
     }
 
+    // Phase 137: opt-in flag to skip null pilots in CPE estimator.
+    // Requires IEEE80211_HT_PER_SYMBOL_CPE=1 to have any effect (CPE code path).
+    // When ON, the pilot CPE loop at line 3626 skips null pilots (positions
+    // 48..51) that are masked via IEEE80211_HTSIG_NULL_SCS. Default OFF
+    // (preserves baseline). Phase 137 only wires the flag here — the
+    // actual skip behavior is implemented in the CPE pilot loop.
+    const char* env_p137 = std::getenv("IEEE80211_HTSIG_NULL_PILOT_MASK");
+    d_apply_htsig_null_pilot_mask = (env_p137 && env_p137[0] == '1');
+    if (d_apply_htsig_null_pilot_mask) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_NULL_PILOT_MASK=1 "
+                  << "(Phase 137: skip null pilots in CPE)\n";
+    }
+
     // Phase 108: apply constant CPE at L-SIG boundary to absorb 30° rotation.
     // Phase 107 found L-SIG eq output has 30° constant phase offset (arg
     // clusters at ±30°). Phase 108 Task 3 confirmed upstream is sample-stable
