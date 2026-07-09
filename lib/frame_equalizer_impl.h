@@ -253,6 +253,9 @@ private:
     // Enable via IEEE80211_HTSIG_CFO_REEST_HTLTF=1.
     bool d_apply_htsig_cfo_reest_htltf;
 
+    // Phase 137: opt-in flag to skip null pilots in CPE estimator.
+    bool d_apply_htsig_null_pilot_mask;
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
