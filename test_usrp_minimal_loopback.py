@@ -64,10 +64,23 @@ def internal_run(args):
         # to keep Step 1 test isolation. Default OFF.
         if args.htltf_avg:
             os.environ['IEEE80211_HTLTF_AVG'] = '1'
+            # Phase 114 root cause diag: enable T4D diagnostic logging
+            if os.environ.get('IEEE80211_HTLTF_AVG_DEBUG') is None:
+                pass  # Don't auto-enable; user can set manually
             print(f"[TEST] Phase 114 Step 2 ENABLED: "
                   "IEEE80211_HTLTF_AVG=1 (HT-LTF 2x averaging)")
         print(f"[TEST] Phase 114 Step 1 ENABLED: "
               "IEEE80211_H52_SNR_WEIGHTED=1 (L-LTF0+L-LTF1 SNR-weighted)")
+
+    # Phase 137: stable-null-aware masking (opt-in via --phase137-on).
+    # Default OFF preserves baseline.
+    if args.phase137_on:
+        os.environ['IEEE80211_HTSIG_NULL_SCS'] = '-21,-13,-7,7,21'
+        os.environ['IEEE80211_HTSIG_NULL_PILOT_MASK'] = '1'
+        os.environ['IEEE80211_HT_PER_SYMBOL_CPE'] = '1'  # required for pilot CPE code path
+        print(f"[TEST] Phase 137 ENABLED: "
+              "IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 "
+              "IEEE80211_HTSIG_NULL_PILOT_MASK=1", flush=True)
 
     from gnuradio import gr, blocks, uhd
     import pmt
@@ -354,6 +367,14 @@ def main():
     parser.add_argument('--htltf-avg', action='store_true',
                         help='Phase 114 Step 2: enable HT-LTF 2x averaging '
                              '(IEEE80211_HTLTF_AVG=1). Requires --uhd-tune.')
+    # Phase 137: stable-null-aware masking (opt-in via --phase137-on).
+    # Sets IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 and
+    # IEEE80211_HTSIG_NULL_PILOT_MASK=1 to mask the 5 globally-null SCs
+    # discovered in Phase 100 (smoking gun for viterbi wall). Default OFF.
+    parser.add_argument('--phase137-on', action='store_true',
+                        help='Phase 137: enable stable-null-aware masking '
+                             '(IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 + '
+                             'IEEE80211_HTSIG_NULL_PILOT_MASK=1)')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
