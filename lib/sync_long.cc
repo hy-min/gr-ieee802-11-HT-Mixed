@@ -64,6 +64,59 @@ static int get_frame_start_offset() {
     return g_frame_start_offset;
 }
 
+// Phase 133: Multi-feature L-LTF detector
+// Pattern: noise false-positives at FIR (Phase 87 verdict) caused sync_long
+// to produce 156 NOISE frames in 80M samples. Root cause was structured noise
+// (DC offset, LO spurs) producing FIR peaks that matched L-LTF plateau
+// criteria but lacked periodic phase coherence.
+//
+// Solution: add two additional detection features that noise cannot easily
+// mimic together with FIR peak:
+//   F2 = Schmidl-Cox L-LTF metric |P|²/R² at lag=80, integrated over 80 samples
+//       P = sum of in[k-80]·conj(in[k]) for k in 80-sample window
+//       R = sum of (|in[k-80]|² + |in[k]|²) over same window
+//   F3 = Frequency-domain template match (FFT correlation with known L-LTF)
+//       (Phase 134 — currently TBD, requires 64-pt FFT per detection)
+//
+// Phase 133 T3 implements F2 only. Default OFF (env var opt-in) to preserve
+// baseline. When enabled, candidate pairs in search_frame_start() are
+// GATED by schmidl_cox >= threshold. This rejects noise false-positives
+// that have FIR peak but low phase coherence.
+//
+// Threshold defaults to 0.05 (5% — empirically above noise floor ~0.001).
+// Use IEEE80211_SYNC_LONG_SCHMIDL_COX=1 to enable.
+// Use IEEE80211_SYNC_LONG_SCHMIDL_COX_THRESHOLD=N to override.
+static const double DEFAULT_SCHMIDL_COX_THRESHOLD = 0.05;
+static const int SCHMIDL_COX_LAG = 80;       // L-LTF period in samples
+static const int SCHMIDL_COX_WINDOW = 80;    // integration window in samples
+static double g_schmidl_cox_threshold = -1.0;
+static bool g_schmidl_cox_threshold_inited = false;
+static bool g_schmidl_cox_enabled = false;
+
+static double get_schmidl_cox_threshold() {
+    if (!g_schmidl_cox_threshold_inited) {
+        const char* env_thr = std::getenv("IEEE80211_SYNC_LONG_SCHMIDL_COX_THRESHOLD");
+        if (env_thr && env_thr[0] != '\0') {
+            g_schmidl_cox_threshold = std::atof(env_thr);
+        } else {
+            g_schmidl_cox_threshold = DEFAULT_SCHMIDL_COX_THRESHOLD;
+        }
+        const char* env_en = std::getenv("IEEE80211_SYNC_LONG_SCHMIDL_COX");
+        g_schmidl_cox_enabled = (env_en != nullptr && env_en[0] != '\0');
+        fprintf(stderr, "[SYNC_LONG_P133] enabled=%d threshold=%.4f (lag=%d, window=%d)\n",
+                g_schmidl_cox_enabled ? 1 : 0, g_schmidl_cox_threshold,
+                SCHMIDL_COX_LAG, SCHMIDL_COX_WINDOW);
+        g_schmidl_cox_threshold_inited = true;
+    }
+    return g_schmidl_cox_threshold;
+}
+static bool is_schmidl_cox_enabled() {
+    if (!g_schmidl_cox_threshold_inited) {
+        get_schmidl_cox_threshold();
+    }
+    return g_schmidl_cox_enabled;
+}
+
 
 bool compare_abs(const std::pair<gr_complex, int>& first,
                  const std::pair<gr_complex, int>& second)
@@ -87,11 +140,21 @@ public:
           d_wifi_start_added(false),
           d_tag_skip_count(0),
           d_sync_samples(0),
+          d_sc_p_idx(0),
+          d_sc_r_idx(0),
+          d_sum_sc_p(gr_complex(0, 0)),
+          d_sum_sc_r(0.0f),
           SYNC_LENGTH(sync_length)
     {
 
         set_tag_propagation_policy(block::TPP_DONT);
         d_correlation = (gr_complex*)volk_malloc(sizeof(gr_complex) * 8192, volk_get_alignment());
+
+        // Phase 133 T3: Initialize Schmidl-Cox ring buffers
+        for (int k = 0; k < SCHMIDL_COX_WINDOW; k++) {
+            d_sc_mult_ring[k] = gr_complex(0, 0);
+            d_sc_pow_ring[k] = 0.0f;
+        }
 
         // Phase 31b (2026-06-17): Input dump opt-in via env var
         if (getenv("IEEE80211_SYNC_LONG_INPUT_DUMP")) {
@@ -281,6 +344,38 @@ public:
 
             while (i + 63 < ninput) {
 
+                // Phase 133 T3: Compute Schmidl-Cox L-LTF metric in lock-step with FIR.
+                // The first 80 samples are not enough lag history, so metrics are
+                // suppressed (=-1 marker). After that, every sample gets a metric.
+                if (is_schmidl_cox_enabled()) {
+                    // Use port 1 (delayed) signal so we maintain proper alignment
+                    // with the FIR correlator (which also runs on the same aligned stream).
+                    const gr_complex* sig = (const gr_complex*)input_items[1];
+                    gr_complex cur = sig[i];
+                    float mag_sq = std::norm(cur);
+                    // Update sliding 80-sample complex sum for P
+                    gr_complex mult = (i >= SCHMIDL_COX_LAG)
+                        ? cur * std::conj(sig[i - SCHMIDL_COX_LAG]) : gr_complex(0, 0);
+                    d_sum_sc_p += mult;
+                    d_sum_sc_p -= d_sc_mult_ring[d_sc_p_idx];
+                    d_sc_mult_ring[d_sc_p_idx] = mult;
+                    d_sc_p_idx = (d_sc_p_idx + 1) % SCHMIDL_COX_WINDOW;
+                    // Update sliding 80-sample energy sum for R
+                    float mag_sq_old = (i >= SCHMIDL_COX_LAG) ? std::norm(sig[i - SCHMIDL_COX_LAG]) : 0.0f;
+                    d_sum_sc_r += mag_sq + mag_sq_old;
+                    d_sum_sc_r -= d_sc_pow_ring[d_sc_r_idx];
+                    d_sc_pow_ring[d_sc_r_idx] = mag_sq + mag_sq_old;
+                    d_sc_r_idx = (d_sc_r_idx + 1) % SCHMIDL_COX_WINDOW;
+                    // Compute metric, store at this d_offset
+                    float metric = -1.0f;
+                    if (i >= SCHMIDL_COX_LAG) {
+                        float p_abs_sq = std::norm(d_sum_sc_p);
+                        float r_sq = d_sum_sc_r * d_sum_sc_r;
+                        metric = p_abs_sq / (r_sq + 1e-9f);
+                    }
+                    d_sc_metric_at.push_back(std::make_pair(metric, d_offset));
+                }
+
                 d_cor.push_back(pair<gr_complex, int>(d_correlation[i], d_offset));
 
                 i++;
@@ -296,6 +391,7 @@ public:
                     } else {
                         // No valid detection - stay in SYNC state, clear correlation for new search
                         d_cor.clear();
+                        d_sc_metric_at.clear();  // Phase 133 T3: also clear Schmidl-Cox history
                         d_state = SYNC;
                     }
 
@@ -547,6 +643,27 @@ public:
 
         // If we found a valid HT candidate
         if (best_ht_i >= 0 && best_ht_k >= 0) {
+            // Phase 133 T3: Multi-feature gate — verify Schmidl-Cox is also high
+            // at this position. Rejects noise false-positives that have FIR plateau
+            // but lack periodic phase coherence between L-LTF halves.
+            if (is_schmidl_cox_enabled()) {
+                int ht_offset = get<1>(vec[best_ht_i]);
+                double sc_value = lookup_sc_metric(ht_offset);
+                if (sc_value < get_schmidl_cox_threshold()) {
+                    fprintf(stderr, "[SYNC_LONG_P133] HT plateau REJECTED: best_ht_i=%d(offset=%d) "
+                            "FIR-mag=%.4f Schmidl-Cox=%.4f (thresh=%.4f)\n",
+                            best_ht_i, ht_offset,
+                            abs(get<0>(vec[best_ht_i])),
+                            sc_value, get_schmidl_cox_threshold());
+                    valid = false;
+                    return valid;
+                }
+                fprintf(stderr, "[SYNC_LONG_P133] HT plateau ACCEPTED: best_ht_i=%d(offset=%d) "
+                        "FIR-mag=%.4f Schmidl-Cox=%.4f (thresh=%.4f)\n",
+                        best_ht_i, ht_offset,
+                        abs(get<0>(vec[best_ht_i])),
+                        sc_value, get_schmidl_cox_threshold());
+            }
             // FIX: Subtract 13 to compensate for group delay in correlation peak detection
             // The lower_peak is typically 13 samples AFTER the true LTF0 start due to
             // FIR matched filter group delay. Without this fix, the FFT window captures
@@ -638,6 +755,25 @@ public:
 
         // If we found a valid Legacy candidate
         if (best_leg_i >= 0 && best_leg_k >= 0) {
+            // Phase 133 T3: Multi-feature gate (Legacy mode)
+            if (is_schmidl_cox_enabled()) {
+                int leg_offset = get<1>(vec[best_leg_i]);
+                double sc_value = lookup_sc_metric(leg_offset);
+                if (sc_value < get_schmidl_cox_threshold()) {
+                    fprintf(stderr, "[SYNC_LONG_P133] Legacy plateau REJECTED: best_leg_i=%d(offset=%d) "
+                            "FIR-mag=%.4f Schmidl-Cox=%.4f (thresh=%.4f)\n",
+                            best_leg_i, leg_offset,
+                            abs(get<0>(vec[best_leg_i])),
+                            sc_value, get_schmidl_cox_threshold());
+                    valid = false;
+                    return valid;
+                }
+                fprintf(stderr, "[SYNC_LONG_P133] Legacy plateau ACCEPTED: best_leg_i=%d(offset=%d) "
+                        "FIR-mag=%.4f Schmidl-Cox=%.4f (thresh=%.4f)\n",
+                        best_leg_i, leg_offset,
+                        abs(get<0>(vec[best_leg_i])),
+                        sc_value, get_schmidl_cox_threshold());
+            }
             // FIX: Same offset compensation for Legacy mode
             int offset_compensation = 13;
             d_frame_start = best_leg_lower_peak + 1 - offset_compensation;
@@ -692,6 +828,41 @@ private:
     const bool d_log;
     const bool d_debug;
     const int SYNC_LENGTH;
+
+    // Phase 133 T3: Schmidl-Cox L-LTF detector (multi-feature gate)
+    // Runs in lock-step with FIR. d_sc_metric_at accumulates (metric, offset)
+    // pairs aligned with d_cor. search_frame_start() uses d_sc_metric_at to
+    // gate candidate pairs against phase coherence, rejecting FIR-only false
+    // positives from structured noise.
+    gr_complex d_sc_mult_ring[SCHMIDL_COX_WINDOW];
+    float d_sc_pow_ring[SCHMIDL_COX_WINDOW];
+    int d_sc_p_idx;
+    int d_sc_r_idx;
+    gr_complex d_sum_sc_p;
+    float d_sum_sc_r;
+    std::vector<std::pair<float, int>> d_sc_metric_at;  // (metric, offset), -1.0 = invalid
+
+    // Lookup helper for Schmidl-Cox metric at given d_offset
+    double lookup_sc_metric(int offset) {
+        if (d_sc_metric_at.empty()) return -1.0;
+        // Linear scan for matching offset (a few hundred entries)
+        for (auto& entry : d_sc_metric_at) {
+            if (entry.second == offset) {
+                return entry.first;
+            }
+        }
+        // Fallback: nearest neighbor
+        int best_diff = INT_MAX;
+        double best_val = -1.0;
+        for (auto& entry : d_sc_metric_at) {
+            int diff = std::abs(entry.second - offset);
+            if (diff < best_diff) {
+                best_diff = diff;
+                best_val = entry.first;
+            }
+        }
+        return best_val;
+    }
 
     static const std::vector<gr_complex> LONG;
 };
