@@ -217,11 +217,41 @@ following hierarchy applies:
   on USRP IQ (corr=3.163 detected). Equalizer itself is the next target.
 - **IEEE80211_SYNC_SHORT_FUSED_DUMP=1** — Phase 88 diagnostic: logs
   batch_power, noise_floor, max_cor, n>0.001, n>0.01 per call. Default OFF.
+- [Phase 133 sync_long multi-feature detector](docs/superpowers/notes/2026-07-09-phase133-sync-long-multi-feature-verdict.md) —
+  `IEEE80211_SYNC_LONG_SCHMIDL_COX=1` adds Schmidl-Cox |P|²/R² at lag=80 to
+  sync_long's plateau acceptance. Opt-in (default OFF). File-replay validates
+  gating; USRP needs fast-path removal (see Phase 135) to actually run.
+- **IEEE80211_SYNC_LONG_SCHMIDL_COX_THRESHOLD** — Phase 133 threshold (opt-in,
+  default 0.05). Lower accepts more candidates (more noise risk). Higher is
+  stricter (rejects more valid peaks at low SNR).
+- [Phase 135 sync_long wifi_start fast-path REMOVAL](docs/superpowers/notes/2026-07-09-phase135-fast-path-removal-verdict.md)
+  (commit 4486bc4, 2026-07-09). The SYNC+wifi_start→COPY fast-path (Phase 14 /
+  31b additions, sync_long.cc lines 173-186 in pre-P135) BYPASSED
+  search_frame_start() and therefore the Phase 133 multi-feature gate.
+  Per user direction "拆掉 fast-path (推荐)", P135 removed the SYNC-state
+  direct COPY transition. Now all frame-start transitions flow through
+  search_frame_start() at the SYNC_LENGTH boundary, where the P133 gate runs.
+  T4c USRP verification (5250 MHz cable, --tx-gain 0): P133 fires 18x in 20s
+  (3 ACCEPTED + 15 REJECTED) — first time P133 multi-feature gate runs on
+  real USRP. Pre-P135 (Phase 134 verdict): gate never fired. P135 is
+  ARCHITECTURAL FIX (not performance fix); downstream 1.77 rad ceiling
+  (Phase 112 R1) unchanged. Phase 136+ continues to attack upstream
+  noise reduction with P133 gate now wired into USRP continuous streaming.
+  COPY-state wifi_start handler (lines 297+) is preserved — different code
+  path (COPY→SYNC for new frame), not the bypass problem.
 
-*Last updated: 2026-07-07 (Phase 110 — user explicitly rejected closure.
+*Last updated: 2026-07-09 (Phase 135 — sync_long wifi_start fast-path
+REMOVED. P133 multi-feature gate now ACTUALLY FIRES on USRP (3 ACCEPTED +
+15 REJECTED in 20s T4c test on 5250 MHz cable). Architectural fix that
+opens upstream attack surface for Phase 136+ against Phase 112 R1
+1.77 rad downstream ceiling. Per Phase 110 user directive "不可能接受现状",
+equalizer attacks MUST continue; Phase 135 wires the upstream gate into
+USRP continuous streaming so future work on noise reduction has effect.
+Commit 4486bc4.)*
+
 **USRP realtime FCS_OK is the absolute goal.** "Equalizer layer is CLOSED"
 language REMOVED; equalizer attacks MUST continue. After 30+ REFUTED at
 equalizer layer, equalizer layer is **STILL THE TARGET** — new architectures
 (DD + Kalman + alternative H estimation) must be tried. Loopback-only
 verification is NOT an acceptable outcome. Per user directive: "不可能接受
-现状，我的目标是实现USRP FCS OK".)*
+现状，我的目标是实现USRP FCS OK".*
