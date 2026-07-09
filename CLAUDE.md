@@ -240,13 +240,18 @@ following hierarchy applies:
   COPY-state wifi_start handler (lines 297+) is preserved — different code
   path (COPY→SYNC for new frame), not the bypass problem.
 
-*Last updated: 2026-07-09 (Phase 135 — sync_long wifi_start fast-path
-REMOVED. P133 multi-feature gate now ACTUALLY FIRES on USRP (3 ACCEPTED +
-15 REJECTED in 20s T4c test on 5250 MHz cable). Architectural fix that
-opens upstream attack surface for Phase 136+ against Phase 112 R1
-1.77 rad downstream ceiling. Per Phase 110 user directive "不可能接受现状",
-equalizer attacks MUST continue; Phase 135 wires the upstream gate into
-USRP continuous streaming so future work on noise reduction has effect.
+*Last updated: 2026-07-09 (Phase 136 — Phase 128 inner condition bug FIXED.
+Commit 4192b49: kHtTrain1Rel=6 (UNREACHABLE when viterbi fires at sym=5)
+→ kHtTrain0Rel=5. For 1×1 HT-MF pilots are equivalent per 802.11n
+Table G.13. USRP 5250 validation INCONCLUSIVE due to extreme signal
+variability (ratio_ht 0.199-8.575 across 5 runs). T1a pre-fix showed
+16 HT_SIG_CAND but 0 delta_htltf — confirms Phase 128 was no-op on
+USRP continuous streaming. Fix is code correctness improvement.
+Phase 137+ continues attack on Phase 100 root cause: 5 globally-null
+SCs → 10 random bits per HT-SIG frame = exactly viterbi free-distance
+ceiling. Per Phase 110 user directive "不可能接受现状", equalizer attacks
+MUST continue; Phase 137+ may explore null-SC erasure or architectural
+decoder redesign.
 Commit 4486bc4.)*
 
 **USRP realtime FCS_OK is the absolute goal.** "Equalizer layer is CLOSED"
