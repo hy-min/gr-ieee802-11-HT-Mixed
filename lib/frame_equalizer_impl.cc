@@ -4457,6 +4457,24 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     // some may pass CRC. Combines additively with Phase 123 (HT-SIG
     // chain). Default OFF. Enable via IEEE80211_LSIG_H52_CROSS_FRAME_TRACK=N
     // (e.g. 2, 3, 4, 8).
+
+    // Phase 128: CFO/SFO re-estimation from HT-LTF. Delays HT-SIG
+    // viterbi until HT-LTF (kHtTrain1Rel=6) is received, then
+    // re-estimates δ from HT-LTF pilots and applies correction to
+    // HT-SIG equalization. Goal: address cross-board LO drift
+    // (Phase 122: 0.5-1 rad over 5-6 symbols) that the L-LTF-based
+    // δ estimate may have missed. Default OFF. Enable via
+    // IEEE80211_HTSIG_CFO_REEST_HTLTF=1.
+    d_apply_htsig_cfo_reest_htltf = false;
+    {
+        const char* env_cre = std::getenv("IEEE80211_HTSIG_CFO_REEST_HTLTF");
+        d_apply_htsig_cfo_reest_htltf = (env_cre && env_cre[0] == '1');
+        if (d_apply_htsig_cfo_reest_htltf) {
+            std::cout << "[FRAME_EQ] IEEE80211_HTSIG_CFO_REEST_HTLTF=1 "
+                      << "(HT-SIG viterbi delayed to kHtTrain1Rel; δ "
+                      << "re-estimated from HT-LTF pilots)\n";
+        }
+    }
     d_apply_lsig_h_cross_frame = false;
     d_lsig_h52_history_depth = 0;
     d_lsig_h52_history_count = 0;
@@ -6289,7 +6307,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
             d_early_eqsym_valid[kLltf1Rel] &&
             d_early_eqsym_valid[kLSigRel] &&
             d_early_eqsym_valid[kHtSig0Rel] &&
-            d_early_eqsym_valid[kHtSig1Rel];
+            d_early_eqsym_valid[kHtSig1Rel] &&
+            // Phase 128: delay HT-SIG viterbi until HT-LTF (kHtTrain1Rel=6)
+            // is received. Lets us re-estimate δ from HT-LTF and apply to
+            // HT-SIG eq. Trade-off: adds 2-symbol latency to chain.
+            // Default OFF to preserve baseline Phase 18/35/46 behavior.
+            (!d_apply_htsig_cfo_reest_htltf ||
+             d_early_eqsym_valid[kHtTrain0Rel]);
         if (ht_parse_condition) {
             gr_complex Hhdr52[52];
             const gr_complex* lltf_for_H2 = nullptr;

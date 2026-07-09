@@ -248,6 +248,11 @@ private:
     gr_complex d_lsig_h52_history[8][52];
     double d_lsig_h52_history_freq_key;
 
+    // Phase 128: CFO/SFO re-estimation from HT-LTF. Delays HT-SIG
+    // viterbi until HT-LTF (kHtTrain1Rel=6) is received. Default OFF.
+    // Enable via IEEE80211_HTSIG_CFO_REEST_HTLTF=1.
+    bool d_apply_htsig_cfo_reest_htltf;
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
