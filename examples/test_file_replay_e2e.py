@@ -30,6 +30,10 @@ os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
 DEFAULT_ENV = {
     'IEEE80211_LSIG_RATE_FORCE': '0xD',
     'IEEE80211_TIMING_OFFSET_APPLY': '1',
+    # Phase 89: sync_short boxcar detector (replaces REFUTED MA(48)/MA(64) ratio)
+    'IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR': '1',
+    # Phase 89: sync_short adaptive threshold (median*10 with 3.0 startup gate)
+    'IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH': '1',
 }
 for k, v in DEFAULT_ENV.items():
     os.environ.setdefault(k, v)
@@ -204,7 +208,21 @@ def main():
     p.add_argument('--loop', type=int, default=1, help='Loop file in RX (>1 = repeat=True)')
     p.add_argument('--phase', choices=['tx', 'rx', 'both'], default='both')
     p.add_argument('--diag', type=str, default='', help='Path to per-frame diagnostic CSV (appends per-frame metrics)')
+    p.add_argument('--phase137-on', action='store_true',
+                   help='Phase 137: enable stable-null-aware masking '
+                        '(IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 + '
+                        'IEEE80211_HTSIG_NULL_PILOT_MASK=1)')
     args = p.parse_args()
+
+    # Phase 137: stable-null-aware masking (opt-in via --phase137-on).
+    # Default OFF preserves baseline.
+    if args.phase137_on:
+        os.environ['IEEE80211_HTSIG_NULL_SCS'] = '-21,-13,-7,7,21'
+        os.environ['IEEE80211_HTSIG_NULL_PILOT_MASK'] = '1'
+        os.environ['IEEE80211_HT_PER_SYMBOL_CPE'] = '1'  # required for pilot CPE code path
+        print(f"[TEST] Phase 137 ENABLED: "
+              "IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 "
+              "IEEE80211_HTSIG_NULL_PILOT_MASK=1", flush=True)
 
     print(f"[P103] Env: LSIG_RATE_FORCE={os.environ.get('IEEE80211_LSIG_RATE_FORCE')} "
           f"TIMING_OFFSET_APPLY={os.environ.get('IEEE80211_TIMING_OFFSET_APPLY')}",
