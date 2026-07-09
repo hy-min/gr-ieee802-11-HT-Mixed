@@ -7724,18 +7724,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Phase 128: CFO/SFO re-estimation from HT-LTF. Use the
                 // 4 HT-LTF pilots (SC -21,-7,+7,+21, kScIndex52 indices
                 // 48..51) to estimate the channel at the HT-LTF timing
-                // (kHtTrain1Rel=6, ~4us after HT-SIG1). The phase slope
-                // argH(sc) reflects residual CFO/SFO that the L-LTF-based
-                // δ estimation may have missed due to LO drift over the
-                // 5-6 symbols between L-LTF and HT-LTF (Phase 122:
-                // cross-board LO drift ~0.5-1 rad / 5-6 sym). Convert
-                // the slope into a δ_htltf (1/64 sample units), then
-                // pre-rotate d_early_eqsym[kHtSig0Rel] and [kHtSig1Rel]
-                // by exp(+j*2π·sc·δ_htltf/64) so the viterbi sees the
-                // corrected constellation. Chained BEFORE viterbi.
-                // Goal: reduce metric from 13-16 toward ≤10 viterbi wall.
+                // (kHtTrain0Rel=5, HT-LTF0 symbol). Phase 136 fix: the
+                // outer viterbi gate (line 6467) only delays to
+                // kHtTrain0Rel=5, so on USRP continuous streaming the
+                // viterbi fires at sym=5 with kHtTrain1Rel=6 still
+                // pending. Original Phase 128 condition required
+                // kHtTrain1Rel=6 which was always FALSE → Phase 128
+                // never fired on USRP (T1a: 0 delta_htltf fires, metric
+                // 13-17 unchanged from baseline). Fix uses HT-LTF0
+                // (sym=5) pilots which ARE valid by the time viterbi
+                // runs. For 1x1 HT-MF the HT-LTF0 pilot polarity matches
+                // HT-LTF1 per 802.11n Table G.13 (single-stream case).
+                // Phase slope argH(sc) reflects residual CFO/SFO that
+                // L-LTF-based delta estimation may have missed due to LO
+                // drift over the 5-6 symbols between L-LTF and HT-LTF
+                // (Phase 122: cross-board LO drift ~0.5-1 rad / 5-6 sym).
+                // Convert slope to delta_htltf (1/64 sample units), then
+                // pre-rotate d_early_eqsym[kHtSig0Rel]/[kHtSig1Rel] by
+                // exp(+j*2π*sc*delta_htltf/64) before viterbi. Goal:
+                // reduce metric from 13-16 toward ≤10 viterbi wall.
                 if (d_apply_htsig_cfo_reest_htltf &&
-                    d_early_eqsym_valid[kHtTrain1Rel] &&
+                    d_early_eqsym_valid[kHtTrain0Rel] &&
                     d_early_eqsym_valid[kHtSig0Rel] &&
                     d_early_eqsym_valid[kHtSig1Rel]) {
                     // 1) Build H_htltf from the 4 HT-LTF pilots.
@@ -7755,13 +7764,14 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     for (int i = 0; i < 52; i++) {
                         H_htltf[i] = gr_complex(0.0f, 0.0f);
                     }
-                    // d_early_eqsym[kHtTrain1Rel] is the equalized symbol
-                    // at HT-LTF, divided by H_a_ptr (Hhdr52-based) inside
-                    // the equalize() call. To recover raw H_htltf (before
-                    // equalization), we multiply by H_a_ptr at pilot SCs.
-                    // However, since H_a_ptr IS our best L-LTF-based H,
-                    // and we want the CHANNEL H seen at HT-LTF timing,
-                    // we must re-multiply: H_htltf = eq_pilot * H_pilot_LLTF.
+                    // d_early_eqsym[kHtTrain0Rel] (sym=5, HT-LTF0) is the equalized
+                    // symbol at HT-LTF timing, divided by H_a_ptr (Hhdr52-
+                    // based) inside the equalize() call. To recover raw
+                    // H_htltf (before equalization), we multiply by
+                    // H_a_ptr at pilot SCs. However, since H_a_ptr IS
+                    // our best L-LTF-based H, and we want the CHANNEL H
+                    // seen at HT-LTF timing, we re-multiply: H_htltf =
+                    // eq_pilot * H_pilot_LLTF.
                     for (int p = 0; p < 4; p++) {
                         const int idx = 48 + p;
                         if (std::abs(H_a_ptr[idx]) > 1e-9f) {
@@ -7772,7 +7782,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             // H_htltf[idx] = eq[idx] * H_a_ptr[idx] / P.
                             gr_complex P = kHtLtfPilotVal[p];
                             gr_complex H_a = H_a_ptr[idx];
-                            gr_complex eq = d_early_eqsym[kHtTrain1Rel][idx];
+                            gr_complex eq = d_early_eqsym[kHtTrain0Rel][idx];
                             // Multiply: eq*H_a gives rx (approx), divide by P.
                             H_htltf[idx] = (eq * H_a) / P;
                         }
