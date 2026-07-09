@@ -240,19 +240,39 @@ following hierarchy applies:
   COPY-state wifi_start handler (lines 297+) is preserved — different code
   path (COPY→SYNC for new frame), not the bypass problem.
 
-*Last updated: 2026-07-09 (Phase 136 — Phase 128 inner condition bug FIXED.
-Commit 4192b49: kHtTrain1Rel=6 (UNREACHABLE when viterbi fires at sym=5)
-→ kHtTrain0Rel=5. For 1×1 HT-MF pilots are equivalent per 802.11n
-Table G.13. USRP 5250 validation INCONCLUSIVE due to extreme signal
-variability (ratio_ht 0.199-8.575 across 5 runs). T1a pre-fix showed
-16 HT_SIG_CAND but 0 delta_htltf — confirms Phase 128 was no-op on
-USRP continuous streaming. Fix is code correctness improvement.
-Phase 137+ continues attack on Phase 100 root cause: 5 globally-null
-SCs → 10 random bits per HT-SIG frame = exactly viterbi free-distance
-ceiling. Per Phase 110 user directive "不可能接受现状", equalizer attacks
-MUST continue; Phase 137+ may explore null-SC erasure or architectural
-decoder redesign.
-Commit 4486bc4.)*
+- [Phase 137 stable-null-aware masking with alternative CPE](docs/superpowers/notes/2026-07-09-phase137-stable-null-mask-verdict.md)
+  (NEW 2026-07-09). 3-layer opt-in fix targeting Phase 78b's 5 stable null SCs
+  {-21,-13,-7,+7,+21}:
+  - **L1**: `IEEE80211_HTSIG_NULL_SCS='-21,-13,-7,7,21'` — extended env format
+    accepts signed SC values (-26..+26). Backward-compat with old loop-position
+    format `12` preserved.
+  - **L2**: `IEEE80211_HTSIG_NULL_PILOT_MASK=1` — opt-in flag. Skips 4 null
+    pilots {-21,-7,+7,+21} (kScIndex52 positions 48..51) in CPE estimator.
+  - **L3**: Auto data-SC CPE fallback when all 4 pilots masked/invalid (no env).
+  Default OFF. USRP T4-T5 REFUTED: T5 #1 best metric=11 (avg_snr_htsig=1.93 dB),
+  T5 #2 best metric=14 (avg_snr_htsig=5.05 dB); both > 10 viterbi threshold.
+  Phase 112 R1 1.77 rad ceiling dominates. 3 cable runs (within ≤5 budget).
+
+*Last updated: 2026-07-09 (Phase 137 stable-null mask REFUTED on USRP) — 7 commits
+(7581f95, ee2d132, 1678da4, 492c760, be2a46e, 31c65a4) plus verdict.
+Phase 137 implementation is CORRECT (all env-var markers fire on USRP
+general_work calls, file-replay 1/1 PASS) but REFUTED on USRP continuous
+streaming. T5 Run 1 best metric=11 (1 above viterbi threshold), T5 Run 2 best
+metric=14. avg_snr_htsig does not correlate (Run 1=1.93 dB metric 11, Run 2=5.05
+dB metric 14) — Phase 100 root cause "5 globally-null SCs → 10 random bits per
+HT-SIG frame = exactly viterbi free-distance ceiling" remains dominant. Equalizer
+layer REFUTED at viterbi ceiling once again; per user's "不可能接受现状" directive,
+Phase 138+ continues equalizer attacks. Options: external ref clock (HW, excluded),
+data-SC-only multi-frame averaging, freq-domain deconvolution, ML detection,
+30 dB SMA attenuator install.
+
+Phase 136 (preceding) — Phase 128 inner condition bug FIXED. Commit 4192b49:
+kHtTrain1Rel=6 (UNREACHABLE when viterbi fires at sym=5) → kHtTrain0Rel=5.
+For 1×1 HT-MF pilots are equivalent per 802.11n Table G.13. USRP 5250
+validation INCONCLUSIVE due to extreme signal variability (ratio_ht 0.199-8.575
+across 5 runs). T1a pre-fix showed 16 HT_SIG_CAND but 0 delta_htltf —
+confirms Phase 128 was no-op on USRP continuous streaming. Fix is code
+correctness improvement (commit 4486bc4).*
 
 **USRP realtime FCS_OK is the absolute goal.** "Equalizer layer is CLOSED"
 language REMOVED; equalizer attacks MUST continue. After 30+ REFUTED at
