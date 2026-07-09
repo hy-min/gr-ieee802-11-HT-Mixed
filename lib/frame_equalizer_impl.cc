@@ -4114,6 +4114,55 @@ void frame_equalizer_impl::ref_h52_cross_frame_average(const gr_complex* h_cur,
         }
     }
 }
+
+// Phase 127: Pre-LSIG cross-frame H52 tracking. Same algorithm as
+// ref_h52_cross_frame_average() but applied BEFORE L-SIG viterbi to
+// improve L-SIG detection. Different code path from Phase 123 (which
+// fires AFTER H_AVERAGE on HT-SIG chain). Theoretical: σ reduction
+// 1/sqrt(N) for uncorrelated noise. Frequency-keyed reset. Returns
+// n_avg (current + history).
+int frame_equalizer_impl::ref_lsig_h52_cross_frame_average(
+    const gr_complex* h_cur, double freq_key, gr_complex* h_out)
+{
+    if (!d_apply_lsig_h_cross_frame || d_lsig_h52_history_depth < 1) {
+        for (int i = 0; i < 52; i++) h_out[i] = h_cur[i];
+        return 1;
+    }
+    // Frequency-keyed reset (1 Hz threshold)
+    const double freq_delta = std::abs(freq_key - d_lsig_h52_history_freq_key);
+    const bool first_call = (d_lsig_h52_history_count == 0);
+    const bool freq_changed = !first_call && (freq_delta > 1.0);
+    if (freq_changed) {
+        d_lsig_h52_history_count = 0;
+    }
+    if (first_call || freq_changed) {
+        d_lsig_h52_history_freq_key = freq_key;
+    }
+    // Average h_cur + history
+    const int n_avg = 1 + d_lsig_h52_history_count;
+    const float inv_n = 1.0f / (float)n_avg;
+    for (int i = 0; i < 52; i++) {
+        gr_complex sum = h_cur[i];
+        for (int j = 0; j < d_lsig_h52_history_count; j++) {
+            sum += d_lsig_h52_history[j][i];
+        }
+        h_out[i] = sum * inv_n;
+    }
+    // FIFO push
+    if (d_lsig_h52_history_count >= d_lsig_h52_history_depth) {
+        for (int j = 0; j < d_lsig_h52_history_depth - 1; j++) {
+            for (int i = 0; i < 52; i++) {
+                d_lsig_h52_history[j][i] = d_lsig_h52_history[j + 1][i];
+            }
+        }
+        d_lsig_h52_history_count = d_lsig_h52_history_depth - 1;
+    }
+    for (int i = 0; i < 52; i++) {
+        d_lsig_h52_history[d_lsig_h52_history_count][i] = h_cur[i];
+    }
+    d_lsig_h52_history_count++;
+    return n_avg;
+}
 // ======================================================================
 
 frame_equalizer::sptr
@@ -4397,6 +4446,41 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         for (int i = 0; i < kMaxH52History; i++) {
             for (int k = 0; k < 52; k++) {
                 d_h52_history[i][k] = gr_complex(0.0f, 0.0f);
+            }
+        }
+    }
+
+    // Phase 127: Pre-LSIG cross-frame H52 tracking. Applies Phase 123
+    // cross-frame logic to Hhdr52 BEFORE L-SIG viterbi. Goal: improve
+    // L-SIG detection (currently 1 HT frame vs 4 Legacy in cross-board
+    // capture per Phase 125b). If more HT frames reach HT-SIG viterbi,
+    // some may pass CRC. Combines additively with Phase 123 (HT-SIG
+    // chain). Default OFF. Enable via IEEE80211_LSIG_H52_CROSS_FRAME_TRACK=N
+    // (e.g. 2, 3, 4, 8).
+    d_apply_lsig_h_cross_frame = false;
+    d_lsig_h52_history_depth = 0;
+    d_lsig_h52_history_count = 0;
+    d_lsig_h52_history_freq_key = 0.0;
+    {
+        const char* env_lsig_cft = std::getenv("IEEE80211_LSIG_H52_CROSS_FRAME_TRACK");
+        if (env_lsig_cft && env_lsig_cft[0] != '\0') {
+            int n = atoi(env_lsig_cft);
+            if (n >= 1 && n <= kMaxH52History) {
+                d_apply_lsig_h_cross_frame = true;
+                d_lsig_h52_history_depth = n;
+                std::cout << "[FRAME_EQ] IEEE80211_LSIG_H52_CROSS_FRAME_TRACK="
+                          << n << " (pre-LSIG cross-frame H52 averaging with N="
+                          << n << ")\n";
+            } else {
+                std::cout << "[FRAME_EQ] IEEE80211_LSIG_H52_CROSS_FRAME_TRACK="
+                          << env_lsig_cft << " (out of range 1.." << kMaxH52History
+                          << ", disabled)\n";
+            }
+        }
+        // Zero-initialize L-SIG history buffer
+        for (int i = 0; i < kMaxH52History; i++) {
+            for (int k = 0; k < 52; k++) {
+                d_lsig_h52_history[i][k] = gr_complex(0.0f, 0.0f);
             }
         }
     }
@@ -7097,11 +7181,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
             bool lsig_ok = false;
             int rot_lsig = 0;
             int inv_lsig = 0;
+
+            // Phase 127: Pre-LSIG cross-frame H tracking. Averages current
+            // Hhdr52 with previous N frames' Hhdr52 values BEFORE L-SIG
+            // viterbi. If L-SIG detection improves (more "Detected HT
+            // frame"), more frames reach HT-SIG viterbi. Theoretical:
+            // σ reduction 1/sqrt(N) for uncorrelated noise. Combines with
+            // Phase 123 (HT-SIG cross-frame) for chain. Default OFF.
+            gr_complex Hhdr52_xf[52];
+            const gr_complex* Hhdr52_for_lsig = Hhdr52;
+            if (d_apply_lsig_h_cross_frame) {
+                int n_xf = ref_lsig_h52_cross_frame_average(
+                    Hhdr52, d_freq_offset_from_synclong, Hhdr52_xf);
+                Hhdr52_for_lsig = Hhdr52_xf;
+                USRP_LOG("[LSIG_H52_CROSS_FRAME] n_avg=%d depth=%d (pre-LSIG H52 averaging)\n",
+                         n_xf, d_lsig_h52_history_depth);
+            }
+
             for (rot_lsig = 0; rot_lsig < n_rot && !found; rot_lsig++) {
               for (inv_lsig = 0; inv_lsig <= 1 && !found; inv_lsig++) {
 
                 lsig_ok = decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
-                                                                 Hhdr52,
+                                                                 Hhdr52_for_lsig,
                                                                  inv_lsig != 0,
                                                                  lsig_enc,
                                                                  lsig_len,

@@ -238,6 +238,16 @@ private:
     bool d_apply_htsig_h_freq_smooth;
     int  d_htsig_h_freq_smooth_tap;  // 3, 5, or 7 (must be odd)
 
+    // Phase 127: Pre-LSIG cross-frame H52 tracking. Same as d_h52_history
+    // but used for L-SIG (BEFORE L-SIG viterbi) instead of HT-SIG. Aim:
+    // improve L-SIG detection rate so more frames reach HT-SIG viterbi.
+    // Enable via IEEE80211_LSIG_H52_CROSS_FRAME_TRACK=N.
+    bool d_apply_lsig_h_cross_frame;
+    int  d_lsig_h52_history_depth;
+    int  d_lsig_h52_history_count;
+    gr_complex d_lsig_h52_history[8][52];
+    double d_lsig_h52_history_freq_key;
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
@@ -314,6 +324,14 @@ private:
     void ref_h52_cross_frame_average(const gr_complex* h_cur,
                                      double freq_key,
                                      gr_complex* h_out);
+
+    // Phase 127: Pre-LSIG cross-frame H52 tracking. Same algorithm as
+    // ref_h52_cross_frame_average() but applied to Hhdr52 BEFORE L-SIG
+    // viterbi (different code path from Phase 123's HT-SIG chain apply).
+    // Returns n_avg (current + history).
+    int ref_lsig_h52_cross_frame_average(const gr_complex* h_cur,
+                                          double freq_key,
+                                          gr_complex* h_out);
 
     // dynamic header detection state
     bool d_have_lsig;
