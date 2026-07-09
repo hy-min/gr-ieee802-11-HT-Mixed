@@ -746,6 +746,34 @@ static void refine_h52_dde_per_sc(
     }
 }
 
+// Phase 126A: Frequency-domain H52 smoothing. Applies an N-tap
+// (3/5/7, must be odd) moving average across the 52 subcarriers.
+// Leverages channel coherence bandwidth to reduce per-SC phase
+// noise (1.77 rad ceiling per Phase 112 R1). Edge handling: pad
+// with the edge value (no wrap-around; SCs -26..+26 are real).
+// In-place on H52_in_out. tap must be 3, 5, or 7.
+static void smooth_h52_freq(const gr_complex* H52_in,
+                            gr_complex* H52_in_out,
+                            int tap)
+{
+    if (tap < 3 || tap > 7 || (tap % 2) != 1) return;
+    const int half = tap / 2;
+    for (int i = 0; i < 52; i++) {
+        int i_lo = i - half;
+        int i_hi = i + half;
+        // Edge pad: clamp to [0, 51]
+        if (i_lo < 0) i_lo = 0;
+        if (i_hi > 51) i_hi = 51;
+        gr_complex acc(0.0f, 0.0f);
+        int n = 0;
+        for (int k = i_lo; k <= i_hi; k++) {
+            acc += H52_in[k];
+            n++;
+        }
+        H52_in_out[i] = acc / gr_complex((float)n, 0.0f);
+    }
+}
+
 // Forward declarations for saved LTF0 FFT (defined later in extract_header52_from_sym64)
 extern gr_complex saved_ltf0_fft[64];
 extern bool ltf0_saved;
@@ -4373,6 +4401,36 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
+    // Phase 126A: Frequency-domain H52 smoothing. Applies an N-tap
+    // (default 3, valid 3/5/7) moving average across 52 SCs AFTER all
+    // other H52 refinements (H_AVERAGE, DDE, CROSS_FRAME, etc.). Goal:
+    // leverage channel coherence bandwidth to reduce per-SC phase
+    // noise. Theoretical sigma reduction: 1/sqrt(N) for fully uncorrelated
+    // noise. Channel-coherence-limited: typically effective for 3-tap,
+    // marginal benefit for 7-tap. Default OFF. Combines additively with
+    // Phase 123 cross-frame (which only helps when N_frames>1).
+    // Enable via IEEE80211_HTSIG_H_FREQ_SMOOTH=1 (tap count via
+    // IEEE80211_HTSIG_H_FREQ_SMOOTH_TAP=3).
+    d_apply_htsig_h_freq_smooth = false;
+    d_htsig_h_freq_smooth_tap = 3;
+    {
+        const char* env_fs = std::getenv("IEEE80211_HTSIG_H_FREQ_SMOOTH");
+        const char* env_fs_tap = std::getenv("IEEE80211_HTSIG_H_FREQ_SMOOTH_TAP");
+        d_apply_htsig_h_freq_smooth = (env_fs && env_fs[0] == '1');
+        if (env_fs_tap && env_fs_tap[0] != '\0') {
+            int t = atoi(env_fs_tap);
+            if (t == 3 || t == 5 || t == 7) {
+                d_htsig_h_freq_smooth_tap = t;
+            }
+        }
+        if (d_apply_htsig_h_freq_smooth) {
+            std::cout << "[FRAME_EQ] IEEE80211_HTSIG_H_FREQ_SMOOTH=1 "
+                      << "(freq-domain H52 smoothing, " << d_htsig_h_freq_smooth_tap
+                      << "-tap moving average across SCs, theoretical sigma reduction 1/sqrt("
+                      << d_htsig_h_freq_smooth_tap << "))\n";
+        }
+    }
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps
     // |H_htsig0|, |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC
     // for offline verification. Enable via IEEE80211_HTSIG_H52_DUMP=1.
@@ -7363,6 +7421,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     USRP_LOG("[H52_CROSS_FRAME] H_a_ptr = H_b_ptr = mean of "
                              "current + %d prior frames (N=%d)\n",
                              d_h52_history_count - 1, d_h52_history_depth);
+                }
+
+                // Phase 126A: Frequency-domain H52 smoothing. Apply an
+                // N-tap (3/5/7) moving average across 52 SCs to leverage
+                // channel coherence bandwidth. Chains AFTER all per-frame
+                // refinements (H_REESTIMATE, H_AVERAGE, DDE, CROSS_FRAME)
+                // and BEFORE the HT-SIG viterbi. Reassigns BOTH H_a_ptr
+                // and H_b_ptr (HT-SIG1 is 4us after HT-SIG0, but freq-
+                // domain smoothing assumes channel coherence across all
+                // SCs in a single frame — the smoothing is a per-frame
+                // property, not a per-symbol property).
+                if (d_apply_htsig_h_freq_smooth &&
+                    d_early_eqsym_valid[kHtSig0Rel] &&
+                    d_early_eqsym_valid[kHtSig1Rel]) {
+                    gr_complex H_fs[52];
+                    smooth_h52_freq(H_a_ptr, H_fs, d_htsig_h_freq_smooth_tap);
+                    H_a_ptr = H_fs;
+                    H_b_ptr = H_fs;
+                    USRP_LOG("[HTSIG_H_FREQ_SMOOTH] H_a_ptr = H_b_ptr = "
+                             "%d-tap moving average across 52 SCs\n",
+                             d_htsig_h_freq_smooth_tap);
                 }
 
                 // Phase 95: IEEE80211_HTSIG_FINE_ROT=1 doubles the candidate

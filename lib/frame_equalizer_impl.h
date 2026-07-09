@@ -228,6 +228,16 @@ private:
     gr_complex d_h52_history[8][52]; // FIFO ring buffer of H_a_ptr from previous N frames
     double d_h52_history_freq_key;   // last frequency for reset detection
 
+    // Phase 126A: Frequency-domain H52 smoothing. Applies an N-tap
+    // (3/5/7, default 3) moving average across 52 SCs AFTER all other
+    // H52 refinements. Leverages channel coherence bandwidth to reduce
+    // per-SC phase noise (1.77 rad floor). Theoretical sigma reduction
+    // 1/sqrt(N) for fully uncorrelated noise. Default OFF.
+    // Enable via IEEE80211_HTSIG_H_FREQ_SMOOTH=1 (tap count via
+    // IEEE80211_HTSIG_H_FREQ_SMOOTH_TAP=3).
+    bool d_apply_htsig_h_freq_smooth;
+    int  d_htsig_h_freq_smooth_tap;  // 3, 5, or 7 (must be odd)
+
     // Phase 39: H_htsig dump. Flood-gated to 10 frames. Dumps |H_htsig0|,
     // |H_htsig1|, and ratio |H_htsig|/|Hhdr52| per SC for offline
     // verification on USRP. Enable via IEEE80211_HTSIG_H52_DUMP=1.
