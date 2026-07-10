@@ -82,6 +82,15 @@ def internal_run(args):
               "IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 "
               "IEEE80211_HTSIG_NULL_PILOT_MASK=1", flush=True)
 
+    # Phase 138: H52 frequency-domain low-pass filter (opt-in via --phase138-on).
+    # Default OFF preserves baseline.
+    if args.phase138_on:
+        os.environ['IEEE80211_H52_FREQ_LOWPASS'] = '1'
+        os.environ['IEEE80211_H52_FREQ_LOWPASS_K'] = str(args.phase138_k)
+        print(f"[TEST] Phase 138 ENABLED: "
+              "IEEE80211_H52_FREQ_LOWPASS=1 "
+              f"IEEE80211_H52_FREQ_LOWPASS_K={args.phase138_k}", flush=True)
+
     from gnuradio import gr, blocks, uhd
     import pmt
     import ieee802_11
@@ -375,6 +384,15 @@ def main():
                         help='Phase 137: enable stable-null-aware masking '
                              '(IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 + '
                              'IEEE80211_HTSIG_NULL_PILOT_MASK=1)')
+    # Phase 138: H52 frequency-domain low-pass filter (opt-in via --phase138-on).
+    # Default OFF preserves baseline.
+    parser.add_argument('--phase138-on', action='store_true',
+                        help='Phase 138: enable H52 freq-domain low-pass filter '
+                             '(IEEE80211_H52_FREQ_LOWPASS=1 + '
+                             'IEEE80211_H52_FREQ_LOWPASS_K=N)')
+    parser.add_argument('--phase138-k', type=int, default=10,
+                        help='Phase 138: K value for freq-domain low-pass '
+                             '(default 10, range 1..51)')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
