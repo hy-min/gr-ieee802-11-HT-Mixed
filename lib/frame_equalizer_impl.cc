@@ -5041,6 +5041,64 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
+    // Phase 141: Wiener H52 estimation env var (default OFF).
+    // IEEE80211_WIENER_H52=1 enables per-SC Wiener MMSE shrinkage.
+    // Sub-env vars:
+    //   IEEE80211_WIENER_FIFO_N=N  (R_hh FIFO depth, 1..8, default 4)
+    //   IEEE80211_WIENER_G_MIN=G   (G floor, 0..1, default 0.1)
+    //   IEEE80211_WIENER_NULL_SCS=comma-separated absolute SCs (default -21,-13,-7,7,21)
+    //   IEEE80211_WIENER_LOG=1     (per-frame diagnostic log, default OFF)
+    {
+        const char* env_wiener = std::getenv("IEEE80211_WIENER_H52");
+        if (env_wiener && env_wiener[0] != '\0' && env_wiener[0] != '0') {
+            d_apply_wiener_h52 = true;
+
+            const char* env_fifo_n = std::getenv("IEEE80211_WIENER_FIFO_N");
+            if (env_fifo_n && env_fifo_n[0] != '\0') {
+                int n = std::atoi(env_fifo_n);
+                if (n >= 1 && n <= 8) d_wiener_rhh_history_depth = n;
+            }
+            if (d_wiener_rhh_history_depth < 1) d_wiener_rhh_history_depth = 4;
+
+            const char* env_gmin = std::getenv("IEEE80211_WIENER_G_MIN");
+            if (env_gmin && env_gmin[0] != '\0') {
+                float g = std::atof(env_gmin);
+                if (g >= 0.0f && g <= 1.0f) d_wiener_g_min = g;
+            }
+
+            const char* env_null_scs = std::getenv("IEEE80211_WIENER_NULL_SCS");
+            if (env_null_scs && env_null_scs[0] != '\0') {
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "%s", env_null_scs);
+                d_wiener_n_nulls = 0;
+                char* tok = std::strtok(buf, ",");
+                while (tok && d_wiener_n_nulls < 8) {
+                    int sc = std::atoi(tok);
+                    if (sc >= -26 && sc <= 26) {
+                        d_wiener_null_scs[d_wiener_n_nulls++] = sc;
+                    }
+                    tok = std::strtok(nullptr, ",");
+                }
+            } else {
+                d_wiener_null_scs[0] = -21;
+                d_wiener_null_scs[1] = -13;
+                d_wiener_null_scs[2] = -7;
+                d_wiener_null_scs[3] = 7;
+                d_wiener_null_scs[4] = 21;
+                d_wiener_n_nulls = 5;
+            }
+
+            d_wiener_log = (std::getenv("IEEE80211_WIENER_LOG") != nullptr);
+
+            std::cout << "[FRAME_EQ] IEEE80211_WIENER_H52=1 "
+                      << "FIFO_N=" << d_wiener_rhh_history_depth
+                      << " G_MIN=" << d_wiener_g_min
+                      << " N_NULLS=" << d_wiener_n_nulls
+                      << " LOG=" << (d_wiener_log ? 1 : 0)
+                      << std::endl;
+        }
+    }
+
     // Phase 126A: Frequency-domain H52 smoothing. Applies an N-tap
     // (default 3, valid 3/5/7) moving average across 52 SCs AFTER all
     // other H52 refinements (H_AVERAGE, DDE, CROSS_FRAME, etc.). Goal:
