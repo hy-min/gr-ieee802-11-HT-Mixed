@@ -4834,6 +4834,36 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
+    // Phase 140: convenience flag that sets both 2-way default (Phase 139)
+    // and L-SIG cross-frame FIFO averaging (Phase 127) in one env var.
+    // Equivalent to: IEEE80211_H52_2WAY_DEFAULT=1 + IEEE80211_LSIG_H52_CROSS_FRAME_TRACK=N
+    // Default OFF (preserves all prior behavior). N ∈ {0,1,2,4,8} where
+    // 0 means "use 2-way only without cross-frame".
+    {
+        const char* env_p140 = std::getenv("IEEE80211_PHASE140_ON");
+        if (env_p140 && env_p140[0] != '\0') {
+            int n = atoi(env_p140);
+            if (n == 0) {
+                // 2-way only (no cross-frame). Equivalent to --phase139-on alone.
+                d_h52_2way_default = true;
+                std::cout << "[FRAME_EQ] IEEE80211_PHASE140_ON=0 "
+                          << "(2-way L-LTF0+L-LTF1 H52 only, no cross-frame)\n";
+            } else if (n >= 1 && n <= kMaxH52History) {
+                // Combined 2-way + cross-frame
+                d_h52_2way_default = true;
+                d_apply_lsig_h_cross_frame = true;
+                d_lsig_h52_history_depth = n;
+                std::cout << "[FRAME_EQ] IEEE80211_PHASE140_ON=" << n << " "
+                          << "(2-way L-LTF0+L-LTF1 H52 + N=" << n
+                          << " cross-frame FIFO averaging at L-SIG viterbi)\n";
+            } else {
+                std::cout << "[FRAME_EQ] IEEE80211_PHASE140_ON=" << env_p140
+                          << " (out of range 0.." << kMaxH52History
+                          << ", disabled)\n";
+            }
+        }
+    }
+
     // Phase 126A: Frequency-domain H52 smoothing. Applies an N-tap
     // (default 3, valid 3/5/7) moving average across 52 SCs AFTER all
     // other H52 refinements (H_AVERAGE, DDE, CROSS_FRAME, etc.). Goal:
