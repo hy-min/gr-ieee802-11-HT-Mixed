@@ -123,6 +123,17 @@ def internal_run(args):
               f"IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1",
               flush=True)
 
+    # Phase 141: Wiener H52 estimation (default OFF preserves baseline)
+    if args.wiener_on:
+        os.environ['IEEE80211_WIENER_H52'] = '1'
+        os.environ['IEEE80211_WIENER_FIFO_N'] = str(args.wiener_fifo_n)
+        print(f"[TEST] Phase 141 Wiener ENABLED: "
+              f"IEEE80211_WIENER_H52=1 FIFO_N={args.wiener_fifo_n}",
+              flush=True)
+    if args.wiener_log:
+        os.environ['IEEE80211_WIENER_LOG'] = '1'
+        print(f"[TEST] Phase 141 Wiener diagnostic log ENABLED", flush=True)
+
     from gnuradio import gr, blocks, uhd
     import pmt
     import ieee802_11
@@ -446,6 +457,14 @@ def main():
     parser.add_argument('--phase140-log', action='store_true',
                         help='Phase 140: enable cross-frame FIFO diagnostic log. '
                              '(IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1, opt-in)')
+    parser.add_argument('--wiener-on', action='store_true',
+                        help='Phase 141: enable Wiener H52 estimation '
+                             '(IEEE80211_WIENER_H52=1, opt-in)')
+    parser.add_argument('--wiener-log', action='store_true',
+                        help='Phase 141: enable Wiener diagnostic log '
+                             '(IEEE80211_WIENER_LOG=1, opt-in)')
+    parser.add_argument('--wiener-fifo-n', type=int, default=4,
+                        help='Phase 141: R_hh FIFO depth (default 4, range 1..8)')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 

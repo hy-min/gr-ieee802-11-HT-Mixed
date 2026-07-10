@@ -8029,6 +8029,29 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
             // Phase 127 cross-frame: stack AFTER 2-way if both enabled
             gr_complex Hhdr52_xf[52];
+
+            // Phase 141 (call site a): Wiener shrinkage BEFORE Phase 140 FIFO.
+            // Wiener operates on Hhdr52_for_lsig (2-way output); uses |h_ls|^2
+            // as proxy for |y_ltf|^2 (BPSK x_ltf=+/-1 so magnitudes match).
+            // sigma2 estimated from h_ls at null SCs (where H[k]=0).
+            if (d_apply_wiener_h52) {
+                float r_hh[52];
+                estimate_r_hh(Hhdr52_for_lsig, d_freq_offset_from_synclong, r_hh);
+                float sigma2 = estimate_sigma2_noise(
+                    Hhdr52_for_lsig, d_wiener_null_scs, d_wiener_n_nulls);
+                gr_complex Hhdr52_w[52];
+                wiener_filter_h52(Hhdr52_for_lsig, Hhdr52_for_lsig,
+                                  r_hh, sigma2, d_wiener_g_min, Hhdr52_w);
+                if (d_wiener_log) {
+                    char wbuf[256];
+                    std::snprintf(wbuf, sizeof(wbuf),
+                                  "[WIENER_LSIG] sigma2=%.4f g_min=%.2f applied\n",
+                                  sigma2, d_wiener_g_min);
+                    USRP_LOG("%s", wbuf);
+                }
+                Hhdr52_for_lsig = Hhdr52_w;  // override pointer
+            }
+
             if (d_apply_lsig_h_cross_frame) {
                 int n_xf = ref_lsig_h52_cross_frame_average(
                     Hhdr52_for_lsig, d_freq_offset_from_synclong, Hhdr52_xf);
