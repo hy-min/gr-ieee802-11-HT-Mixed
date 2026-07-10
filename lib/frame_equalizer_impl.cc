@@ -6236,6 +6236,22 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 estimate_header_channel_from_lltf52(lltf_for_H,
                                                     lltf_for_H1 ? lltf_for_H1 : lltf_for_H,
                                                     H52);
+                // Phase 138-B: call site 0 - filter L-LTF-only H52 BEFORE
+                // ratio_ht computation. The previous 3 call sites (lines
+                // 6169, 8507, 8951) are all gated by upstream conditions
+                // that never trigger on USRP real tests:
+                //   - Call site 1: d_apply_htltf_avg (default false)
+                //   - Call site 2: d_have_ht_header && d_is_ht (never true on USRP)
+                //   - Call site 3: requires HT-SIG decoded
+                // This site is the FIRST H52 used on every frame at HT-SIG0
+                // (counter==kHtSig0Rel). It directly affects ratio_ht → is_ht_frame
+                // detection, d_h52_stash → data path, and d_h_kalman init.
+                if (g_apply_freq_lowpass_h52 && g_h52_freq_lowpass_k >= 1 &&
+                    g_h52_freq_lowpass_k <= 51) {
+                    gr_complex H52_filtered_p138b[52];
+                    apply_freq_lowpass_h52(H52, g_h52_freq_lowpass_k, H52_filtered_p138b);
+                    std::memcpy(H52, H52_filtered_p138b, 52 * sizeof(gr_complex));
+                }
                 // [H52_DUMP] Diagnostic: dump |H52[i]| and arg(H52[i]) for all
                 // 52 subcarriers per frame. Opt-in via IEEE80211_H52_DUMP=1.
                 // Atomic snprintf+USRP_LOG prevents sync_short stdout shredding
