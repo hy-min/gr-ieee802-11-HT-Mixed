@@ -270,20 +270,32 @@ following hierarchy applies:
   directive: 30 dB SMA attenuator install (HW, $50, strongest path forward)
   or Wiener filter / multi-frame averaging (architectural).
 
-- **IEEE80211_PHASE140_ON=N** — Phase 140 convenience env var (opt-in, default OFF).
-  Stacks Phase 127 L-SIG cross-frame FIFO averaging AFTER Phase 139's 2-way L-LTF0+L-LTF1
-  H52 averaging. N=0 is a no-op (2-way default since Phase 139 is unaffected); N ∈ {1,2,4,8}
-  enables FIFO averaging at L-SIG viterbi. Theoretical σ reduction: N=1 → 1.25 rad (no avg
-  yet), N=2 → 0.88 rad, N=4 → 0.63 rad, N=8 → 0.51 rad (FIRST theoretical path below the
-  0.52 rad viterbi threshold). **Phase 140 PARTIAL verdict 2026-07-10**: file-replay 1/1 PASS
-  for all N ∈ {0,1,2,4,8}; USRP realtime validation deferred (5/5 cable budget already
-  exhausted in Phase 137/138/138-B/139; 30 dB SMA attenuator install was user-excluded
-  per "排除一下衰减器" directive). Diagnostic log fires at cross-frame entry:
-  `n_avg depth sigma_est_input sigma_est_post rad`. C++ preserved as opt-in.
-  Verdict: `docs/superpowers/notes/2026-07-10-phase140-verdict.md`.
-- **IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1** — Phase 140 σ-reduction diagnostic log
-  (opt-in, default OFF). Logs n_avg, depth, sigma_est_input, sigma_est_post at the L-SIG
-  cross-frame entry site when N ∈ {1,2,4,8}. Default OFF.
+- [Phase 140 2-way + Cross-Frame H52 (verdict)](docs/superpowers/notes/2026-07-10-phase140-verdict.md) —
+  **PARTIAL: file-replay 1/1 PASS for all N ∈ {0,1,2,4,8}; USRP deferred** (5/5 cable budget
+  already exhausted in Phase 137/138/138-B/139; 30 dB SMA attenuator install was
+  user-excluded per "排除一下衰减器" directive). Phase 140 stacks Phase 127 L-SIG
+  cross-frame FIFO averaging AFTER Phase 139's 2-way L-LTF0+L-LTF1 H52 averaging.
+  New env vars:
+  - **IEEE80211_PHASE140_ON=N** (opt-in, default OFF). N=0 is a no-op (2-way default
+    since Phase 139 is unaffected); N ∈ {1,2,4,8} enables FIFO averaging at L-SIG
+    viterbi. Theoretical σ reduction at full FIFO (n_xf = 1+N samples averaged;
+    σ_post = 1.25/√(1+N)):
+
+    | N | σ_post at full FIFO (1.25/√(1+N) rad) | vs Viterbi threshold (0.52 rad) |
+    |---|----|----|
+    | 1 | 0.884 | -0.364 rad above (still fails) |
+    | 2 | 0.721 | -0.201 rad above (fails) |
+    | 4 | 0.559 | -0.039 rad above (borderline) |
+    | 8 | 0.417 | +0.103 rad below (THEORETICAL PASS) |
+
+    N=8 (0.417 rad) is the FIRST time the equalizer-layer has a theoretical path
+    below the 0.52 rad viterbi threshold. N=4 (0.559 rad) is borderline. C++ preserved
+    as opt-in.
+  - **IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1** — Phase 140 σ-reduction diagnostic log
+    (opt-in, default OFF). Logs n_avg, depth, sigma_est_input, sigma_est_post at the
+    L-SIG cross-frame entry site when N ∈ {1,2,4,8}. Default OFF. Properly gated via
+    `d_lsig_h52_cross_frame_log` member added in review issue C1; without this env
+    var the snprintf does not fire (no log noise).
 
 - [Phase 137 stable-null-aware masking with alternative CPE](docs/superpowers/notes/2026-07-09-phase137-stable-null-mask-verdict.md)
   (NEW 2026-07-09). 3-layer opt-in fix targeting Phase 78b's 5 stable null SCs
@@ -324,8 +336,9 @@ following hierarchy applies:
 *Last updated: 2026-07-10 (Phase 140 stacked cross-frame on 2-way — file-replay 1/1 PASS for all N ∈ {0,1,2,4,8}, USRP deferred) — 7 implementation commits + verdict
 (`docs/superpowers/notes/2026-07-10-phase140-verdict.md`). IEEE80211_PHASE140_ON=N
 (N ∈ {1,2,4,8}) layers Phase 127 L-SIG cross-frame FIFO averaging on top of
-Phase 139's 2-way H52 baseline. N=8 theoretical σ=0.51 rad (FIRST path below
-the 0.52 rad viterbi threshold). 5/5 cable budget already exhausted in
+Phase 139's 2-way H52 baseline. N=8 theoretical σ=0.417 rad at full FIFO
+(σ_post = 1.25/√(1+N) = 1.25/3 = 0.417, FIRST path below the 0.52 rad viterbi
+threshold). 5/5 cable budget already exhausted in
 Phase 137/138/138-B/139; 30 dB SMA attenuator install user-excluded
 ("排除一下衰减器"). Phase 139 (preceding) — 8 commits
 (6f226d1, acf20b6, aba4cc8, 405d90d, 5756f7b, aa8cb41b, d176749, aa2e18b)
