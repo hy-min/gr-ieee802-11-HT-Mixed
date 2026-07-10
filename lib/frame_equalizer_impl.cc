@@ -4543,6 +4543,94 @@ int frame_equalizer_impl::ref_lsig_h52_cross_frame_average(
     d_lsig_h52_history_count++;
     return n_avg;
 }
+
+// Phase 141: Estimate R_hh[k] = E[|H[k]|^2] for Wiener shrinkage.
+// Algorithm:
+//   1) Compute |h_ls[k]|^2 (52 SCs)
+//   2) 3-tap freq-domain smoothing (wrap-around at SC 0 and 51)
+//   3) Cross-frame FIFO average with 1 Hz freq-keyed reset
+// Returns n_avg (1 + history_count). Wiener OFF bypasses FIFO, returns single-frame |H|^2.
+int frame_equalizer_impl::estimate_r_hh(const gr_complex* h_ls,
+                                        double freq_key,
+                                        float* r_hh_out)
+{
+    if (!d_apply_wiener_h52 || d_wiener_rhh_history_depth < 1) {
+        // Wiener OFF: bypass FIFO, use single-frame |H|^2 (no smoothing)
+        for (int k = 0; k < 52; k++) {
+            r_hh_out[k] = std::norm(h_ls[k]);
+        }
+        return 1;
+    }
+
+    // Step 1: |H_ls|^2
+    float h_abs2[52];
+    for (int k = 0; k < 52; k++) {
+        h_abs2[k] = std::norm(h_ls[k]);
+    }
+
+    // Step 2: 3-tap freq-domain smoothing (wrap-around at edges)
+    float h_smooth[52];
+    for (int k = 0; k < 52; k++) {
+        const int k_prev = (k - 1 + 52) % 52;
+        const int k_next = (k + 1) % 52;
+        h_smooth[k] = (h_abs2[k_prev] + h_abs2[k] + h_abs2[k_next]) / 3.0f;
+    }
+
+    // Step 3: Frequency-keyed reset (1 Hz threshold, mirrors Phase 140)
+    const double freq_delta = std::abs(freq_key - d_wiener_rhh_history_freq_key);
+    const bool first_call = (d_wiener_rhh_history_count == 0);
+    const bool freq_changed = !first_call && (freq_delta > 1.0);
+    if (freq_changed) {
+        d_wiener_rhh_history_count = 0;
+    }
+    if (first_call || freq_changed) {
+        d_wiener_rhh_history_freq_key = freq_key;
+    }
+
+    // Step 4: FIFO average
+    const int n_avg = 1 + d_wiener_rhh_history_count;
+    const float inv_n = 1.0f / (float)n_avg;
+    for (int k = 0; k < 52; k++) {
+        float sum = h_smooth[k];
+        for (int j = 0; j < d_wiener_rhh_history_count; j++) {
+            sum += d_wiener_rhh_history[j][k];
+        }
+        r_hh_out[k] = sum * inv_n;
+    }
+
+    // Step 5: FIFO push (shift-down eviction when full)
+    if (d_wiener_rhh_history_count >= d_wiener_rhh_history_depth) {
+        for (int j = 0; j < d_wiener_rhh_history_depth - 1; j++) {
+            for (int k = 0; k < 52; k++) {
+                d_wiener_rhh_history[j][k] = d_wiener_rhh_history[j + 1][k];
+            }
+        }
+        d_wiener_rhh_history_count = d_wiener_rhh_history_depth - 1;
+    }
+    for (int k = 0; k < 52; k++) {
+        d_wiener_rhh_history[d_wiener_rhh_history_count][k] = h_smooth[k];
+    }
+    d_wiener_rhh_history_count++;
+
+    // Diagnostic log
+    if (d_wiener_log) {
+        float mean_rhh = 0.0f, max_rhh = 0.0f;
+        for (int k = 0; k < 52; k++) {
+            mean_rhh += r_hh_out[k];
+            if (r_hh_out[k] > max_rhh) max_rhh = r_hh_out[k];
+        }
+        mean_rhh /= 52.0f;
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+                      "[WIENER_RHH] n_avg=%d depth=%d freq=%.0f "
+                      "rhh_mean=%.4f rhh_max=%.4f\n",
+                      n_avg, d_wiener_rhh_history_depth, freq_key,
+                      mean_rhh, max_rhh);
+        USRP_LOG("%s", buf);
+    }
+
+    return n_avg;
+}
 // ======================================================================
 
 frame_equalizer::sptr
@@ -4860,6 +4948,20 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_lsig_h52_history_count = 0;
     d_lsig_h52_history_freq_key = 0.0;
     d_lsig_h52_cross_frame_log = false;
+
+    // Phase 141: Wiener H52 state (default OFF)
+    d_apply_wiener_h52 = false;
+    d_wiener_rhh_history_depth = 0;
+    d_wiener_rhh_history_count = 0;
+    d_wiener_rhh_history_freq_key = 0.0;
+    d_wiener_g_min = 0.1f;
+    d_wiener_n_nulls = 0;
+    d_wiener_log = false;
+    for (int i = 0; i < 8; i++) {
+        for (int k = 0; k < 52; k++) {
+            d_wiener_rhh_history[i][k] = 0.0f;
+        }
+    }
     {
         const char* env_lsig_cft = std::getenv("IEEE80211_LSIG_H52_CROSS_FRAME_TRACK");
         if (env_lsig_cft && env_lsig_cft[0] != '\0') {

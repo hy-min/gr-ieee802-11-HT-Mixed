@@ -258,6 +258,21 @@ private:
     // cross-cutting review.
     bool d_lsig_h52_cross_frame_log;
 
+    // Phase 141: Wiener H52 estimation state
+    // Enable via IEEE80211_WIENER_H52=1 (default OFF).
+    // R_hh[k] = E[|H[k]|^2] estimated via 3-tap freq smoothing +
+    // cross-frame FIFO (1 Hz freq-keyed reset, mirrors Phase 140).
+    // d_wiener_rhh_history stores real-valued |H|^2 (not complex H).
+    bool     d_apply_wiener_h52;
+    int      d_wiener_rhh_history_depth;
+    int      d_wiener_rhh_history_count;
+    float    d_wiener_rhh_history[8][52];
+    double   d_wiener_rhh_history_freq_key;
+    float    d_wiener_g_min;
+    int      d_wiener_null_scs[8];
+    int      d_wiener_n_nulls;
+    bool     d_wiener_log;
+
     // Phase 128: CFO/SFO re-estimation from HT-LTF. Delays HT-SIG
     // viterbi until HT-LTF (kHtTrain1Rel=6) is received. Default OFF.
     // Enable via IEEE80211_HTSIG_CFO_REEST_HTLTF=1.
@@ -369,6 +384,11 @@ private:
     int ref_lsig_h52_cross_frame_average(const gr_complex* h_cur,
                                           double freq_key,
                                           gr_complex* h_out);
+
+    // Phase 141: R_hh[k] = E[|H[k]|^2] estimator for Wiener shrinkage.
+    // 3-tap freq smoothing + cross-frame FIFO (1 Hz freq-keyed reset).
+    // Returns n_avg (1 + history_count).
+    int estimate_r_hh(const gr_complex* h_ls, double freq_key, float* r_hh_out);
 
     // dynamic header detection state
     bool d_have_lsig;
