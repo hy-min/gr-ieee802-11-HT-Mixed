@@ -6525,6 +6525,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 d_H52_tx_order_valid = true;
 
+                // Phase 141 (call site c, 3-way branch): Wiener shrinkage on
+                // d_H52_tx_order (used by HT-SIG viterbi at line ~8819 and
+                // DATA viterbi downstream).
+                if (d_apply_wiener_h52) {
+                    float r_hh[52];
+                    estimate_r_hh(d_H52_tx_order, d_freq_offset_from_synclong, r_hh);
+                    float sigma2 = estimate_sigma2_noise(
+                        d_H52_tx_order, d_wiener_null_scs, d_wiener_n_nulls);
+                    gr_complex H52_w[52];
+                    wiener_filter_h52(d_H52_tx_order, d_H52_tx_order,
+                                      r_hh, sigma2, d_wiener_g_min, H52_w);
+                    std::memcpy(d_H52_tx_order, H52_w, 52 * sizeof(gr_complex));
+                    if (d_wiener_log) {
+                        char wbuf[256];
+                        std::snprintf(wbuf, sizeof(wbuf),
+                                      "[WIENER_3WAY] sigma2=%.4f applied to "
+                                      "d_H52_tx_order (3-way branch)\n",
+                                      sigma2);
+                        USRP_LOG("%s", wbuf);
+                    }
+                }
+
                 // Phase 138: opt-in H52 frequency-domain low-pass filter.
                 // Applied AFTER all H52 averaging (Phase 118b / 119 / 137) but
                 // BEFORE the equalizer uses H52. Reduces per-SC noise by zeroing
@@ -8969,6 +8991,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     }
 
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
+
+                    // Phase 141 (call site c, lazy branch): Wiener shrinkage on
+                    // d_H52_tx_order (used by HT-SIG viterbi and DATA viterbi).
+                    if (d_apply_wiener_h52) {
+                        float r_hh[52];
+                        estimate_r_hh(d_H52_tx_order, d_freq_offset_from_synclong, r_hh);
+                        float sigma2 = estimate_sigma2_noise(
+                            d_H52_tx_order, d_wiener_null_scs, d_wiener_n_nulls);
+                        gr_complex H52_w[52];
+                        wiener_filter_h52(d_H52_tx_order, d_H52_tx_order,
+                                          r_hh, sigma2, d_wiener_g_min, H52_w);
+                        std::memcpy(d_H52_tx_order, H52_w, 52 * sizeof(gr_complex));
+                        if (d_wiener_log) {
+                            char wbuf[256];
+                            std::snprintf(wbuf, sizeof(wbuf),
+                                          "[WIENER_LAZY] sigma2=%.4f applied to "
+                                          "d_H52_tx_order (lazy L-LTF0 branch)\n",
+                                          sigma2);
+                            USRP_LOG("%s", wbuf);
+                        }
+                    }
 
                     // Phase 138: opt-in H52 freq-domain low-pass filter (lazy path).
                     if (g_apply_freq_lowpass_h52 && g_h52_freq_lowpass_k >= 1 &&
