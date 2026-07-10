@@ -14,16 +14,20 @@ Phase 139 broke the L-SIG wall for the first time in 30+ REFUTED attempts (LSIG_
 
 Phase 140 exploits an existing-but-previously-isolated mechanism: **Phase 127's L-SIG cross-frame FIFO averaging**. Phase 127 was REFUTED on USRP because it operated on L-LTF0-only input (σ=1.77 rad). With Phase 139's 2-way input (σ=1.25 rad) feeding into the FIFO, the σ reduction is:
 
-| N | σ_post (rad) | vs Viterbi threshold (0.52 rad) |
-|---|--------------|----------------------------------|
-| 1 | 0.88 | -0.36 rad above (fails) |
-| 2 | 0.72 | -0.20 rad above (fails) |
-| 4 | 0.63 | -0.11 rad above (borderline) |
-| 8 | 0.51 | -0.01 rad below (THEORETICAL PASS) |
+| N | σ_post at full FIFO (1.25/√(1+N) rad) | vs Viterbi threshold (0.52 rad) |
+|---|----|----|
+| 1 | 0.884 | -0.364 rad above (still fails) |
+| 2 | 0.721 | -0.201 rad above (fails) |
+| 4 | 0.559 | -0.039 rad above (borderline) |
+| 8 | 0.417 | +0.103 rad below (THEORETICAL PASS) |
 
-Theoretical σ reduction follows √N averaging: σ_post = σ_post_2way / √N = 1.25 / √N.
+Theoretical σ reduction at full FIFO (steady state, n_xf = 1+N samples):
+σ_post = 1.25 / √(1+N). The "+1" counts the current frame plus N history
+entries in the FIFO.
 
-**N=8 (0.51 rad) is the FIRST time the equalizer-layer has a theoretical path to viterbi success on USRP** (σ < 0.52 rad threshold). N=4 (0.63 rad) is close but above threshold.
+**N=8 (0.417 rad) is the FIRST time the equalizer-layer has a theoretical
+path to viterbi success on USRP** (σ < 0.52 rad threshold). N=4 (0.559 rad)
+is borderline, only 0.04 rad above threshold.
 
 ## 2. Implementation
 
@@ -51,7 +55,7 @@ Theoretical σ reduction follows √N averaging: σ_post = σ_post_2way / √N =
 
 - **`IEEE80211_PHASE140_ON=N`** (opt-in, default OFF).
   - N=0: no-op (2-way default since Phase 139 is unaffected)
-  - N ∈ {1, 2, 4, 8}: FIFO averaging PRECEDES L-SIG viterbi; σ → 1.25/√N rad
+  - N ∈ {1, 2, 4, 8}: FIFO averaging PRECEDES L-SIG viterbi; σ → 1.25/√(1+N) rad at full FIFO
   - N > 8: degraded safely (C++ logs "out of range, disabled")
 - **`IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1`** (opt-in, default OFF).
   - Logs `n_avg`, `depth`, `sigma_est_input`, `sigma_est_post` at the cross-frame entry site.
@@ -74,10 +78,10 @@ Generated clean IQ (`/tmp/p140_iq.bin`, 5s TX at 20MHz, `len=10 interval=200ms`)
 | N | FCS_OK | Result |
 |---|--------|--------|
 | 0 | 1 | PASS (2-way only, no cross-frame) |
-| 1 | 1 | PASS (FIFO depth=1, σ_post = 0.88 rad) |
-| 2 | 1 | PASS (FIFO depth=2, σ_post = 0.72 rad) |
-| 4 | 1 | PASS (FIFO depth=4, σ_post = 0.63 rad) |
-| 8 | 1 | PASS (FIFO depth=8, σ_post = 0.51 rad) |
+| 1 | 1 | PASS (FIFO depth=1, σ_post_full_FIFO = 1.25/√2 = 0.884 rad) |
+| 2 | 1 | PASS (FIFO depth=2, σ_post_full_FIFO = 1.25/√3 = 0.721 rad) |
+| 4 | 1 | PASS (FIFO depth=4, σ_post_full_FIFO = 1.25/√5 = 0.559 rad) |
+| 8 | 1 | PASS (FIFO depth=8, σ_post_full_FIFO = 1.25/√9 = 0.417 rad) |
 
 **Pass interpretation**: All N values validate `IEEE80211_PHASE140_ON` parser + FIFO wiring + diagnostic log do not break the chain. The diagnostic log fired correctly for N=1 (verified `n_avg=1 depth=1 sigma_est_input=1.25 sigma_est_post=0.884 rad`).
 
@@ -90,7 +94,7 @@ Generated clean IQ (`/tmp/p140_iq.bin`, 5s TX at 20MHz, `len=10 interval=200ms`)
 [LSIG_H52_CROSS_FRAME] n_avg=1 depth=1 sigma_est_input=1.25 sigma_est_post=0.884 rad (target<=0.52 rad for viterbi metric<=10)
 ```
 
-This confirms the σ-input matches Phase 139's documented 1.25 rad baseline. The σ_post = σ_input / √N for N ≥ 1, as expected.
+This confirms the σ-input matches Phase 139's documented 1.25 rad baseline. The σ_post = σ_input / √(1+n_xf) where n_xf = 1 + d_lsig_h52_history_count (current frame counts as 1 sample plus history entries in the FIFO). At full FIFO (steady state, n_xf = 1+N), σ_post = 1.25 / √(1+N).
 
 ### 3.3 USRP Validation: NOT YET RUN
 
@@ -102,24 +106,24 @@ USRP realtime testing for Phase 140 is deferred. Two reasons:
    - **OR** external ref clock (HW, user-excluded)
    - **OR** air path at 5890 MHz (3.92 dB SNR per Phase 81 — insufficient)
 
-2. **Theoretical σ reduction at N=4 = 0.63 rad** is still 0.11 rad above the viterbi threshold (0.52 rad). N=8 = 0.51 rad is just below threshold but is highly sensitive to UBX-160 auto-cal noise bursts (Phase 113 finding: 0.199-8.575 ratio variation; Phase 96 finding: 1.4+ EQ ratio at --tx-gain 0).
+2. **Theoretical σ reduction at N=4 = 0.559 rad (full FIFO)** is still 0.04 rad above the viterbi threshold (0.52 rad). N=8 = 0.417 rad (full FIFO) is 0.10 rad below threshold but is highly sensitive to UBX-160 auto-cal noise bursts (Phase 113 finding: 0.199-8.575 ratio variation; Phase 96 finding: 1.4+ EQ ratio at --tx-gain 0).
 
 ## 4. Theoretical Predictor (USRP not yet run)
 
 Per Phase 112 R1 root cause: per-SC argH std = 1.77 rad on USRP analog chain. Phase 139's 2-way averaging reduces this to 1.25 rad. Phase 140's FIFO stacking:
 
-- **N=4**: σ_post = 1.25/2 = 0.625 rad. Above 0.52 rad threshold → likely viterbi still fails.
-- **N=8**: σ_post = 1.25/2.83 = 0.442 rad. Below 0.52 rad threshold → THEORETICAL viterbi pass.
+- **N=4 (full FIFO)**: σ_post = 1.25/√5 = 0.559 rad. Above 0.52 rad threshold → likely viterbi still fails.
+- **N=8 (full FIFO)**: σ_post = 1.25/√9 = 0.417 rad. Below 0.52 rad threshold → THEORETICAL viterbi pass.
 
 But the threshold model (Phase 100 / 112) is derived from a 16.7% BER fit. UBX-160 auto-cal noise bursts (Phase 113) can momentarily push σ to 8.575 rad, breaking the FIFO-averaged σ estimation at that symbol.
 
 **Predicted USRP outcome** (per Phase 139 σ→metric mapping):
 
-| Config | σ_post (rad) | Predicted metric | Predicted CRC |
+| Config | σ_post at full FIFO (rad) | Predicted metric | Predicted CRC |
 |--------|--------------|------------------|---------------|
 | Phase 139 2-way only (T3 baseline) | 1.25 | 14 | fail |
-| Phase 140 N=4 | 0.63 | 11-12 | fail (borderline) |
-| Phase 140 N=8 | 0.51 | 8-9 | **PASS** (theoretical) |
+| Phase 140 N=4 | 0.559 | 11-12 | fail (borderline) |
+| Phase 140 N=8 | 0.417 | 8-9 | **PASS** (theoretical) |
 
 ## 5. What Phase 140 Does NOT Solve
 
@@ -149,7 +153,7 @@ After Phase 140 file-replay PASS but USRP not yet tested:
 **Strengths**:
 - Implementation is minimal (one env var + one diagnostic log + 2 script args). No C++ logic change beyond what's needed for the parser.
 - File-replay regression PASS for all N values. Diagnostic log fires correctly.
-- Theoretical σ reduction at N=8 (0.44 rad) is below viterbi threshold (0.52 rad). **First time** the equalizer-layer has a theoretical path to viterbi success on USRP.
+- Theoretical σ reduction at N=8 full FIFO (0.417 rad) is below viterbi threshold (0.52 rad). **First time** the equalizer-layer has a theoretical path to viterbi success on USRP.
 
 **Weaknesses**:
 - USRP validation not yet run. Theoretical prediction depends on UBX-160 not bursting during N=8 averaging window.
@@ -160,7 +164,7 @@ After Phase 140 file-replay PASS but USRP not yet tested:
 
 **Why**: The Phase 140 implementation layers an existing Phase 127 mechanism on top of Phase 139's 2-way baseline. The convenience env var makes it easy for the user to enable FIFO on top of 2-way. Diagnostic log provides visibility into σ reduction per-frame.
 
-**How to apply**: When running future USRP tests, prefer `--phase140-on 4` (N=4 first, since 0.63 rad is borderline-pass) over N=8 (σ_post=0.51 rad requires stable UBX-160). Pair with `--phase139-on` (default already ON) and `--phase139-4way` if 4-way pilot refinement helps (Phase 139 PARTIAL finding).
+**How to apply**: When running future USRP tests, prefer `--phase140-on 4` (N=4 first, since 0.559 rad is borderline-pass) over N=8 (σ_post=0.417 rad requires stable UBX-160). Pair with `--phase139-on` (default already ON) and `--phase139-4way` if 4-way pilot refinement helps (Phase 139 PARTIAL finding).
 
 ## Related
 
