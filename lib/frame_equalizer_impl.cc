@@ -4834,20 +4834,27 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
-    // Phase 140: convenience flag that sets both 2-way default (Phase 139)
-    // and L-SIG cross-frame FIFO averaging (Phase 127) in one env var.
-    // Equivalent to: IEEE80211_H52_2WAY_DEFAULT=1 + IEEE80211_LSIG_H52_CROSS_FRAME_TRACK=N
-    // Default OFF (preserves all prior behavior). N ∈ {0,1,2,4,8} where
-    // 0 means "use 2-way only without cross-frame".
+    // Phase 140: convenience flag that sets both 2-way default (Phase 139,
+    // default ON as of Phase 139) and L-SIG cross-frame FIFO averaging
+    // (Phase 127) in one env var. Equivalent to setting both
+    // IEEE80211_H52_2WAY_DEFAULT=1 and IEEE80211_LSIG_H52_CROSS_FRAME_TRACK=N.
+    // Default OFF (preserves all prior behavior). N ∈ {0, 1..kMaxH52History=8}
+    // where 0 is a no-op (2-way is already the default since Phase 139) and
+    // N in [1,8] means 2-way + N-frame cross-frame FIFO averaging.
+    // If both this and IEEE80211_LSIG_H52_CROSS_FRAME_TRACK are set, last
+    // write wins (Phase 140 runs after Phase 127 parser, so PHASE140 wins).
     {
         const char* env_p140 = std::getenv("IEEE80211_PHASE140_ON");
         if (env_p140 && env_p140[0] != '\0') {
             int n = atoi(env_p140);
             if (n == 0) {
-                // 2-way only (no cross-frame). Equivalent to --phase139-on alone.
+                // 2-way only (no cross-frame). No-op since 2-way is already
+                // the default as of Phase 139; provided for explicit opt-in
+                // symmetry with N in [1, kMaxH52History].
                 d_h52_2way_default = true;
                 std::cout << "[FRAME_EQ] IEEE80211_PHASE140_ON=0 "
-                          << "(2-way L-LTF0+L-LTF1 H52 only, no cross-frame)\n";
+                          << "(2-way L-LTF0+L-LTF1 H52 only, no cross-frame; "
+                          << "2-way is already default since Phase 139)\n";
             } else if (n >= 1 && n <= kMaxH52History) {
                 // Combined 2-way + cross-frame
                 d_h52_2way_default = true;
