@@ -1025,6 +1025,12 @@ static bool htltf_52_saved = false;
 static bool g_htltf_avg = false;  // Bridge from d_apply_htltf_avg to static estimator
 static bool g_log_htltf_avg_debug = false;  // Phase 114 root cause diag
 
+// Phase 138: H52 frequency-domain low-pass filter opt-in flag and K parameter.
+// File-static so the apply_freq_lowpass_h52() call site can read them without
+// polluting the class header. Default OFF to preserve baseline.
+static bool g_apply_freq_lowpass_h52 = false;
+static int  g_h52_freq_lowpass_k = 10;
+
 // Compute channel estimate H for 52 HT data subcarriers in tx_order from L-LTF0.
 // lltf0_52: 48 data SCs in kHeader48Sc order + 4 pilots in kPilot4Sc order.
 static void compute_H52_tx_order(const gr_complex* lltf0_52, gr_complex* H52_out)
@@ -5023,6 +5029,43 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     if (d_apply_htsig_null_pilot_mask) {
         std::cout << "[FRAME_EQ] IEEE80211_HTSIG_NULL_PILOT_MASK=1 "
                   << "(Phase 137: skip null pilots in CPE)\n";
+    }
+
+    // Phase 138: opt-in H52 frequency-domain low-pass filter.
+    // Requires IEEE80211_H52_FREQ_LOWPASS=1 to enable. K set via
+    // IEEE80211_H52_FREQ_LOWPASS_K (default 10, range 1..51).
+    // When enabled, H52 is filtered through apply_freq_lowpass_h52()
+    // before being passed to the equalizer. Phase 112 R1 root cause:
+    // 1.77 rad per-SC noise floor on USRP. Phase 118b averaging reduces
+    // to ~0.84 rad. K=5-10 freq-domain low-pass targets sub-1 rad ceiling.
+    // Default OFF preserves Phase 18/34/118b baseline.
+    {
+        const char* env_p138 = std::getenv("IEEE80211_H52_FREQ_LOWPASS");
+        if (env_p138 && env_p138[0] == '1') {
+            g_apply_freq_lowpass_h52 = true;
+            int K = 10;  // default per Phase 138 design spec
+            const char* env_p138_k = std::getenv("IEEE80211_H52_FREQ_LOWPASS_K");
+            if (env_p138_k && env_p138_k[0] != '\0') {
+                int parsed_k = std::atoi(env_p138_k);
+                if (parsed_k >= 1 && parsed_k <= 51) {
+                    K = parsed_k;
+                } else {
+                    char warn_buf[256];
+                    snprintf(warn_buf, sizeof(warn_buf),
+                             "[FRAME_EQ] IEEE80211_H52_FREQ_LOWPASS_K=%d "
+                             "OUT OF RANGE [1,51] — using default K=10\n",
+                             parsed_k);
+                    USRP_LOG("%s", warn_buf);
+                }
+            }
+            g_h52_freq_lowpass_k = K;
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     "[FRAME_EQ] IEEE80211_H52_FREQ_LOWPASS=1 K=%d "
+                     "(Phase 138: freq-domain H52 low-pass filter ENABLED)\n",
+                     K);
+            USRP_LOG("%s", buf);
+        }
     }
 
     // Phase 108: apply constant CPE at L-SIG boundary to absorb 30° rotation.
