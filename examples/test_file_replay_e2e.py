@@ -212,6 +212,13 @@ def main():
                    help='Phase 137: enable stable-null-aware masking '
                         '(IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 + '
                         'IEEE80211_HTSIG_NULL_PILOT_MASK=1)')
+    p.add_argument('--phase138-on', action='store_true',
+                   help='Phase 138: enable H52 freq-domain low-pass filter '
+                        '(IEEE80211_H52_FREQ_LOWPASS=1 + '
+                        'IEEE80211_H52_FREQ_LOWPASS_K=N)')
+    p.add_argument('--phase138-k', type=int, default=10,
+                   help='Phase 138: K value for freq-domain low-pass '
+                        '(default 10, range 1..51)')
     args = p.parse_args()
 
     # Phase 137: stable-null-aware masking (opt-in via --phase137-on).
@@ -223,6 +230,15 @@ def main():
         print(f"[TEST] Phase 137 ENABLED: "
               "IEEE80211_HTSIG_NULL_SCS=-21,-13,-7,7,21 "
               "IEEE80211_HTSIG_NULL_PILOT_MASK=1", flush=True)
+
+    # Phase 138: H52 frequency-domain low-pass filter (opt-in via --phase138-on).
+    # Default OFF preserves baseline.
+    if args.phase138_on:
+        os.environ['IEEE80211_H52_FREQ_LOWPASS'] = '1'
+        os.environ['IEEE80211_H52_FREQ_LOWPASS_K'] = str(args.phase138_k)
+        print(f"[TEST] Phase 138 ENABLED: "
+              "IEEE80211_H52_FREQ_LOWPASS=1 "
+              f"IEEE80211_H52_FREQ_LOWPASS_K={args.phase138_k}", flush=True)
 
     print(f"[P103] Env: LSIG_RATE_FORCE={os.environ.get('IEEE80211_LSIG_RATE_FORCE')} "
           f"TIMING_OFFSET_APPLY={os.environ.get('IEEE80211_TIMING_OFFSET_APPLY')}",
