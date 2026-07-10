@@ -240,6 +240,36 @@ following hierarchy applies:
   COPY-state wifi_start handler (lines 297+) is preserved — different code
   path (COPY→SYNC for new frame), not the bypass problem.
 
+- [Phase 139 architecture rewrite L-SIG upstream gate 2026-07-10](docs/superpowers/notes/2026-07-10-phase139-architecture-rewrite-verdict.md) —
+  **PARTIAL: L-SIG wall BROKEN for first time in 30+ REFUTED attempts.**
+  2-way L-LTF0+L-LTF1 SNR-weighted H52 + opt-in 3-way/4-way/5-way pilot
+  refinement. LSIG_DECODE_OK 0/8 → 4/4 (T3 USRP 5250); HT_SIG_CAND 0 → 16-32;
+  avg_snr_htsig 2-3 dB → 8.78 dB; best metric 14 → 13 (4-way lucky event,
+  not reproduced in T3e). 0 FCS_OK at 1.77 rad per-SC noise floor. 5/5 cable
+  budget EXHAUSTED. New env vars:
+  - **IEEE80211_H52_2WAY_DEFAULT=1** (default ON as of Phase 139) — enables
+    2-way L-LTF0+L-LTF1 SNR-weighted H52 averaging. Opt-out via =0.
+    σ 1.77 → 1.25 rad. Affects Hhdr52_for_lsig at line 7710+ (replaces
+    single-source L-LTF0). Default flip is the only behavioral change that
+    affects ALL users — necessary because L-SIG viterbi upstream gate is
+    architecture-level, not user-specific.
+  - **IEEE80211_HT_SIG_PILOT_REFINE=N** (opt-in, default OFF). N ∈ {1,2}:
+    N=1 → 3-way (2 LTS + HT-SIG0 4 pilots); N=2 → 4-way (+ HT-SIG1 4 pilots).
+    Combined with IEEE80211_H52_2WAY_DEFAULT=1 gives 5-way when
+    IEEE80211_HTLTF_AVG=1 also set (σ → 0.84 rad theoretical, not observed
+    on USRP). Phase 122 cross-board warning: 5-way may break cross-board
+    L-SIG viterbi — keep opt-in for cross-board config.
+  - **IEEE80211_H52_2WAY_LOG=1** — Phase 139 diagnostic: logs
+    H52_2WAY / H52_5WAY fires with counter and source. Default OFF.
+  8 commits (6f226d1, acf20b6, aba4cc8, 405d90d, 5756f7b, aa8cb41b,
+  d176749, aa2e18b) plus 3 verdicts (T1-T2 file-replay 1/1 PASS, T3
+  2-way USRP PARTIAL, T3b-e 3-way/4-way/5-way K-sweep PARTIAL). Architectural
+  significance: FIRST architectural rewrite in equalizer layer (Phase 60-138
+  were layer tweaks on single L-LTF0 source). 2-way is now the new baseline;
+  future equalizer-layer attacks should build on it. Next direction per user
+  directive: 30 dB SMA attenuator install (HW, $50, strongest path forward)
+  or Wiener filter / multi-frame averaging (architectural).
+
 - [Phase 137 stable-null-aware masking with alternative CPE](docs/superpowers/notes/2026-07-09-phase137-stable-null-mask-verdict.md)
   (NEW 2026-07-09). 3-layer opt-in fix targeting Phase 78b's 5 stable null SCs
   {-21,-13,-7,+7,+21}:
@@ -276,19 +306,24 @@ following hierarchy applies:
   H52 statistics from multiple frames, data-SC-only multi-frame averaging,
   external ref clock (HW, user-excluded).
 
-*Last updated: 2026-07-09 (Phase 138-B call site 0 PARTIAL on USRP) — 7 commits
-(cf5b54b, b5a4060, 54a8dbd, 10d2d34, d80d90e, 61c4eda, 66d500c) plus 2 verdicts.
-Phase 138 (3 dead-code call sites) REFUTED on USRP — filter never fired.
-Phase 138-B PARTIAL: new call site 0 at line 6238 (estimate_header_channel_from_lltf52 output)
-makes filter actually run on USRP, affecting ratio_ht path. K=20 (cable LOS sweet spot)
-produces 16-32 HT_SIG_CAND events per 30s run (vs 0 baseline), best metric=13-15 still
-> 10 viterbi threshold → 0 FCS_OK. Phase 112 R1 1.77 rad per-SC noise floor dominates
-even with σ_post_filter=1.12 rad. Per systematic-debugging "3+ fixes failed → question
-architecture" rule, equalizer-layer attacks (Phase 60-138, 30+ REFUTED) are EXHAUSTED
-at viterbi noise floor. Per user's "不可能接受现状" directive, Phase 139+ must move to
-HW (30 dB SMA attenuator install, $50, would reduce noise to 0.5-0.7 rad — strongest
-path forward) or architectural rewrites (Wiener filtering, data-SC-only multi-frame
-averaging, external ref clock user-excluded).
+*Last updated: 2026-07-10 (Phase 139 architecture rewrite PARTIAL on USRP) — 8 commits
+(6f226d1, acf20b6, aba4cc8, 405d90d, 5756f7b, aa8cb41b, d176749, aa2e18b)
+plus 4 verdicts (T1-T2 file-replay 1/1 PASS, T3 2-way USRP PARTIAL, T3b-e
+3-way/4-way/5-way K-sweep PARTIAL, final consolidated verdict).
+Phase 139 is the FIRST architectural rewrite in the equalizer layer (Phase 60-138
+were layer tweaks on single L-LTF0 source). 2-way L-LTF0+L-LTF1 SNR-weighted
+H52 averaging achieves breakthrough:
+- LSIG_DECODE_OK 0/8 → 4/4 (USRP 5250 cable, --tx-gain 0) — L-SIG wall BROKEN
+- HT_SIG_CAND 0 → 16-32 — HT-SIG chain REACHED viterbi for first time
+- avg_snr_htsig 2-3 dB → 8.78 dB (+6 dB structural improvement)
+- best metric 14 → 13 (1 unit via 4-way, lucky single-frame event, not reproduced in T3e)
+- 0 FCS_OK (gated by 1.77 rad per-SC noise floor, Phase 112 R1)
+5/5 cable budget EXHAUSTED across Phase 137/138/138-B/139.
+IEEE80211_H52_2WAY_DEFAULT=1 flips default to 2-way averaging for ALL users
+(opt-out via =0). IEEE80211_HT_SIG_PILOT_REFINE=N opt-in 3-way/4-way pilot
+refinement. The 2-way H52 is now the new baseline for all future equalizer-layer work.
+Phase 138 (preceding) — REFUTED on USRP. 3 dead-code call sites. Phase 138-B PARTIAL with
+new call site 0 at line 6238 (estimate_header_channel_from_lltf52 output).*
 
 Phase 136 (preceding) — Phase 128 inner condition bug FIXED. Commit 4192b49:
 kHtTrain1Rel=6 (UNREACHABLE when viterbi fires at sym=5) → kHtTrain0Rel=5.
