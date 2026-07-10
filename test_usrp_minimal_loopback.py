@@ -91,6 +91,22 @@ def internal_run(args):
               "IEEE80211_H52_FREQ_LOWPASS=1 "
               f"IEEE80211_H52_FREQ_LOWPASS_K={args.phase138_k}", flush=True)
 
+    # Phase 139: 2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG viterbi
+    if args.phase139_on:
+        os.environ['IEEE80211_H52_2WAY_DEFAULT'] = '1'
+        print(f"[TEST] Phase 139 ENABLED: IEEE80211_H52_2WAY_DEFAULT=1 "
+              f"(2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG viterbi)",
+              flush=True)
+
+    if args.phase139_3way:
+        os.environ['IEEE80211_HT_SIG_PILOT_REFINE'] = '1'
+        print(f"[TEST] Phase 139 3-way ENABLED: IEEE80211_HT_SIG_PILOT_REFINE=1",
+              flush=True)
+    elif args.phase139_4way:
+        os.environ['IEEE80211_HT_SIG_PILOT_REFINE'] = '2'
+        print(f"[TEST] Phase 139 4-way ENABLED: IEEE80211_HT_SIG_PILOT_REFINE=2",
+              flush=True)
+
     from gnuradio import gr, blocks, uhd
     import pmt
     import ieee802_11
@@ -393,6 +409,17 @@ def main():
     parser.add_argument('--phase138-k', type=int, default=10,
                         help='Phase 138: K value for freq-domain low-pass '
                              '(default 10, range 1..51)')
+    # Phase 139: 2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG viterbi
+    # (opt-in via --phase139-on). Default OFF preserves baseline.
+    parser.add_argument('--phase139-on', action='store_true',
+                        help='Phase 139: enable 2-way L-LTF0+L-LTF1 SNR-weighted H52 '
+                             'for L-SIG viterbi (IEEE80211_H52_2WAY_DEFAULT=1)')
+    parser.add_argument('--phase139-3way', action='store_true',
+                        help='Phase 139: enable 3-way HT-SIG pilot refinement '
+                             '(IEEE80211_HT_SIG_PILOT_REFINE=1)')
+    parser.add_argument('--phase139-4way', action='store_true',
+                        help='Phase 139: enable 4-way HT-SIG0+HT-SIG1 pilot refinement '
+                             '(IEEE80211_HT_SIG_PILOT_REFINE=2)')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
