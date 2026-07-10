@@ -591,6 +591,18 @@ static void apply_freq_lowpass_h52(
     if (K < 1) K = 1;
     if (K > 51) K = 51;
 
+    // Diagnostic: log once per 100 invocations to avoid log flood.
+    // Shared across all 3 call sites so each can verify "did the filter
+    // actually fire?" without re-declaring a local counter.
+    static int p138_log_counter = 0;
+    if (++p138_log_counter % 100 == 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "[H52_FREQ_LOWPASS] K=%d applied (counter=%d)\n",
+                 K, p138_log_counter);
+        USRP_LOG("%s", buf);
+    }
+
     // Step 1: rearrange kScIndex52 bins into SC-ordered sequence.
     // kScIndex52 has 52 active bins (no DC). Sort by SC value (-26..+26).
     gr_complex H_seq[52];
@@ -6161,15 +6173,6 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                            H52_filtered);
                     std::memcpy(d_H52_tx_order, H52_filtered,
                                 52 * sizeof(gr_complex));
-                    // Diagnostic: log once per 100 frames to avoid log flood.
-                    static int p138_lowpass_counter = 0;
-                    if (++p138_lowpass_counter % 100 == 0) {
-                        char buf[128];
-                        snprintf(buf, sizeof(buf),
-                                 "[H52_FREQ_LOWPASS] K=%d applied (counter=%d)\n",
-                                 g_h52_freq_lowpass_k, p138_lowpass_counter);
-                        USRP_LOG("%s", buf);
-                    }
                 }
 
                 // T3: also inject 3-way H into the gr::digital equalizer
