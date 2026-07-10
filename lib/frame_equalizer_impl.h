@@ -283,6 +283,25 @@ private:
     // IEEE80211_HTLTF_AVG=1 (requires IEEE80211_H52_SNR_WEIGHTED=1).
     bool d_apply_htltf_avg;
 
+    // Phase 139: 2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG viterbi
+    // path. Reduces per-SC phase std from 1.77 rad to ~1.25 rad.
+    // Independent flag (does NOT require IEEE80211_H52_SNR_WEIGHTED=1 —
+    // it has its own |H|-weighted kernel in compute_H52_2way()).
+    // Default OFF preserves baseline. Enable via
+    // IEEE80211_H52_2WAY_DEFAULT=1.
+    bool d_h52_2way_default;
+
+    // Phase 139: HT-SIG pilot refinement layer for HT-SIG viterbi path.
+    // After L-SIG viterbi succeeds, refine H52 using HT-SIG0/HT-SIG1
+    // pilots (4 per symbol, 8 total). Levels:
+    //   0 = off (default)
+    //   1 = 3-way (LTS0 + LTS1 + HT-SIG0 4 pilots, sigma ~ 1.10 rad)
+    //   2 = 4-way (LTS0 + LTS1 + HT-SIG0 + HT-SIG1 8 pilots,
+    //       sigma ~ 1.00 rad)
+    // Set via IEEE80211_HT_SIG_PILOT_REFINE=N. Default OFF preserves
+    // baseline.
+    int d_ht_sig_pilot_refine;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the

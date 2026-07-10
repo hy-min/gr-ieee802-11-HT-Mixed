@@ -4899,6 +4899,52 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         std::cout << "[FRAME_EQ] IEEE80211_HTLTF_AVG=1 (3-way SNR-weighted H52 with HT-LTF ENABLED)\n";
     }
 
+    // Phase 139 T139.2: 2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG
+    // viterbi path. Independent of IEEE80211_H52_SNR_WEIGHTED — uses its
+    // own |H|-weighted kernel (compute_H52_2way()) to avoid the LTS-only
+    // deep-null bias that Phase 27's simple-average variants suffered
+    // from. Theoretical sigma reduction: 1/sqrt(2) (1.77 rad → 1.25 rad),
+    // bringing the per-SC noise floor closer to the 1.0 rad viterbi
+    // ceiling. Default OFF preserves baseline. Enable via
+    // IEEE80211_H52_2WAY_DEFAULT=1. Spec:
+    // docs/superpowers/specs/2026-07-09-phase139-architecture-rewrite-design.md
+    d_h52_2way_default = false;
+    {
+        const char* env_h52_2way = std::getenv("IEEE80211_H52_2WAY_DEFAULT");
+        d_h52_2way_default = (env_h52_2way && env_h52_2way[0] == '1');
+        if (d_h52_2way_default) {
+            std::cout << "[FRAME_EQ] IEEE80211_H52_2WAY_DEFAULT=1 (2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG ENABLED, theoretical sigma reduction 1/sqrt(2))\n";
+        }
+    }
+
+    // Phase 139 T139.2: HT-SIG pilot refinement layer for HT-SIG viterbi
+    // path. After L-SIG viterbi succeeds, refine H52 using HT-SIG0/HT-SIG1
+    // pilots (4 per symbol, 8 total). Layered on top of the 2-way H52.
+    //   0 = off (default, baseline preserved)
+    //   1 = 3-way (LTS0 + LTS1 + HT-SIG0 4 pilots, sigma ~ 1.10 rad)
+    //   2 = 4-way (LTS0 + LTS1 + HT-SIG0 + HT-SIG1 8 pilots,
+    //       sigma ~ 1.00 rad)
+    // Set via IEEE80211_HT_SIG_PILOT_REFINE=N. Default OFF preserves
+    // baseline. Spec: docs/superpowers/specs/2026-07-09-phase139-architecture-rewrite-design.md
+    d_ht_sig_pilot_refine = 0;
+    {
+        const char* env_ht_pilot = std::getenv("IEEE80211_HT_SIG_PILOT_REFINE");
+        if (env_ht_pilot && env_ht_pilot[0] != '\0') {
+            int level = atoi(env_ht_pilot);
+            if (level >= 0 && level <= 2) {
+                d_ht_sig_pilot_refine = level;
+            } else {
+                std::cout << "[FRAME_EQ] IEEE80211_HT_SIG_PILOT_REFINE=" << env_ht_pilot
+                          << " (out of range 0..2, disabled)\n";
+            }
+        }
+        if (d_ht_sig_pilot_refine > 0) {
+            std::cout << "[FRAME_EQ] IEEE80211_HT_SIG_PILOT_REFINE=" << d_ht_sig_pilot_refine
+                      << " (HT-SIG pilot refinement layer ENABLED, "
+                      << (d_ht_sig_pilot_refine == 1 ? "3-way" : "4-way") << " H52)\n";
+        }
+    }
+
     // Phase 31 Task 18 (RC-C L-SIG): L-SIG equalized constellation dump.
     // H52 over-equalization inflates |eq|^2 to ~12.91 and per-SC phase
     // error rotates BPSK constellation, causing viterbi_fail. Dump the
