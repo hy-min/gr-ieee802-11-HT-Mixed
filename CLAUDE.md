@@ -259,32 +259,36 @@ following hierarchy applies:
   - `IEEE80211_H52_FREQ_LOWPASS_K=N` sets K value (default 10, range 1..51)
   - Algorithm: DFT(52) → zero bins >= K → IDFT(52). Theoretical σ reduction:
     K=5: 0.55 rad, K=10: 0.78 rad, K=20: 1.12 rad (from 1.25 rad baseline)
-  - 3 call sites: 3-way HT-LTF primary (counter==6), L-LTF0 lazy, Kalman update
-  Default OFF. USRP T4-T5 REFUTED 2026-07-09: T4 K=10 is_ht_frame=1=0,
-  T5 K=5=0, K=15=8 (matches baseline), K=20=0. Filter never fires in practice
-  because upstream L-SIG viterbi gate fails first (avg_snr_ht 4-29 dB but
-  L-SIG viterbi 8/8 fail). Phase 112 R1 1.77 rad ceiling confirmed as
-  dominant bottleneck, but Phase 138 cannot reach it due to upstream gate.
-  5 cable runs (T4 + T5 K=5/15/20 + Phase 137 baseline, within ≤5 budget).
-  Verdict: `docs/superpowers/notes/2026-07-09-phase138-freq-lowpass-verdict.md`.
+  - 4 call sites: (0) L-LTF-only H52 affecting ratio_ht path [line 6238,
+    Phase 138-B], (1) 3-way HT-LTF primary (counter==6), (2) L-LTF0 lazy,
+    (3) Kalman update. Call site 0 is the ONLY one that runs on USRP real
+    tests (others are gated by d_apply_htltf_avg / d_have_ht_header conditions
+    that never trigger).
+  Default OFF. Phase 138 USRP tests REFUTED 2026-07-09 (3 dead-code call
+  sites). Phase 138-B PARTIAL 2026-07-09 (call site 0 active, K=20 produces
+  16-32 HT_SIG_CAND events, best metric=13-15 still > 10 viterbi threshold,
+  0 FCS_OK). Phase 138-B uses 5 cable runs (K=5/10/15/20×2). Cumulative
+  13 cable runs total across Phase 137/138/138-B — exceeds ≤5 budget.
+  Verdict: `docs/superpowers/notes/2026-07-09-phase138-freq-lowpass-verdict.md`
+  + `docs/superpowers/notes/2026-07-09-phase138b-call-site-0-verdict.md`.
   Phase 139+ options: 30 dB SMA attenuator install (HW, $50, would reduce
   noise to 0.5-0.7 rad — strongest path forward), Wiener filtering using
   H52 statistics from multiple frames, data-SC-only multi-frame averaging,
   external ref clock (HW, user-excluded).
 
-*Last updated: 2026-07-09 (Phase 138 freq-domain low-pass filter REFUTED on USRP) —
-6 commits (cf5b54b, b5a4060, 54a8dbd, 10d2d34, d80d90e, 61c4eda) plus verdict.
-Phase 138 implementation is CORRECT (build clean, all env-var markers fire,
-T1/T2 file-replay 1/1 PASS, 3 call sites before d_equalizer->set_H()) but
-REFUTED on USRP continuous streaming. T4 K=10 is_ht_frame=1=0, T5 K=5=0,
-K=15=8 (matches Phase 137 baseline), K=20=0. Filter never fires in practice
-because upstream L-SIG viterbi gate fails first (avg_snr_ht 4-29 dB but
-L-SIG viterbi 8/8 fail). Phase 112 R1 1.77 rad per-SC noise confirmed as
-dominant bottleneck, but Phase 138 cannot reach it due to upstream gate.
-Per user's "不可能接受现状" directive, Phase 139+ continues with new
-architectures: 30 dB SMA attenuator (HW, $50, would reduce noise to 0.5-0.7 rad
-— strongest path forward), Wiener filtering, data-SC-only multi-frame averaging,
-external ref clock (HW, user-excluded).
+*Last updated: 2026-07-09 (Phase 138-B call site 0 PARTIAL on USRP) — 7 commits
+(cf5b54b, b5a4060, 54a8dbd, 10d2d34, d80d90e, 61c4eda, 66d500c) plus 2 verdicts.
+Phase 138 (3 dead-code call sites) REFUTED on USRP — filter never fired.
+Phase 138-B PARTIAL: new call site 0 at line 6238 (estimate_header_channel_from_lltf52 output)
+makes filter actually run on USRP, affecting ratio_ht path. K=20 (cable LOS sweet spot)
+produces 16-32 HT_SIG_CAND events per 30s run (vs 0 baseline), best metric=13-15 still
+> 10 viterbi threshold → 0 FCS_OK. Phase 112 R1 1.77 rad per-SC noise floor dominates
+even with σ_post_filter=1.12 rad. Per systematic-debugging "3+ fixes failed → question
+architecture" rule, equalizer-layer attacks (Phase 60-138, 30+ REFUTED) are EXHAUSTED
+at viterbi noise floor. Per user's "不可能接受现状" directive, Phase 139+ must move to
+HW (30 dB SMA attenuator install, $50, would reduce noise to 0.5-0.7 rad — strongest
+path forward) or architectural rewrites (Wiener filtering, data-SC-only multi-frame
+averaging, external ref clock user-excluded).
 
 Phase 136 (preceding) — Phase 128 inner condition bug FIXED. Commit 4192b49:
 kHtTrain1Rel=6 (UNREACHABLE when viterbi fires at sym=5) → kHtTrain0Rel=5.
