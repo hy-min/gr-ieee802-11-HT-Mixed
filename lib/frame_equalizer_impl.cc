@@ -1673,6 +1673,35 @@ static float estimate_timing_offset_from_h52(const gr_complex* H52)
     return delta;
 }
 
+// Phase 141 T1: Wiener MMSE H52 shrinkage kernel.
+// Per-SC Wiener filter: G[k] = R_hh[k] / (R_hh[k] + sigma2 / |y_ltf[k]|^2)
+// with G >= g_min floor. Pure arithmetic; no side effects; no state.
+// Matched to p141_t1_wiener_unit.py reference for numerical equivalence.
+// Phase 112 R1: shrinks the 5 stable null SCs (-21,-13,-7,+7,+21) toward
+// zero, immune to single-LTF sample noise amplification.
+static void wiener_filter_h52(
+    const gr_complex* h_ls,     // [52] current LS estimate
+    const gr_complex* y_ltf,    // [52] received LTF symbols (for |y|^2)
+    const float* r_hh,          // [52] channel PSD R_hh[k] = E[|H[k]|^2]
+    float sigma2_noise,         // noise variance estimate
+    float g_min,                // minimum G floor (e.g. 0.1)
+    gr_complex* h_out)          // [52] Wiener-shrunk H output
+{
+    for (int k = 0; k < 52; k++) {
+        // |y_ltf[k]|^2 with numerical guard against 0
+        float y_abs2 = std::norm(y_ltf[k]);
+        if (y_abs2 < 1e-12f) y_abs2 = 1e-12f;
+        // noise_term = sigma2 / |y|^2
+        float noise_term = sigma2_noise / y_abs2;
+        // Wiener gain G = R_hh / (R_hh + noise_term)
+        float G = r_hh[k] / (r_hh[k] + noise_term);
+        // Floor G to prevent over-shrinkage
+        if (G < g_min) G = g_min;
+        // Apply scalar G to complex H_ls
+        h_out[k] = gr_complex(G * h_ls[k].real(), G * h_ls[k].imag());
+    }
+}
+
 static float estimate_header_cpe_rad(const gr_complex* rx52,
                                      const gr_complex* H52,
                                      bool is_ht_sig)
