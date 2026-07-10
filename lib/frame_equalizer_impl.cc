@@ -1702,6 +1702,26 @@ static void wiener_filter_h52(
     }
 }
 
+// Phase 141 T2: Estimate noise variance from null SCs (IEEE 802.11n).
+// null_scs are absolute SC indices (-26..+26); mapped to y_ltf[0..51] by +26.
+// Returns median of |y_ltf[null_sc]|^2 across the supplied list (robust to outliers).
+// Default null SCs (5 stable): {-21,-13,-7,+7,+21} (Phase 78b verified).
+static float estimate_sigma2_noise(const gr_complex* y_ltf,
+                                   const int* null_scs,
+                                   int n_nulls)
+{
+    if (n_nulls <= 0) return 0.0f;
+    float powers[8];
+    int n = std::min(n_nulls, 8);
+    for (int i = 0; i < n; i++) {
+        int sc = null_scs[i] + 26;
+        if (sc < 0 || sc >= 52) continue;
+        powers[i] = std::norm(y_ltf[sc]);
+    }
+    std::sort(powers, powers + n);
+    return powers[n / 2];
+}
+
 static float estimate_header_cpe_rad(const gr_complex* rx52,
                                      const gr_complex* H52,
                                      bool is_ht_sig)
