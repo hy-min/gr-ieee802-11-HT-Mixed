@@ -228,6 +228,14 @@ def main():
     p.add_argument('--phase139-4way', action='store_true',
                    help='Phase 139: enable 4-way HT-SIG0+HT-SIG1 pilot refinement '
                         '(IEEE80211_HT_SIG_PILOT_REFINE=2, requires --phase139-on)')
+    p.add_argument('--phase140-on', type=int, default=None, metavar='N',
+                   help='Phase 140: combined 2-way + L-SIG cross-frame H52 '
+                        '(opt-in via IEEE80211_PHASE140_ON=N). '
+                        'N=0 is a no-op (2-way default since Phase 139); '
+                        'N in {1,2,4,8} for FIFO averaging.')
+    p.add_argument('--phase140-log', action='store_true',
+                   help='Phase 140: enable cross-frame FIFO sigma reduction '
+                        'diagnostic logging (IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1).')
     args = p.parse_args()
 
     # Phase 137: stable-null-aware masking (opt-in via --phase137-on).
@@ -266,6 +274,23 @@ def main():
         os.environ['IEEE80211_HT_SIG_PILOT_REFINE'] = '2'
         print(f"[TEST] Phase 139 4-way ENABLED: IEEE80211_HT_SIG_PILOT_REFINE=2 "
               f"(HT-SIG0 + HT-SIG1 8 pilots)",
+              flush=True)
+
+    # Phase 140: combined 2-way + L-SIG cross-frame H52 FIFO averaging.
+    # N=0 is a no-op (2-way is already default since Phase 139); N in
+    # {1,2,4,8} enables FIFO averaging on top of 2-way. Default OFF
+    # (preserves baseline).
+    if args.phase140_on is not None:
+        os.environ['IEEE80211_PHASE140_ON'] = str(args.phase140_on)
+        print(f"[TEST] Phase 140 2-way + L-SIG cross-frame H52 ENABLED: "
+              f"IEEE80211_PHASE140_ON={args.phase140_on} "
+              f"(N=0 is no-op; N in {{1,2,4,8}} for FIFO avg after 2-way baseline)",
+              flush=True)
+
+    if args.phase140_log:
+        os.environ['IEEE80211_LSIG_H52_CROSS_FRAME_LOG'] = '1'
+        print(f"[TEST] Phase 140 cross-frame diagnostic log ENABLED: "
+              f"IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1",
               flush=True)
 
     print(f"[P103] Env: LSIG_RATE_FORCE={os.environ.get('IEEE80211_LSIG_RATE_FORCE')} "
