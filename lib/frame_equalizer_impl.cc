@@ -6150,6 +6150,28 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
                 d_H52_tx_order_valid = true;
 
+                // Phase 138: opt-in H52 frequency-domain low-pass filter.
+                // Applied AFTER all H52 averaging (Phase 118b / 119 / 137) but
+                // BEFORE the equalizer uses H52. Reduces per-SC noise by zeroing
+                // DFT bins f>=K (default K=10, configurable). Default OFF.
+                if (g_apply_freq_lowpass_h52 && g_h52_freq_lowpass_k >= 1 &&
+                    g_h52_freq_lowpass_k <= 51) {
+                    gr_complex H52_filtered[52];
+                    apply_freq_lowpass_h52(d_H52_tx_order, g_h52_freq_lowpass_k,
+                                           H52_filtered);
+                    std::memcpy(d_H52_tx_order, H52_filtered,
+                                52 * sizeof(gr_complex));
+                    // Diagnostic: log once per 100 frames to avoid log flood.
+                    static int p138_lowpass_counter = 0;
+                    if (++p138_lowpass_counter % 100 == 0) {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf),
+                                 "[H52_FREQ_LOWPASS] K=%d applied (counter=%d)\n",
+                                 g_h52_freq_lowpass_k, p138_lowpass_counter);
+                        USRP_LOG("%s", buf);
+                    }
+                }
+
                 // T3: also inject 3-way H into the gr::digital equalizer
                 // for the d_equalizer->equalize() path (line ~5544).
                 if (d_equalizer) {
@@ -6157,7 +6179,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     for (int b = 0; b < 64; b++) h_eq_3way[b] = gr_complex(0.0f, 0.0f);
                     for (int i = 0; i < 52; i++) {
                         const int bin = sc_to_fft_bin(kScIndex52[i]);
-                        h_eq_3way[bin] = H52_3way[i];
+                        h_eq_3way[bin] = d_H52_tx_order[i];
                     }
                     d_equalizer->set_H(h_eq_3way);
                 }
@@ -8478,6 +8500,17 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                     compute_H52_tx_order(d_early_eqsym[kLltf0Rel], d_H52_tx_order);
 
+                    // Phase 138: opt-in H52 freq-domain low-pass filter (lazy path).
+                    if (g_apply_freq_lowpass_h52 && g_h52_freq_lowpass_k >= 1 &&
+                        g_h52_freq_lowpass_k <= 51) {
+                        gr_complex H52_filtered_lazy[52];
+                        apply_freq_lowpass_h52(d_H52_tx_order,
+                                               g_h52_freq_lowpass_k,
+                                               H52_filtered_lazy);
+                        std::memcpy(d_H52_tx_order, H52_filtered_lazy,
+                                    52 * sizeof(gr_complex));
+                    }
+
                     // Phase 59: detect + interpolate H52 nulls (only when env var ON).
                     if (d_h52_null_interp_enabled) {
                         auto nulls = detect_h52_nulls(d_H52_tx_order, d_h52_null_thresh);
@@ -8911,12 +8944,22 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     for (int i = 0; i < 52; i++) {
                         d_H52_tx_order[i] = H52_kalman[i];
                     }
+                    // Phase 138: apply freq-domain low-pass filter (opt-in).
+                    if (g_apply_freq_lowpass_h52 && g_h52_freq_lowpass_k >= 1 &&
+                        g_h52_freq_lowpass_k <= 51) {
+                        gr_complex H52_filtered[52];
+                        apply_freq_lowpass_h52(d_H52_tx_order,
+                                               g_h52_freq_lowpass_k,
+                                               H52_filtered);
+                        std::memcpy(d_H52_tx_order, H52_filtered,
+                                    52 * sizeof(gr_complex));
+                    }
                     // Inject updated H into equalizer for non-HT path.
                     gr_complex h_eq[64];
                     for (int b = 0; b < 64; b++) h_eq[b] = gr_complex(0.0f, 0.0f);
                     for (int i = 0; i < 52; i++) {
                         const int bin = sc_to_fft_bin(kScIndex52[i]);
-                        h_eq[bin] = H52_kalman[i];
+                        h_eq[bin] = d_H52_tx_order[i];
                     }
                     d_equalizer->set_H(h_eq);
                 }
