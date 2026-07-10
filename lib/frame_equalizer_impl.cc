@@ -7805,8 +7805,16 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 int n_xf = ref_lsig_h52_cross_frame_average(
                     Hhdr52_for_lsig, d_freq_offset_from_synclong, Hhdr52_xf);
                 Hhdr52_for_lsig = Hhdr52_xf;
-                USRP_LOG("[LSIG_H52_CROSS_FRAME] n_avg=%d depth=%d (pre-LSIG H52 averaging)\n",
-                         n_xf, d_lsig_h52_history_depth);
+                // Estimate sigma reduction: 2-way input sigma=1.25 rad, sqrt(N) averaging.
+                // Theoretical sigma_post = 1.25/sqrt(N). For N=4: 0.63 rad (close to 0.52 rad viterbi threshold).
+                char xfbuf[192];
+                snprintf(xfbuf, sizeof(xfbuf),
+                         "[LSIG_H52_CROSS_FRAME] n_avg=%d depth=%d "
+                         "sigma_est_input=1.25 sigma_est_post=%.3f rad "
+                         "(target<=0.52 rad for viterbi metric<=10)\n",
+                         n_xf, d_lsig_h52_history_depth,
+                         1.25f / std::sqrt((float)n_xf));
+                USRP_LOG("%s", xfbuf);
             }
 
             for (rot_lsig = 0; rot_lsig < n_rot && !found; rot_lsig++) {
