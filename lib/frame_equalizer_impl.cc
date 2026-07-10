@@ -665,6 +665,58 @@ static void apply_freq_lowpass_h52(
     }
 }
 
+// Phase 139: 2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG viterbi.
+//
+// The 1.77 rad per-SC noise from USRP analog chain (Phase 112 R1) is
+// uncorrelated across L-LTF0 and L-LTF1 (independent CFO snapshots
+// separated by 4us). SNR-weighted averaging reduces per-SC phase std
+// by ~sqrt(2) → ~1.25 rad. Below the viterbi free-distance=10 ceiling,
+// this should allow L-SIG viterbi to succeed where L-LTF0-only H52
+// (1.77 rad) currently fails 8/8 attempts on USRP.
+//
+// Per-SC |H|-weighting: H52[i] = (|H0[i]|²·H0[i] + |H1[i]|²·H1[i]) / (|H0[i]|² + |H1[i]|²)
+//
+// Fallback: if both inputs are < threshold, return L-LTF0 only.
+//
+// Pure function, no static state. Thread-safe.
+//
+// Opt-in via IEEE80211_H52_2WAY_DEFAULT=1. Default OFF preserves
+// baseline L-LTF0-only behavior. Spec:
+// docs/superpowers/specs/2026-07-09-phase139-architecture-rewrite-design.md
+static void compute_H52_2way(
+    const gr_complex* H52_a,  // First source (e.g. L-LTF0)
+    const gr_complex* H52_b,  // Second source (e.g. L-LTF1)
+    gr_complex* H52_out)      // 52-element output buffer
+{
+    const float kNullThresh = 1e-3f;  // |H| < this is treated as null
+    for (int i = 0; i < 52; i++) {
+        const float mag_a = std::abs(H52_a[i]);
+        const float mag_b = std::abs(H52_b[i]);
+        if (mag_a < kNullThresh && mag_b < kNullThresh) {
+            // Both sources null: fall back to first source
+            H52_out[i] = H52_a[i];
+            continue;
+        }
+        if (mag_a < kNullThresh) {
+            // First null, use second
+            H52_out[i] = H52_b[i];
+            continue;
+        }
+        if (mag_b < kNullThresh) {
+            // Second null, use first
+            H52_out[i] = H52_a[i];
+            continue;
+        }
+        // SNR-weighted average: w ∝ |H|²
+        const float w_a = mag_a * mag_a;
+        const float w_b = mag_b * mag_b;
+        const float w_sum = w_a + w_b;
+        // (w_a*H_a + w_b*H_b) / w_sum
+        const gr_complex numerator = H52_a[i] * w_a + H52_b[i] * w_b;
+        H52_out[i] = numerator / w_sum;
+    }
+}
+
 // Phase 119: Per-bin safety filter. Same averaging formula as
 // refine_h52_average_pilots, but for each SC checks if the pilot-based
 // H deviates from Hhdr52 by more than `safety_thresh * |Hhdr52|`. If
