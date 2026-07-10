@@ -7707,17 +7707,39 @@ int frame_equalizer_impl::general_work(int noutput_items,
             int rot_lsig = 0;
             int inv_lsig = 0;
 
-            // Phase 127: Pre-LSIG cross-frame H tracking. Averages current
-            // Hhdr52 with previous N frames' Hhdr52 values BEFORE L-SIG
-            // viterbi. If L-SIG detection improves (more "Detected HT
-            // frame"), more frames reach HT-SIG viterbi. Theoretical:
-            // σ reduction 1/sqrt(N) for uncorrelated noise. Combines with
-            // Phase 123 (HT-SIG cross-frame) for chain. Default OFF.
-            gr_complex Hhdr52_xf[52];
+            // Phase 139: 2-way L-LTF0+L-LTF1 SNR-weighted H52 for L-SIG viterbi.
+            // Reduces per-SC phase std from 1.77 rad (L-LTF0 only) to
+            // ~1.25 rad. Combined with cross-frame (Phase 127) and
+            // pilot refinement (3-way/4-way via IEEE80211_HT_SIG_PILOT_REFINE),
+            // provides layered noise reduction.
+            //
+            // Layer order:
+            //   1. 2-way (this block) — sigma 1.77 -> 1.25 rad
+            //   2. 3-way/4-way pilot refine — 1.25 -> 1.10/1.00 rad
+            //   3. cross-frame (Phase 127) — additional 1/sqrt(N) factor
+            //
+            // All default OFF. Opt-in via env vars.
+            gr_complex Hhdr52_2way[52];
             const gr_complex* Hhdr52_for_lsig = Hhdr52;
+            if (d_h52_2way_default) {
+                // L-LTF1 is d_ltf_compensated[1] if valid, else d_early_eqsym[kLltf1Rel]
+                const gr_complex* lltf1_H = d_ltf_compensated_valid[1]
+                    ? d_ltf_compensated[1]
+                    : d_early_eqsym[kLltf1Rel];
+                compute_H52_2way(Hhdr52, lltf1_H, Hhdr52_2way);
+                Hhdr52_for_lsig = Hhdr52_2way;
+                // Atomic log: snprintf + USRP_LOG per commit e90e3f5
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "[H52_2WAY] 2-way SNR-weighted H52 applied for L-SIG viterbi (counter=%d)\n",
+                         d_internal_symbol_counter);
+                USRP_LOG("%s", buf);
+            }
+            // Phase 127 cross-frame: stack AFTER 2-way if both enabled
+            gr_complex Hhdr52_xf[52];
             if (d_apply_lsig_h_cross_frame) {
                 int n_xf = ref_lsig_h52_cross_frame_average(
-                    Hhdr52, d_freq_offset_from_synclong, Hhdr52_xf);
+                    Hhdr52_for_lsig, d_freq_offset_from_synclong, Hhdr52_xf);
                 Hhdr52_for_lsig = Hhdr52_xf;
                 USRP_LOG("[LSIG_H52_CROSS_FRAME] n_avg=%d depth=%d (pre-LSIG H52 averaging)\n",
                          n_xf, d_lsig_h52_history_depth);
