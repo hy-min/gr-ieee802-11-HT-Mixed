@@ -7749,6 +7749,19 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     USRP_LOG("%s", buf);
                 }
             }
+            // Phase 139 T139.4: 5-way H52 diagnostic. Fires when both
+            // 2-way (L-LTF0+L-LTF1) AND 3-way (HT-LTF) paths are active.
+            // Effectively 5-way: L-LTF0, L-LTF1, HT-LTF pilots. Same-board
+            // recommended per Phase 122 (cross-board has 0.5-1 rad LO drift
+            // between L-LTF and HT-LTF that breaks L-SIG viterbi). Default
+            // OFF (both flags default OFF).
+            if (d_h52_2way_default && d_apply_htltf_avg) {
+                // Atomic log: snprintf + USRP_LOG per commit e90e3f5
+                char buf[160];
+                snprintf(buf, sizeof(buf),
+                         "[H52_5WAY] 5-way H52 active (2-way + HT-LTF, same-board recommended)\n");
+                USRP_LOG("%s", buf);
+            }
             // Phase 127 cross-frame: stack AFTER 2-way if both enabled
             gr_complex Hhdr52_xf[52];
             if (d_apply_lsig_h_cross_frame) {
