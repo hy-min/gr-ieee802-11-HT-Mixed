@@ -108,15 +108,19 @@ def internal_run(args):
               flush=True)
 
     # Phase 140: 2-way + L-SIG cross-frame H52
+    # Default OFF (preserves Phase 139 2-way default baseline).
+    # N=0 is a no-op (2-way default since Phase 139); N in {1,2,4,8} for FIFO averaging.
     if args.phase140_on is not None:
         os.environ['IEEE80211_PHASE140_ON'] = str(args.phase140_on)
-        print(f"[TEST] Phase 140 ENABLED: IEEE80211_PHASE140_ON={args.phase140_on} "
-              f"(2-way L-LTF0+L-LTF1 H52 + N={args.phase140_on} cross-frame FIFO)",
+        print(f"[TEST] Phase 140 2-way + L-SIG cross-frame H52 ENABLED: "
+              f"IEEE80211_PHASE140_ON={args.phase140_on} "
+              f"(N=0 is no-op; N in {{1,2,4,8}} for FIFO avg after 2-way baseline)",
               flush=True)
 
     if args.phase140_log:
         os.environ['IEEE80211_LSIG_H52_CROSS_FRAME_LOG'] = '1'
-        print(f"[TEST] Phase 140 log ENABLED: IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1",
+        print(f"[TEST] Phase 140 cross-frame diagnostic log ENABLED: "
+              f"IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1",
               flush=True)
 
     from gnuradio import gr, blocks, uhd
