@@ -248,6 +248,16 @@ private:
     gr_complex d_lsig_h52_history[8][52];
     double d_lsig_h52_history_freq_key;
 
+    // Phase 140: diagnostic log gate for L-SIG cross-frame σ-reduction
+    // entry site. Default OFF (no log noise). Enable via
+    // IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1. Without this gate the
+    // snprintf at lines 7810-7817 fires unconditionally every time
+    // d_apply_lsig_h_cross_frame is true, which is a contract violation
+    // because users advertising this env var to suppress the log cannot
+    // actually do so. Reviewed as issue C1 in the Phase 140 final
+    // cross-cutting review.
+    bool d_lsig_h52_cross_frame_log;
+
     // Phase 128: CFO/SFO re-estimation from HT-LTF. Delays HT-SIG
     // viterbi until HT-LTF (kHtTrain1Rel=6) is received. Default OFF.
     // Enable via IEEE80211_HTSIG_CFO_REEST_HTLTF=1.

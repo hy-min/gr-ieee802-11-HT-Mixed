@@ -4810,6 +4810,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     d_lsig_h52_history_depth = 0;
     d_lsig_h52_history_count = 0;
     d_lsig_h52_history_freq_key = 0.0;
+    d_lsig_h52_cross_frame_log = false;
     {
         const char* env_lsig_cft = std::getenv("IEEE80211_LSIG_H52_CROSS_FRAME_TRACK");
         if (env_lsig_cft && env_lsig_cft[0] != '\0') {
@@ -4868,6 +4869,24 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
                           << " (out of range 0.." << kMaxH52History
                           << ", disabled)\n";
             }
+        }
+    }
+
+    // Phase 140 diagnostic log gate for the L-SIG cross-frame σ-reduction
+    // site (see frame_equalizer_impl.cc around line 7810). Without this
+    // env var read the snprintf at that site fires unconditionally every
+    // time d_apply_lsig_h_cross_frame is true, which is a contract
+    // violation because users advertising this env var to suppress the
+    // log cannot actually do so. Reviewed as issue C1 in the Phase 140
+    // final cross-cutting review. Default OFF (no log noise). Enable
+    // via IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1 (or any non-'0' / non-empty
+    // value).
+    {
+        const char* env_lsig_log = std::getenv("IEEE80211_LSIG_H52_CROSS_FRAME_LOG");
+        if (env_lsig_log && env_lsig_log[0] != '\0' && env_lsig_log[0] != '0') {
+            d_lsig_h52_cross_frame_log = true;
+            std::cout << "[FRAME_EQ] IEEE80211_LSIG_H52_CROSS_FRAME_LOG=1 "
+                      << "(cross-frame sigma diagnostic enabled)\n";
         }
     }
 
@@ -7805,16 +7824,24 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 int n_xf = ref_lsig_h52_cross_frame_average(
                     Hhdr52_for_lsig, d_freq_offset_from_synclong, Hhdr52_xf);
                 Hhdr52_for_lsig = Hhdr52_xf;
-                // Estimate sigma reduction: 2-way input sigma=1.25 rad, sqrt(N) averaging.
-                // Theoretical sigma_post = 1.25/sqrt(N). For N=4: 0.63 rad (close to 0.52 rad viterbi threshold).
-                char xfbuf[192];
-                snprintf(xfbuf, sizeof(xfbuf),
-                         "[LSIG_H52_CROSS_FRAME] n_avg=%d depth=%d "
-                         "sigma_est_input=1.25 sigma_est_post=%.3f rad "
-                         "(target<=0.52 rad for viterbi metric<=10)\n",
-                         n_xf, d_lsig_h52_history_depth,
-                         1.25f / std::sqrt((float)n_xf));
-                USRP_LOG("%s", xfbuf);
+                // Estimate sigma reduction: 2-way input sigma=1.25 rad,
+                // sqrt(1+n_xf) averaging across the FIFO (current frame
+                // counts as one sample plus n_xf-1 history entries).
+                // Theoretical sigma_post = 1.25/sqrt(1+n_xf). Full FIFO
+                // (n_xf = 1 + N): N=1 -> 0.884 rad, N=4 -> 0.559 rad,
+                // N=8 -> 0.417 rad (below 0.52 rad viterbi threshold).
+                // Diagnostic log gated by IEEE80211_LSIG_H52_CROSS_FRAME_LOG
+                // (default OFF, no log noise).
+                if (d_lsig_h52_cross_frame_log) {
+                    char xfbuf[192];
+                    snprintf(xfbuf, sizeof(xfbuf),
+                             "[LSIG_H52_CROSS_FRAME] n_avg=%d depth=%d "
+                             "sigma_est_input=1.25 sigma_est_post=%.3f rad "
+                             "(target<=0.52 rad for viterbi metric<=10)\n",
+                             n_xf, d_lsig_h52_history_depth,
+                             1.25f / std::sqrt((float)n_xf));
+                    USRP_LOG("%s", xfbuf);
+                }
             }
 
             for (rot_lsig = 0; rot_lsig < n_rot && !found; rot_lsig++) {
