@@ -367,6 +367,25 @@ across 5 runs). T1a pre-fix showed 16 HT_SIG_CAND but 0 delta_htltf —
 confirms Phase 128 was no-op on USRP continuous streaming. Fix is code
 correctness improvement (commit 4486bc4).*
 
+- [Phase 141 Wiener H52 MMSE filter](docs/superpowers/notes/2026-07-11-phase141-verdict.md) —
+  **PARTIAL on USRP**. Adds per-SC Wiener shrinkage `G[k] = R_hh[k] / (R_hh[k] +
+  σ²/|y_ltf[k]|²)` to H52 estimation. T1-T6 implemented + unit/file-replay PASS.
+  New env vars (opt-in, default OFF): `IEEE80211_WIENER_H52=1`,
+  `IEEE80211_WIENER_FIFO_N=N`, `IEEE80211_WIENER_G_MIN=G`,
+  `IEEE80211_WIENER_NULL_SCS=...`, `IEEE80211_WIENER_LOG=1`. Also added
+  `--cross-board-rx2` flag to `test_usrp_minimal_loopback.py` for the user's
+  A:0 TX → B:0 RX2 wiring. USRP cross-board RX2 at `--tx-gain 31.5` is the
+  first configuration in this phase to reach `frame_equalizer` and produce
+  `LSIG_DECODE OK`; Wiener L-SIG call site fires (`[WIENER_LSIG] applied`).
+  However, HT-SIG viterbi still fails: avg_snr_htsig stays at 2–4 dB (need
+  ~6 dB), `best_metric=N/A` for all 16 candidates, **0 FCS_OK**. Root causes:
+  (1) HT-SIG path uses `Hhdr52` from the L-SIG call site, so the dedicated
+  HT/Data Wiener call sites on `d_H52_tx_order` do not run until after HT-SIG
+  is decoded; (2) cross-board signal is extremely unstable, with identical
+  parameters producing frames in one run and zero detections in the next.
+  Next: apply Wiener directly to HT-SIG pilot-based H re-estimate, stabilize
+  RF link, or combine Wiener with `IEEE80211_HTSIG_H_AVERAGE` / pilot CPE.
+
 **USRP realtime FCS_OK is the absolute goal.** "Equalizer layer is CLOSED"
 language REMOVED; equalizer attacks MUST continue. After 30+ REFUTED at
 equalizer layer, equalizer layer is **STILL THE TARGET** — new architectures

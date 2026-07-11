@@ -253,8 +253,14 @@ def internal_run(args):
             )
             rx_ch = 0
             if args.cross_board:
+                # Phase 52 default cross-board: B:0 subdev, TX/RX port (half-duplex cable).
                 self.uhd_usrp_source.set_subdev_spec("B:0", rx_ch)
                 self.uhd_usrp_source.set_antenna("TX/RX", rx_ch)
+            elif args.cross_board_rx2:
+                # Phase 141 user wiring: B:0 subdev, RX2 port (separate RX path,
+                # full-duplex capable via dual-cable). See project photo 2026-07-10.
+                self.uhd_usrp_source.set_subdev_spec("B:0", rx_ch)
+                self.uhd_usrp_source.set_antenna("RX2", rx_ch)
             else:
                 self.uhd_usrp_source.set_antenna("RX2", rx_ch)
                 self.uhd_usrp_source.set_subdev_spec(args.rx_subdev, rx_ch)
@@ -403,7 +409,8 @@ def main():
     parser.add_argument('--mcs', type=int, default=0, choices=range(9), help='MCS mode')
     parser.add_argument('--rx-scale', type=float, default=40.0, help='RX software gain (multiplier)')
     parser.add_argument('--capture', type=str, default='', help='Capture raw IQ to file')
-    parser.add_argument('--cross-board', action='store_true', help='Use A:0 TX -> B:0 RX (cross-daughterboard, no internal leak)')
+    parser.add_argument('--cross-board', action='store_true', help='Use A:0 TX -> B:0 TX/RX (cross-daughterboard, no internal leak)')
+    parser.add_argument('--cross-board-rx2', action='store_true', help='Use A:0 TX -> B:0 RX2 (cross-daughterboard via RX2 port, full-duplex capable)')
     parser.add_argument('--rx-subdev', type=str, default='A:0', help='RX subdev spec (default A:0, use B:0 for cross-board)')
     # Phase 112: T7e multi-symbol H52 averaging + HT-SIG re-decode
     parser.add_argument('--t7e-on', action='store_true', help='Enable T7e (IEEE80211_T7E_MULTISYM_H=1)')
