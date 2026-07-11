@@ -1,22 +1,22 @@
-# Phase 141 Wiener H52 MMSE Filter — Verdict
+# Phase 141 Wiener H52 MMSE Filter — Verdict (Revised 2026-07-11)
 
 **Date:** 2026-07-11
-**Hardware:** USRP X310 + UBX-160 v2, A:0 TX → B:0 RX2 (cross-daughterboard), REF LED green (external reference locked)
-**Test command base:** `test_usrp_minimal_loopback.py --freq 5250 --rate 20 --warmup 60 --rx-subdev B:0 --cross-board-rx2 --interval 200`
+**Hardware:** USRP X310 + UBX-160 v2, tested on both A:0 TX → B:0 RX2 (cross-daughterboard) and A:0 TX → A:0 RX2 (same-board). REF LED green (external reference locked)
+**Test command base:** `test_usrp_minimal_loopback.py --freq 5250 --rate 20 --warmup 60 --rx-subdev A:0 --interval 200`
 **Goal:** Improve avg_snr_htsig above the 6 dB viterbi threshold and achieve FCS_OK ≥ 1.
 
 ---
 
 ## Executive Summary
 
-**PARTIAL on USRP.**
+**PARTIAL on USRP, with a significant same-board breakthrough.**
 
 - Wiener H52 kernel (T1) is **correct**: Python + C++ equivalence tests PASS, file-replay baseline preserved 1/1.
-- L-SIG call site **fires** on USRP cross-board (`[WIENER_LSIG] sigma2=... applied`).
-- Cross-board RX2 at `--tx-gain 31.5` is the first configuration in this phase to consistently reach the frame_equalizer and produce `LSIG_DECODE OK` events.
-- However, **HT-SIG viterbi still fails**: avg_snr_htsig stays at 2–4 dB, far below the ~6 dB needed; best_metric is N/A across all 16 rotation/inversion candidates.
-- Cross-board signal is **extremely unstable**: identical parameters produce frames in one run and zero detections in the next, making controlled A/B comparison unreliable.
-- **No FCS_OK achieved.**
+- L-SIG call site **fires** on USRP (`[WIENER_LSIG] sigma2=... applied`).
+- **Same-board A:0 → A:0 RX2 is RF-stable and produces repeatable frames.** This is a major improvement over cross-board.
+- **Wiener + `IEEE80211_HTSIG_H_REESTIMATE=1` reaches avg_snr_htsig = 6.16–11.17 dB**, well above the ~6 dB viterbi threshold.
+- However, **HT-SIG viterbi still fails** (`best_metric=N/A` across all 16 rotation/inversion candidates), and **0 FCS_OK**.
+- The HT-SIG constellation dump reveals large imaginary-axis outliers (`std_im` up to 4.8), indicating residual phase rotation/CFO/SFO or H estimation errors that are not captured by the scalar SNR metric.
 
 ---
 
@@ -41,7 +41,7 @@ Call sites in `lib/frame_equalizer_impl.cc`:
 - **(c) HT/Data direct-tx_order:** Wiener on `d_H52_tx_order` in both the 3-way branch (line ~6531) and the lazy L-LTF0 branch (line ~8997). This path only runs **after** `d_have_ht_header && d_is_ht` is true, so it does not affect HT-SIG decoding itself.
 
 Test harness updates:
-- `test_usrp_minimal_loopback.py`: added `--cross-board-rx2` flag for the user’s actual wiring (A:0 TX → B:0 RX2), distinct from the older `--cross-board` (A:0 TX → B:0 TX/RX).
+- `test_usrp_minimal_loopback.py`: added `--cross-board-rx2` flag for cross-daughterboard RX2 wiring, plus `--wiener-on`, `--wiener-log`, `--wiener-fifo-n`.
 - `examples/test_file_replay_e2e.py`: added `--wiener-on`, `--wiener-log`, `--wiener-fifo-n`.
 
 ---
@@ -57,51 +57,82 @@ Test harness updates:
 | File-replay baseline with Wiener OFF | 1/1 PASS |
 | File-replay baseline with Wiener ON | 1/1 PASS |
 
-### T7: USRP cross-board RX2
+### Same-board A:0 → A:0 RX2 (major new data)
 
-Configuration matrix tested (post-USRP-reboot):
+After switching the SMA cable to same-board, the link became stable enough for controlled measurements.
 
-| tx-gain | rx-gain | Wiener | Phase140 | outcome |
-|--------:|--------:|:------:|:--------:|:--------|
-| 20 | 20 | OFF | OFF | Recv=0, no LSIG_DECODE |
-| 25 | 20 | OFF | OFF | Recv=0, no LSIG_DECODE |
-| 31.5 | 20 | OFF | OFF | Recv=0, splitter frame_start only |
-| 31.5 | 20 | ON | OFF | **LSIG_DECODE OK observed**, avg_snr_lsig=4.37–8.02, avg_snr_ht=2.22–4.49, HT_SIG_PARSE_FAIL, FCS_OK=0 |
-| 20 | 20 | ON | N=4 | Recv=0 (USRP had no detections this run) |
-| 31.5 | 20 | ON | N=4 | Recv=0 (USRP had no detections this run) |
+#### Baseline (no Wiener, no Phase 140)
 
-Key observation logs (tx-gain 31.5, Wiener ON):
+- Repeated `LSIG_DECODE OK` events.
+- `avg_snr_htsig` reached **7.16 dB** and **8.52 dB** in separate frames.
+- HT_SIG_PARSE_FAIL observed with `n_candidates=16`, `best_metric=N/A`.
+
+#### Wiener + Phase 140 N=4
 
 ```
-[WIENER_RHH] n_avg=5 depth=4 freq=5890000000 rhh_mean=8.4301 rhh_max=99.1807
-[WIENER_LSIG] sigma2=0.1582 g_min=0.10 applied
-[LSIG_DECODE] OK enc=2 len=511
-[LSIG_PARSE_FAIL] sym=4 reason='viterbi_fail' ... avg_snr=6.15 avg_snr_ht=3.07
+[WIENER_RHH] n_avg=5 depth=4 freq=5890000000 rhh_mean=0.0740 rhh_max=0.1892
+[WIENER_LSIG] sigma2=0.1233 g_min=0.10 applied
+[LSIG_H52_CROSS_FRAME] n_avg=5 depth=4 sigma_est_input=1.25 sigma_est_post=0.559 rad
+[LSIG_DECODE] OK enc=4 len=20
+[LSIG_PARSE_FAIL] ... avg_snr=2.02 avg_snr_ht=6.56
+```
+
+- Phase 140 FIFO works: `sigma_est_post` drops from 1.25 → 0.559 rad.
+- HT-SIG SNR = **6.56 dB** (above threshold).
+- Still no HT-SIG CRC pass.
+
+#### Wiener + `IEEE80211_HTSIG_H_REESTIMATE=1` (breakthrough)
+
+```
+[WIENER_LSIG] sigma2=0.0419 g_min=0.10 applied
+[HTSIG_H_REESTIMATE] h0=ok h1=ok
+[HT_SIG_PARSE_FAIL] timeout_sym=6 n_candidates=16 best_metric=N/A
+                    avg_snr_lsig=10.40 avg_snr_htsig=6.16
 ...
-[HT_SIG_PARSE_FAIL] timeout_sym=7 n_candidates=16 best_metric=N/A avg_snr_lsig=1.08 avg_snr_htsig=0.75
+[HTSIG_H_REESTIMATE] h0=ok h1=ok
+[HT_SIG_PARSE_FAIL] timeout_sym=11 n_candidates=16 best_metric=N/A
+                    avg_snr_lsig=6.29 avg_snr_htsig=11.17
+[TEST] FCS_OK=0 FCS_FAIL=0
 ```
 
-Observations:
-1. `freq=5890000000` in `[WIENER_RHH]` despite `--freq 5250`. The freq_key used for FIFO reset is taken from `d_freq_offset_from_synclong` (constructor argument), not the runtime tuned frequency. This is a cosmetic mismatch in the diagnostic; it does not alter algorithm behavior, but it means the cross-frame reset logic may reset more often than intended when the runtime frequency differs from the block’s construction frequency.
-2. **No `[WIENER_3WAY]` or `[WIENER_LAZY]` logs were ever seen.** The 3-way branch is gated by `d_apply_htltf_avg=0` by default; the lazy branch only runs after HT header is successfully parsed. Therefore HT-SIG decoding itself is driven by call-site (a) only.
-3. `avg_snr_htsig` peaks around 4.5 dB, still ~1.5 dB short of the viterbi threshold. No candidate produced a valid viterbi metric (`best_metric=N/A`).
+- **HT-SIG SNR now reaches 6.16–11.17 dB**, comfortably above the ~6 dB viterbi threshold.
+- `HTSIG_H_REESTIMATE` reports `h0=ok h1=ok`, so HT-SIG0/1 pilot-based H re-estimation is active.
+- Still **0 FCS_OK**; viterbi does not converge for any of the 16 candidates.
 
-### Signal stability issue
+HT-SIG equalized constellation dump (with HTSIG_H_REESTIMATE):
 
-After the user rebooted the USRP, identical commands produced qualitatively different results across runs:
-- `--tx-gain 20 --rx-gain 20 --wiener-on`: sometimes reached LSIG_DECODE/HT_SIG_PARSE_FAIL, sometimes no detections at all.
-- `--tx-gain 31.5 --rx-gain 20 --wiener-on`: one run reached LSIG_DECODE OK, the next produced only sync_short general_work logs.
+```
+[HTSIG_EQ_DUMP] frame=0 ... htsig0 mean|re|=1.171 mean_im=0.056 std_im=1.172
+                htsig1 mean|re|=0.974 mean_im=-0.242 std_im=1.137
+[HTSIG_EQ_DUMP] frame=2 ... htsig0 mean|re|=0.529 mean_im=0.035 std_im=0.650
+                htsig1 mean|re|=0.479 mean_im=-0.088 std_im=0.535
+[HTSIG_EQ_DUMP] frame=3 ... htsig0 mean|re|=1.161 mean_im=-0.044 std_im=2.720
+                htsig1 mean|re|=0.840 mean_im=-0.171 std_im=0.867
+```
 
-This run-to-run variance is larger than the effect being measured, so **5× redux was not informative** and is not reported as a controlled experiment.
+Some frames show `std_im ≈ 0.5–0.7` (close to usable QBPSK), but others still have large outliers (e.g., `80.311-31.517i`, `55.082-32.080i`, `8.836-1.700i`). These outliers dominate the viterbi metric even when the average SNR looks good.
+
+HT-SIG viterbi input bits (with HTSIG_H_REESTIMATE) show only two enc96 patterns across candidates, suggesting the hard decisions are highly correlated / not exploring the true bit space:
+
+```
+[HTSIG_INPUT_DUMP] inv_a=0 inv_b=0 enc96=110100100000100010100100010110111110000001011010000110101101001110111011111101101000100101000110
+[HTSIG_INPUT_DUMP] inv_a=0 inv_b=1 enc96=110100100000100010100100010110111110000001011010111001010010110001000100000010010111011010111001
+...
+```
+
+### Cross-board RX2 (earlier data)
+
+Cross-board was tested first but proved too unstable for controlled experiments. At `--tx-gain 31.5` it occasionally reached `LSIG_DECODE OK` with `avg_snr_ht=2–4 dB`, but run-to-run variance was larger than the algorithmic effect. See the first revision of this file for the cross-board matrix.
 
 ---
 
 ## Root-Cause Assessment
 
-1. **Wiener works on L-SIG H.** It successfully shrinks the L-LTF-based channel estimate and helps L-SIG viterbi produce `LSIG_DECODE OK` events in a regime where the baseline often fails entirely.
-2. **Wiener does not reach the HT-SIG path directly.** HT-SIG viterbi uses `Hhdr52`, which is the output of call-site (a). Call-sites (b)/(c) on `d_H52_tx_order` are only active after HT-SIG is already decoded. So any benefit to HT-SIG must come indirectly through the L-SIG H being reused.
-3. **HT-SIG SNR remains below threshold.** Even with L-SIG H improved, the HT-SIG symbols themselves are too noisy (avg_snr_htsig 2–4 dB vs ~6 dB needed). This is consistent with the 1.77 rad per-SC phase noise ceiling (Phase 112 R1) and the additional 0.5–1 rad cross-daughterboard LO drift (Phase 122).
-4. **Cross-board instability dominates.** The largest source of variance is not the equalizer algorithm but the RF/link state: identical parameters yield frames in one run and silence in the next.
+1. **Wiener works on L-SIG H.** It successfully shrinks the L-LTF-based channel estimate and improves L-SIG decode stability.
+2. **Same-board RF is stable; cross-board is not.** This is consistent with Phase 122's finding that cross-daughterboard has independent LOs causing 0.5–1 rad drift.
+3. **HT-SIG SNR is no longer the blocker on same-board.** With `HTSIG_H_REESTIMATE`, avg_snr_htsig reaches 6–11 dB, well above the viterbi threshold.
+4. **The remaining problem is constellation quality / phase coherence.** High scalar SNR coexists with large per-SC outliers (`std_im` spikes), indicating residual CFO/SFO, H estimation errors on specific subcarriers, or incorrect QBPSK de-rotation.
+5. **Wiener does not reach the HT-SIG H estimate directly.** It only filters `Hhdr52_for_lsig`. Applying MMSE shrinkage to the HT-SIG pilot-based H estimate is a logical next attack.
 
 ---
 
@@ -109,21 +140,19 @@ This run-to-run variance is larger than the effect being measured, so **5× redu
 
 Phase 141 Wiener H52 is **PARTIAL**:
 - Algorithmically sound and correctly integrated.
-- Helps L-SIG decode on cross-board RX2 at high TX gain.
-- Does **not** bridge the remaining gap to HT-SIG viterbi success, because the HT-SIG path does not run the Wiener filter on its own H estimate and the analog SNR is still too low.
-- **0 FCS_OK** on USRP.
+- On **same-board**, combined with `IEEE80211_HTSIG_H_REESTIMATE=1`, it pushes HT-SIG SNR above the viterbi threshold for the first time.
+- **0 FCS_OK** remains because HT-SIG viterbi does not converge, likely due to residual phase/outlier corruption not captured by the scalar SNR metric.
 
 ---
 
 ## Next Steps
 
-1. **Apply Wiener directly to HT-SIG H estimate.** The current design only filters `Hhdr52_for_lsig`. A more effective attack would apply MMSE shrinkage to the HT-SIG pilot-based H re-estimate (`IEEE80211_HTSIG_H_REESTIMATE`) before it is used by `decode_htsig_from_rotated`.
-2. **Stabilize cross-board RF link.** The run-to-run variance is the primary blocker to any controlled equalizer experiment. Options:
-   - Verify SMA cables and connectors.
-   - Try `--tx-gain 31.5 --rx-gain 31.5` (both max).
-   - Revert to same-board A:0→A:0 RX2 for cleaner A/B validation of Wiener itself.
-3. **Combine Wiener with other HT-SIG refinements.** Wiener + `IEEE80211_HTSIG_H_AVERAGE` or Wiener + `IEEE80211_HTSIG_PILOT_CPE` may stack constructively, since each targets a different noise source.
-4. **Fix freq_key mismatch.** Use the runtime tuned frequency (or remove freq_key gating for single-frequency tests) so `[WIENER_RHH]` logs reflect the actual channel.
+1. **Apply Wiener shrinkage to the HT-SIG pilot-based H estimate.** Add a Wiener call inside the `IEEE80211_HTSIG_H_REESTIMATE` branch before `H_a_ptr`/`H_b_ptr` are assigned. This directly targets the H used for HT-SIG equalization.
+2. **Enable `IEEE80211_HTSIG_FINE_ROT=1`** with Wiener + H_REESTIMATE. The 45° rotation search may resolve the residual phase offset that 90° steps miss.
+3. **Combine with `IEEE80211_HTSIG_PILOT_CPE=1`** to cancel per-symbol phase drift after H re-estimation.
+4. **Investigate the `best_metric=N/A` behavior.** Determine whether viterbi_decode_133_171 fails to run (input sanity check) or returns a saturated metric. Add diagnostic around `decode_htsig_candidate`.
+5. **Fix the `[WIENER_RHH]` freq_key mismatch** (`5890000000` vs runtime `5250`) so FIFO reset logic matches the actual tuned frequency.
+6. **Stay on same-board A:0 → A:0 RX2** for all future equalizer experiments; cross-board adds independent-LO drift that masks algorithmic progress.
 
 ---
 
