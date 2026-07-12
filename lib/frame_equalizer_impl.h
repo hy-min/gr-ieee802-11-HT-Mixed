@@ -327,6 +327,12 @@ private:
     // baseline.
     int d_ht_sig_pilot_refine;
 
+    // Phase 143: BPSK-HT-SIG fallback. When true, HT-SIG0/HT-SIG1 are
+    // decoded as BPSK on the real axis instead of QBPSK on the imaginary
+    // axis. Coordinated with TX via IEEE80211_HTSIG_BPSK_FALLBACK=1.
+    // Default OFF preserves standard 802.11n behavior.
+    bool d_htsig_bpsk_fallback;
+
     // L-LTF0 entry time-domain gain diagnostic (Phase 13): when true,
     // dumps |sym64[j]|^2 sum (E_in) at the moment the L-LTF0 FFT window
     // is captured by extract_header52_from_sym64. Runs BEFORE the

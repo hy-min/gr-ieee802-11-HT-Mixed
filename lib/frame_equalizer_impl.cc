@@ -4756,6 +4756,7 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
       d_chan_est_mode(0),
       d_enable_soft_output(false),
       d_use_lltf1_for_h(false),  // OFF by default; flip to true via env
+      d_htsig_bpsk_fallback(false),  // Phase 143: standard QBPSK HT-SIG by default
       d_frame_bytes(0),
       d_frame_encoding(0),
       d_frame_mcs(0),
@@ -4799,6 +4800,13 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
     if (env_lltf1 && env_lltf1[0] == '1') {
         d_use_lltf1_for_h = true;
         std::cout << "[FRAME_EQ] H-estimation: L-LTF1 (counter=1) ENABLED via env\n";
+    }
+
+    // Phase 143: BPSK-HT-SIG fallback (non-standard, TX/RX coordinated).
+    const char* env_htsig_bpsk = std::getenv("IEEE80211_HTSIG_BPSK_FALLBACK");
+    d_htsig_bpsk_fallback = (env_htsig_bpsk && env_htsig_bpsk[0] == '1');
+    if (d_htsig_bpsk_fallback) {
+        std::cout << "[FRAME_EQ] IEEE80211_HTSIG_BPSK_FALLBACK=1 (HT-SIG decoded as BPSK)\n";
     }
 
     // Allow opt-in via env var for phase residual diagnostic
