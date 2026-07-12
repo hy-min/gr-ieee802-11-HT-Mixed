@@ -8278,10 +8278,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                 htsig_lsig_enc = lsig_enc;
 
-                // Detect HT-SIG QBPSK rotation
-                int detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);
-                // Energy-based rotation verification
-                int energy_rot = vote_qbpsk_rotation(d_early_eqsym[kHtSig0Rel]);
+                // Detect HT-SIG QBPSK rotation (only meaningful for QBPSK).
+                // Phase 143: BPSK fallback has no 90° rotation ambiguity;
+                // only the 180° sign ambiguity (inv_a/inv_b) remains.
+                int detected_rot = 0;
+                int energy_rot = 0;
+                if (!d_htsig_bpsk_fallback) {
+                    detected_rot = detect_htsig_rotation(d_early_eqsym[kHtSig0Rel]);
+                    energy_rot = vote_qbpsk_rotation(d_early_eqsym[kHtSig0Rel]);
+                }
 
                 int start_rot = 0;
                 if (energy_rot != detected_rot && energy_rot == 1) {
@@ -8673,7 +8678,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 const bool htsig_fine_rot_env =
                     getenv("IEEE80211_HTSIG_FINE_ROT") &&
                     getenv("IEEE80211_HTSIG_FINE_ROT")[0] != '\0';
-                const int htsig_n_rot = htsig_fine_rot_env ? 8 : 4;
+                // Phase 143: BPSK fallback has no QBPSK rotation search;
+                // rot=0 is identity, so only inv_a/inv_b are tried.
+                const int htsig_n_rot = d_htsig_bpsk_fallback ? 1
+                                       : (htsig_fine_rot_env ? 8 : 4);
                 const int htsig_step_div = htsig_fine_rot_env ? 4 : 2;
 
                 // Try all 4 (or 8 with FINE_ROT) rotations and 180° ambiguity
