@@ -231,7 +231,7 @@ def internal_run(args):
             # when net.core.wmem_max=1048576 (sysctl cannot be raised without sudo).
             # Default UHD requests 2453333, fails with "IO Error during GSM initialization".
             self.uhd_usrp_sink = uhd.usrp_sink(
-                device_addr="addr=192.168.10.2,send_buff_size=1048576,recv_buff_size=1048576",
+                device_addr="addr=192.168.10.2,send_buff_size=1048576",
                 stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
             )
             self.uhd_usrp_sink.set_samp_rate(args.rate * 1e6)
