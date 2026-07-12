@@ -134,6 +134,11 @@ def internal_run(args):
         os.environ['IEEE80211_WIENER_LOG'] = '1'
         print(f"[TEST] Phase 141 Wiener diagnostic log ENABLED", flush=True)
 
+    # Phase 143: BPSK-HT-SIG fallback (non-standard, TX/RX coordinated).
+    if args.htsig_bpsk_fallback:
+        os.environ['IEEE80211_HTSIG_BPSK_FALLBACK'] = '1'
+        print("[TEST] Phase 143 BPSK-HT-SIG fallback ENABLED", flush=True)
+
     from gnuradio import gr, blocks, uhd
     import pmt
     import ieee802_11
@@ -472,6 +477,13 @@ def main():
                              '(IEEE80211_WIENER_LOG=1, opt-in)')
     parser.add_argument('--wiener-fifo-n', type=int, default=4,
                         help='Phase 141: R_hh FIFO depth (default 4, range 1..8)')
+    # Phase 143: BPSK-HT-SIG fallback (opt-in, non-standard).
+    # Replaces QBPSK HT-SIG0/HT-SIG1 with BPSK to double angular margin
+    # against the USRP 1.77 rad per-SC phase-noise floor.
+    parser.add_argument('--htsig-bpsk-fallback', action='store_true',
+                        help='Phase 143: use BPSK instead of QBPSK for '
+                             'HT-SIG0/HT-SIG1 (IEEE80211_HTSIG_BPSK_FALLBACK=1, '
+                             'opt-in, non-standard)')
     parser.add_argument('--internal-run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
