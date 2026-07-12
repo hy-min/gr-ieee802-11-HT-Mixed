@@ -3715,8 +3715,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                     llr48_a[i] = 0.0f;
                 } else {
                     // Phase 44 formula: sign(eq.imag()) * |H|/max(|H|)
+                    // Phase 143: BPSK fallback uses real axis.
                     float conf = h_mag / max_h_a;
-                    float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
+                    float s = htsig_bpsk_fallback
+                        ? ((eq.real() >= 0.0f) ? 1.0f : -1.0f)
+                        : ((eq.imag() >= 0.0f) ? 1.0f : -1.0f);
                     llr48_a[i] = s * conf;
                 }
             }
@@ -3772,7 +3775,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                     llr48_a[i] = 0.0f;
                 } else {
                     float hm2 = std::abs(H52_a[i]) * std::abs(H52_a[i]);
-                    llr48_a[i] = 4.0f * eq_stash_a[i].imag() * hm2 / sigma2_a;
+                    float eq_val = htsig_bpsk_fallback
+                        ? eq_stash_a[i].real()
+                        : eq_stash_a[i].imag();
+                    llr48_a[i] = 4.0f * eq_val * hm2 / sigma2_a;
                 }
             }
             if (out_sigma2_a) *out_sigma2_a = sigma2_a;
@@ -3958,8 +3964,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                     llr48_b[i] = 0.0f;
                 } else {
                     // Phase 44 formula: sign(eq.imag()) * |H|/max(|H|)
+                    // Phase 143: BPSK fallback uses real axis.
                     float conf = h_mag / max_h_b;
-                    float s = (eq.imag() >= 0.0f) ? 1.0f : -1.0f;
+                    float s = htsig_bpsk_fallback
+                        ? ((eq.real() >= 0.0f) ? 1.0f : -1.0f)
+                        : ((eq.imag() >= 0.0f) ? 1.0f : -1.0f);
                     llr48_b[i] = s * conf;
                 }
             }
@@ -4010,7 +4019,10 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                     llr48_b[i] = 0.0f;
                 } else {
                     float hm2 = std::abs(H52_b[i]) * std::abs(H52_b[i]);
-                    llr48_b[i] = 4.0f * eq_stash_b[i].imag() * hm2 / sigma2_b;
+                    float eq_val = htsig_bpsk_fallback
+                        ? eq_stash_b[i].real()
+                        : eq_stash_b[i].imag();
+                    llr48_b[i] = 4.0f * eq_val * hm2 / sigma2_b;
                 }
             }
             if (out_sigma2_b) *out_sigma2_b = sigma2_b;
