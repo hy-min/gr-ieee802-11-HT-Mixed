@@ -3862,8 +3862,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             float h_mag = std::abs(H52_a[sc]);
             if (h_mag >= 0.001f) {
                 gr_complex eq_p = safe_div(rx52_a[sc], H52_a[sc]);
-                // QBPSK: pilots are on IMAG axis, so normalize to +j (sign of imag)
-                gr_complex ref = gr_complex(0.0f, (eq_p.imag() >= 0.0f) ? 1.0f : -1.0f);
+                // Phase 143: BPSK fallback pilots are on REAL axis.
+                // Standard QBPSK pilots are on IMAG axis.
+                gr_complex ref = htsig_bpsk_fallback
+                    ? gr_complex((eq_p.real() >= 0.0f) ? 1.0f : -1.0f, 0.0f)
+                    : gr_complex(0.0f, (eq_p.imag() >= 0.0f) ? 1.0f : -1.0f);
                 pilot_sum += eq_p / ref;
                 n_pilots++;
             }
@@ -3878,9 +3881,11 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 float h_mag = std::abs(H52_a[i]);
                 if (h_mag >= 0.1f) {  // stricter threshold for data SCs
                     gr_complex eq_d = safe_div(rx52_a[i], H52_a[i]);
-                    // QBPSK data is on imag axis (same convention as pilots)
-                    gr_complex ref = gr_complex(0.0f,
-                                                (eq_d.imag() >= 0.0f) ? 1.0f : -1.0f);
+                    // Phase 143: BPSK fallback data is on REAL axis.
+                    // Standard QBPSK data is on IMAG axis.
+                    gr_complex ref = htsig_bpsk_fallback
+                        ? gr_complex((eq_d.real() >= 0.0f) ? 1.0f : -1.0f, 0.0f)
+                        : gr_complex(0.0f, (eq_d.imag() >= 0.0f) ? 1.0f : -1.0f);
                     data_sum += eq_d / ref;
                     n_data++;
                 }
@@ -3896,7 +3901,8 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             }
         }
         if (n_pilots > 0) {
-            // Average residual phase of HT-SIG0 pilots (relative to +j axis)
+            // Average residual phase of HT-SIG0 pilots
+            // (relative to +j axis for QBPSK, +1 axis for BPSK fallback)
             float cpe_phase_htsig0 = std::arg(pilot_sum / float(n_pilots));
             // Apply OPPOSITE rotation to HT-SIG1 to compensate
             cpe_rot_b = std::polar(1.0f, -cpe_phase_htsig0);
