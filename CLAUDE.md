@@ -388,6 +388,22 @@ correctness improvement (commit 4486bc4).*
   `IEEE80211_HTSIG_FINE_ROT=1` / `IEEE80211_HTSIG_PILOT_CPE=1`, investigate
   `best_metric=N/A`, and keep same-board for all future equalizer experiments.
 
+- [Phase 143 BPSK-HT-SIG fallback](docs/superpowers/notes/2026-07-12-phase143-bpsk-htsig-fallback-verdict.md) —
+  **IMPLEMENTED, USRP NOT YET FCS_OK**. Replaces QBPSK with BPSK for
+  HT-SIG0/HT-SIG1 in a TX/RX-coordinated fallback mode to double angular
+  margin against the 1.77 rad per-SC phase-noise floor. New opt-in env var
+  `IEEE80211_HTSIG_BPSK_FALLBACK=1` and CLI flag `--htsig-bpsk-fallback`.
+  Code compiles and installs cleanly; fallback reaches HT-SIG viterbi and
+  reduces RX overflows, but best metric stays at 13–18 (>10 threshold) and
+  **0 FCS_OK**. Verdict: `docs/superpowers/notes/2026-07-12-phase143-bpsk-htsig-fallback-verdict.md`.
+- [Phase 144 L-SIG stability diagnosis](docs/superpowers/notes/2026-07-12-phase144-lsig-stability-verdict.md) —
+  **BLOCKED by USRP analog/streaming instability**. L-SIG viterbi decodes
+  garbage `lsig_len` values (100×–1000× too large) and `avg_snr_lsig` varies
+  from 2 dB to 77 dB run-to-run. TX underflows occur at ~1 Hz regardless of
+  configuration. Next attack must be hardware/UHD streaming layer, not more
+  equalizer tweaks. Verdict:
+  `docs/superpowers/notes/2026-07-12-phase144-lsig-stability-verdict.md`.
+
 **USRP realtime FCS_OK is the absolute goal.** "Equalizer layer is CLOSED"
 language REMOVED; equalizer attacks MUST continue. After 30+ REFUTED at
 equalizer layer, equalizer layer is **STILL THE TARGET** — new architectures
