@@ -3600,6 +3600,9 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
     float llr_inter_a[48];
     float llr_inter_b[48];
     float enc96_soft[96];
+    // Phase 142 T1: stash equalized symbols for diagnostic stats.
+    gr_complex eq_stash_a[48];
+    gr_complex eq_stash_b[48];
 
     // NOTE: rx52_a/b (d_early_eqsym) has already been phase-compensated in general_work.
     // Do NOT apply additional CPE compensation here.
@@ -3673,7 +3676,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
         // Phase 129 v2: stash equalized symbols for σ² estimation from null SCs.
         // Need |eq_null|² · |H_null|² for masked SCs; σ²_channel = mean.
         // Use the same post-correction eq as the bit-extraction path.
-        gr_complex eq_stash_a[48];
+        // (eq_stash_a moved to function scope for Phase 142 diagnostics.)
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_a[i]);
             gr_complex eq;
@@ -3918,7 +3921,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             mmse_equalize_htsig(rx52_b, H52_b, eq_mmse_b, n0_percentile);
         }
         // Phase 129 v2: stash equalized symbols for σ² estimation from null SCs.
-        gr_complex eq_stash_b[48];
+        // (eq_stash_b moved to function scope for Phase 142 diagnostics.)
         for (int i = 0; i < 48; i++) {
             float h_mag = std::abs(H52_b[i]);
             gr_complex eq;
@@ -4007,6 +4010,76 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
             }
             if (out_sigma2_b) *out_sigma2_b = sigma2_b;
         }
+    }
+
+    // Phase 142 T1: diagnostic dump of equalized symbols and H statistics.
+    // Helps answer why best_metric=N/A even when avg_snr_htsig > 6 dB.
+    static const char* env_htsig_eq_diag = std::getenv("IEEE80211_HTSIG_EQ_DIAG");
+    if (env_htsig_eq_diag && env_htsig_eq_diag[0] != '\0') {
+        double sum_re_a = 0.0, sum_im_a = 0.0, sum_re2_a = 0.0, sum_im2_a = 0.0;
+        double sum_re_b = 0.0, sum_im_b = 0.0, sum_re2_b = 0.0, sum_im2_b = 0.0;
+        double sum_cos_a = 0.0, sum_sin_a = 0.0, sum_cos_b = 0.0, sum_sin_b = 0.0;
+        double sum_abs_a = 0.0, sum_abs_b = 0.0;
+        for (int i = 0; i < 48; i++) {
+            float re_a = eq_stash_a[i].real();
+            float im_a = eq_stash_a[i].imag();
+            float re_b = eq_stash_b[i].real();
+            float im_b = eq_stash_b[i].imag();
+            sum_re_a += re_a; sum_im_a += im_a;
+            sum_re2_a += re_a * re_a; sum_im2_a += im_a * im_a;
+            sum_re_b += re_b; sum_im_b += im_b;
+            sum_re2_b += re_b * re_b; sum_im2_b += im_b * im_b;
+            float ha = std::abs(H52_a[i]);
+            float hb = std::abs(H52_b[i]);
+            sum_abs_a += ha; sum_abs_b += hb;
+            if (ha > 1e-6f) {
+                float ph = std::arg(H52_a[i]);
+                sum_cos_a += std::cos(ph);
+                sum_sin_a += std::sin(ph);
+            } else {
+                sum_cos_a += 1.0;
+            }
+            if (hb > 1e-6f) {
+                float ph = std::arg(H52_b[i]);
+                sum_cos_b += std::cos(ph);
+                sum_sin_b += std::sin(ph);
+            } else {
+                sum_cos_b += 1.0;
+            }
+        }
+        auto variance = [](double sum, double sum2, int n) -> float {
+            double mean = sum / n;
+            double v = sum2 / n - mean * mean;
+            if (v < 0.0) v = 0.0;
+            return std::sqrt(v);
+        };
+        float std_re_a = variance(sum_re_a, sum_re2_a, 48);
+        float std_im_a = variance(sum_im_a, sum_im2_a, 48);
+        float std_re_b = variance(sum_re_b, sum_re2_b, 48);
+        float std_im_b = variance(sum_im_b, sum_im2_b, 48);
+        float mean_abs_a = (float)(sum_abs_a / 48.0);
+        float mean_abs_b = (float)(sum_abs_b / 48.0);
+        float circ_r_a = (float)std::sqrt(sum_cos_a * sum_cos_a + sum_sin_a * sum_sin_a) / 48.0f;
+        float circ_r_b = (float)std::sqrt(sum_cos_b * sum_cos_b + sum_sin_b * sum_sin_b) / 48.0f;
+        if (circ_r_a > 1.0f) circ_r_a = 1.0f;
+        if (circ_r_b > 1.0f) circ_r_b = 1.0f;
+        float arg_std_a = std::sqrt(-2.0f * std::log(circ_r_a + 1e-12f));
+        float arg_std_b = std::sqrt(-2.0f * std::log(circ_r_b + 1e-12f));
+        char edbuf[512];
+        snprintf(edbuf, sizeof(edbuf),
+                 "[HTSIG_EQ_DIAG] rot=%d inv_a=%d inv_b=%d "
+                 "eq_a_re=%.3f/%.3f im=%.3f/%.3f "
+                 "eq_b_re=%.3f/%.3f im=%.3f/%.3f "
+                 "H_a_abs_mean=%.3f arg_std=%.3f "
+                 "H_b_abs_mean=%.3f arg_std=%.3f\n",
+                 rot, invert_a ? 1 : 0, invert_b ? 1 : 0,
+                 (float)(sum_re_a / 48.0), std_re_a,
+                 (float)(sum_im_a / 48.0), std_im_a,
+                 (float)(sum_re_b / 48.0), std_re_b,
+                 (float)(sum_im_b / 48.0), std_im_b,
+                 mean_abs_a, arg_std_a,
+                 mean_abs_b, arg_std_b);
+        USRP_LOG("%s", edbuf);
     }
 
     if (invert_a) {
@@ -8287,6 +8360,38 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         d_early_eqsym[kHtSig0Rel], Hhdr52, H_htsig0);
                     bool h1_ok = estimate_H_from_htsig_pilots(
                         d_early_eqsym[kHtSig1Rel], Hhdr52, H_htsig1);
+
+                    // Phase 142 T2: apply Wiener MMSE shrinkage to the HT-SIG0/1
+                    // pilot-based H re-estimates. Previously Wiener only filtered
+                    // the L-SIG path Hhdr52_for_lsig; HT-SIG viterbi used unfiltered
+                    // H_htsig0/1, leaving the 1.77 rad noise floor untouched.
+                    if (d_apply_wiener_h52 && h0_ok && h1_ok) {
+                        float r_hh0[52];
+                        float r_hh1[52];
+                        estimate_r_hh(H_htsig0, d_freq_offset_from_synclong, r_hh0);
+                        estimate_r_hh(H_htsig1, d_freq_offset_from_synclong, r_hh1);
+                        float sigma2_0 = estimate_sigma2_noise(
+                            H_htsig0, d_wiener_null_scs, d_wiener_n_nulls);
+                        float sigma2_1 = estimate_sigma2_noise(
+                            H_htsig1, d_wiener_null_scs, d_wiener_n_nulls);
+                        gr_complex H_htsig0_w[52];
+                        gr_complex H_htsig1_w[52];
+                        wiener_filter_h52(H_htsig0, H_htsig0,
+                                          r_hh0, sigma2_0, d_wiener_g_min, H_htsig0_w);
+                        wiener_filter_h52(H_htsig1, H_htsig1,
+                                          r_hh1, sigma2_1, d_wiener_g_min, H_htsig1_w);
+                        std::memcpy(H_htsig0, H_htsig0_w, sizeof(H_htsig0));
+                        std::memcpy(H_htsig1, H_htsig1_w, sizeof(H_htsig1));
+                        if (d_wiener_log) {
+                            char wbuf[256];
+                            std::snprintf(wbuf, sizeof(wbuf),
+                                          "[WIENER_HTSIG] applied to HT-SIG0/1 "
+                                          "pilot H (sigma2=%.4f/%.4f g_min=%.2f)\n",
+                                          sigma2_0, sigma2_1, d_wiener_g_min);
+                            USRP_LOG("%s", wbuf);
+                        }
+                    }
+
                     H_a_ptr = h0_ok ? H_htsig0 : Hhdr52;
                     H_b_ptr = h1_ok ? H_htsig1 : Hhdr52;
                     if (h0_ok || h1_ok) {
