@@ -103,6 +103,11 @@ class mixed_mode_carrier_allocator(gr.basic_block):
 
         self._n_sync = len(self._sync_words)
 
+        # Phase 143: BPSK-HT-SIG fallback (non-standard, TX/RX coordinated).
+        self._htsig_bpsk_fallback = (
+            os.environ.get('IEEE80211_HTSIG_BPSK_FALLBACK') == '1'
+        )
+
         # header: 48 data subcarriers (legacy 20MHz OFDM)
         self._hdr_carriers = [
             -26, -25, -24, -23, -22,
@@ -258,13 +263,14 @@ class mixed_mode_carrier_allocator(gr.basic_block):
             htsig1_bpsk48 = self._map_header_bits_to_bpsk(htsig1_bits48)
             htsig2_bpsk48 = self._map_header_bits_to_bpsk(htsig2_bits48)
 
-            # HT-SIG uses QBPSK (90° rotation on Q-axis)
-            # Rotate HT-SIG data symbols by multiplying by j
-            htsig1_bpsk48 = htsig1_bpsk48 * 1j
-            htsig2_bpsk48 = htsig2_bpsk48 * 1j
-
-            # HT-SIG pilots also need 90° rotation
-            ht_sig_pilot_values = [pv * 1j for pv in self._legacy_pilot_values]
+            if not self._htsig_bpsk_fallback:
+                # Standard QBPSK HT-SIG (90° rotation on Q-axis)
+                htsig1_bpsk48 = htsig1_bpsk48 * 1j
+                htsig2_bpsk48 = htsig2_bpsk48 * 1j
+                ht_sig_pilot_values = [pv * 1j for pv in self._legacy_pilot_values]
+            else:
+                # Phase 143 fallback: keep HT-SIG as BPSK on real axis
+                ht_sig_pilot_values = self._legacy_pilot_values
 
             # 1) legacy preamble
             for s, sw in enumerate(self._sync_words):
