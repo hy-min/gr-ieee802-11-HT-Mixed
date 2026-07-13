@@ -224,29 +224,20 @@ def internal_run(args):
 
             self.encoding_stripper = encoding_stripper()
 
-            # USRP TX. Channel 0 = A:0 subdev (slot A, subdev 0).
-            # USRP X310 has 2 daughterboard slots: A and B. Each has its own UBX-160.
+            # USRP TX. Channel 1 = B:0 subdev (slot B, subdev 0) for B-board loopback.
             # Per UHD RFNoC mapping: ch 0 -> A:0, ch 1 -> B:0.
-            # Phase 112: Explicit send_buff_size=1048576 to avoid RFNOC graph failure
-            # when net.core.wmem_max=1048576 (sysctl cannot be raised without sudo).
-            # Default UHD requests 2453333, fails with "IO Error during GSM initialization".
             self.uhd_usrp_sink = uhd.usrp_sink(
                 device_addr="addr=192.168.10.2,send_buff_size=1048576",
-                stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
+                stream_args=uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=[0]),
             )
+            tx_ch = 0
             self.uhd_usrp_sink.set_samp_rate(args.rate * 1e6)
-            self.uhd_usrp_sink.set_center_freq(args.freq * 1e6, 0)
-            self.uhd_usrp_sink.set_gain(args.tx_gain, 0)
-            self.uhd_usrp_sink.set_antenna("TX/RX", 0)
-            self.uhd_usrp_sink.set_subdev_spec("A:0", 0)
+            self.uhd_usrp_sink.set_subdev_spec("B:0", tx_ch)
+            self.uhd_usrp_sink.set_antenna("TX/RX", tx_ch)
+            self.uhd_usrp_sink.set_center_freq(args.freq * 1e6, tx_ch)
+            self.uhd_usrp_sink.set_gain(args.tx_gain, tx_ch)
 
-            # USRP RX. Two configurations supported:
-            # (1) Default: ch 0, A:0 subdev, RX2 port, same-board TDD. Per commit 515b543.
-            # (2) --cross-board: ch 0, B:0 subdev, TX/RX port. Phase 52.
-            # Phase 58 Task 3: increase UHD recv buffer + num_recv_frames.
-            # Default 1MB / 32 frames yields 0% sample delivery at 20 MHz x 4B/complex = 80 MB/s
-            # (see /tmp/p58_t3_recv_buffer.log). 16MB / 256 frames absorbs USRP burst pressure
-            # and achieves 100.1% delivery. 64MB / 512 is no better — pick 16MB / 256 for memory.
+            # USRP RX. Channel 0 mapped to B:0 subdev, RX2 port, same-board TDD on B daughterboard.
             self.uhd_usrp_source = uhd.usrp_source(
                 device_addr="addr=192.168.10.2",
                 stream_args=uhd.stream_args(
@@ -257,18 +248,8 @@ def internal_run(args):
                 ),
             )
             rx_ch = 0
-            if args.cross_board:
-                # Phase 52 default cross-board: B:0 subdev, TX/RX port (half-duplex cable).
-                self.uhd_usrp_source.set_subdev_spec("B:0", rx_ch)
-                self.uhd_usrp_source.set_antenna("TX/RX", rx_ch)
-            elif args.cross_board_rx2:
-                # Phase 141 user wiring: B:0 subdev, RX2 port (separate RX path,
-                # full-duplex capable via dual-cable). See project photo 2026-07-10.
-                self.uhd_usrp_source.set_subdev_spec("B:0", rx_ch)
-                self.uhd_usrp_source.set_antenna("RX2", rx_ch)
-            else:
-                self.uhd_usrp_source.set_antenna("RX2", rx_ch)
-                self.uhd_usrp_source.set_subdev_spec(args.rx_subdev, rx_ch)
+            self.uhd_usrp_source.set_antenna("RX2", rx_ch)
+            self.uhd_usrp_source.set_subdev_spec("B:0", rx_ch)
             self.uhd_usrp_source.set_gain(args.rx_gain, rx_ch)
             self.uhd_usrp_source.set_center_freq(args.freq * 1e6, rx_ch)
             self.uhd_usrp_source.set_bandwidth(args.rate * 1e6, rx_ch)
@@ -288,17 +269,17 @@ def internal_run(args):
                     # set_lo_source: UBX-160 ONLY supports internal, UHD rejects explicit
                     # set with "This device only supports setting internal source on all LOs".
                     # Hence omit set_lo_source from the block.
-                    self.uhd_usrp_source.set_auto_dc_offset(False, 0)
-                    self.uhd_usrp_source.set_auto_iq_balance(False, 0)
+                    self.uhd_usrp_source.set_auto_dc_offset(False, rx_ch)
+                    self.uhd_usrp_source.set_auto_iq_balance(False, rx_ch)
                     print("[TEST] UHD micro-tunings applied successfully")
                 except (RuntimeError, AttributeError) as e:
                     print(f"[TEST] UHD API micro-tuning failed (non-fatal): {e}")
 
-            # Phase 52: Diagnostic print of cross-board wiring
+            # Phase 52: Diagnostic print of B-board wiring
             print(f"[TEST] RX subdev_spec: {self.uhd_usrp_source.get_subdev_spec(rx_ch)}")
             print(f"[TEST] RX antenna: {self.uhd_usrp_source.get_antenna(rx_ch)}")
-            print(f"[TEST] TX subdev_spec: {self.uhd_usrp_sink.get_subdev_spec(0)}")
-            print(f"[TEST] TX antenna: {self.uhd_usrp_sink.get_antenna(0)}")
+            print(f"[TEST] TX subdev_spec: {self.uhd_usrp_sink.get_subdev_spec(tx_ch)}")
+            print(f"[TEST] TX antenna: {self.uhd_usrp_sink.get_antenna(tx_ch)}")
 
             # RX Buffer (Phase 52: 20MB absorbs USRP burst pressure)
             self.rx_buffer = blocks.copy(gr.sizeof_gr_complex)
@@ -313,10 +294,9 @@ def internal_run(args):
             self.rx_buffer2.set_min_output_buffer(10000000)
 
             # File sink for raw IQ (optional)
-            # Phase 144-C: removed blocks.head; capture for the full flowgraph
-            # duration instead of a sample count. head block caused early/uneven
-            # termination under underflow/overflow conditions.
             if args.capture:
+                nsamples = int(args.duration * args.rate * 1e6)
+                self.head = blocks.head(gr.sizeof_gr_complex, nsamples)
                 self.file_sink = blocks.file_sink(gr.sizeof_gr_complex, args.capture, False)
 
             # Null sources/sinks
@@ -338,7 +318,8 @@ def internal_run(args):
             self.connect((self.rx_buffer, 0), (self.rx_gain_block, 0))
             self.connect((self.rx_gain_block, 0), (self.rx_buffer2, 0))
             if args.capture:
-                self.connect((self.rx_buffer2, 0), (self.file_sink, 0))
+                self.connect((self.rx_buffer2, 0), (self.head, 0))
+                self.connect((self.head, 0), (self.file_sink, 0))
             self.connect((self.rx_buffer2, 0), (self.wifi_phy_rx, 0))
             self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
 
