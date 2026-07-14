@@ -6464,7 +6464,18 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // L-SIG (counter=2), HT-SIG0 (3), HT-SIG1 (4) need compensation.
             // Use d_phase_diff_per_sc[i] which contains CFO + SFO*sc for each subcarrier.
             // This is more accurate than d_cfo_phase_per_symbol alone (which lacks SFO).
-            if (d_phase_diff_valid && d_internal_symbol_counter >= kLSigRel) {
+            //
+            // Phase 145c: optional disable. On USRP the L-LTF0/L-LTF1 phase_diff is
+            // dominated by ~1.77 rad per-SC noise, so applying it to L-SIG/HT-SIG
+            // makes the constellation worse than leaving it raw. Opt-in via
+            // IEEE80211_HDR_COMP_DISABLE=1 to skip this compensation entirely.
+            static bool g_hdr_comp_disable =
+                getenv("IEEE80211_HDR_COMP_DISABLE") &&
+                getenv("IEEE80211_HDR_COMP_DISABLE")[0] == '1';
+            if (g_hdr_comp_disable && d_internal_symbol_counter >= kLSigRel) {
+                USRP_LOG("[HDR_COMP] counter=%d SKIPPED via IEEE80211_HDR_COMP_DISABLE=1\n",
+                         d_internal_symbol_counter);
+            } else if (d_phase_diff_valid && d_internal_symbol_counter >= kLSigRel) {
                 for (int i = 0; i < 52; i++) {
                     float total_phase = d_phase_diff_per_sc[i] * d_internal_symbol_counter;
                     // Phase 34: add δ correction for counter>=4 (HT-SIG1 and data symbols).
@@ -8122,7 +8133,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     lltf1_H = d_early_eqsym[kLltf1Rel];
                 }
                 if (lltf1_H != nullptr) {
-                    compute_H52_2way(Hhdr52, lltf1_H, Hhdr52_2way);
+                    // FIX: lltf1_H is the RAW received L-LTF1 (after CFO/SFO
+                    // compensation), NOT a channel estimate. compute_H52_2way()
+                    // expects two H52 arrays. Convert raw L-LTF1 to H_LTS1 by
+                    // dividing by the known TX reference, then average.
+                    gr_complex H_LTS1[52];
+                    estimate_header_channel_from_lltf52(lltf1_H, lltf1_H, H_LTS1);
+                    compute_H52_2way(Hhdr52, H_LTS1, Hhdr52_2way);
                     Hhdr52_for_lsig = Hhdr52_2way;
                     // Atomic log: snprintf + USRP_LOG per commit e90e3f5
                     char buf[160];

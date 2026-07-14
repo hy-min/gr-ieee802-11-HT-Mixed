@@ -334,12 +334,19 @@ def internal_run(args):
             self.connect((self.wifi_phy_tx, 0), (self.uhd_usrp_sink, 0))
 
             # RX path (Phase 52: rx_buffer2 inserted between rx_gain_block and wifi_phy_rx)
-            self.connect((self.uhd_usrp_source, 0), (self.rx_buffer, 0))
-            self.connect((self.rx_buffer, 0), (self.rx_gain_block, 0))
-            self.connect((self.rx_gain_block, 0), (self.rx_buffer2, 0))
-            if args.capture:
-                self.connect((self.rx_buffer2, 0), (self.file_sink, 0))
-            self.connect((self.rx_buffer2, 0), (self.wifi_phy_rx, 0))
+            # Phase 145c: --direct-rx bypasses buffers/gain to match file replay chain
+            if args.direct_rx:
+                self.connect((self.uhd_usrp_source, 0), (self.rx_gain_block, 0))
+                self.connect((self.rx_gain_block, 0), (self.wifi_phy_rx, 0))
+                if args.capture:
+                    self.connect((self.rx_gain_block, 0), (self.file_sink, 0))
+            else:
+                self.connect((self.uhd_usrp_source, 0), (self.rx_buffer, 0))
+                self.connect((self.rx_buffer, 0), (self.rx_gain_block, 0))
+                self.connect((self.rx_gain_block, 0), (self.rx_buffer2, 0))
+                if args.capture:
+                    self.connect((self.rx_buffer2, 0), (self.file_sink, 0))
+                self.connect((self.rx_buffer2, 0), (self.wifi_phy_rx, 0))
             self.connect((self.wifi_phy_rx, 0), (self.null_sink, 0))
 
             self.msg_connect((self.wifi_phy_rx, 'mac_out'), (self.msg_debug_rx, 'store'))
@@ -414,6 +421,9 @@ def main():
     parser.add_argument('--mcs', type=int, default=0, choices=range(9), help='MCS mode')
     parser.add_argument('--rx-scale', type=float, default=40.0, help='RX software gain (multiplier)')
     parser.add_argument('--capture', type=str, default='', help='Capture raw IQ to file')
+    parser.add_argument('--direct-rx', action='store_true',
+                        help='Phase 145c: bypass rx_buffer/rx_gain_block/rx_buffer2, '
+                             'connect UHD source directly to wifi_phy_rx (matches file replay chain)')
     parser.add_argument('--cross-board', action='store_true', help='Use A:0 TX -> B:0 TX/RX (cross-daughterboard, no internal leak)')
     parser.add_argument('--cross-board-rx2', action='store_true', help='Use A:0 TX -> B:0 RX2 (cross-daughterboard via RX2 port, full-duplex capable)')
     parser.add_argument('--rx-subdev', type=str, default='A:0', help='RX subdev spec (default A:0, use B:0 for cross-board)')
