@@ -43,6 +43,41 @@ Result:
 
 ---
 
+## Standardized Validation
+
+New one-command validation script:
+
+```bash
+./usrp_validate_replay.sh 10 5250 0
+```
+
+Result:
+
+```
+[P103] RX messages: 5
+[P103] FCS_OK=5 FCS_FAIL=0
+[P103] PASS — algorithm chain correct in file-replay (FCS_OK=5>=1)
+```
+
+### How it works
+
+1. `capture_usrp_txrx.py` — TX enabled, **no wifi_phy_rx in capture flowgraph**.
+   This prevents the realtime RX chain from backpressuring the USRP source.
+2. `examples/test_file_replay_e2e.py` — replays captured IQ with Phase 145c
+   winning config baked into DEFAULT_ENV.
+
+### Why realtime captures were short
+
+Realtime test with wifi_phy_rx in the same flowgraph captures only ~0.03–0.3s
+of data in 10–30s tests. Removing wifi_phy_rx from the capture flowgraph
+produces complete 10s captures (1.5GB, 944 frames).
+
+**Root cause:** wifi_phy_rx chain (sync_long stuck in SYNC state consuming
+data without producing output) backpressures the USRP source, limiting the
+capture rate to ~0.04 MHz instead of 20 MHz.
+
+---
+
 ## Evidence Summary
 
 ### 1. File replay vs realtime on identical IQ
