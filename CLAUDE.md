@@ -67,6 +67,32 @@ following hierarchy applies:
 - **Same-board default**: `A:0` TX → `A:0` RX2 (per Phase 53 verdict,
   cross-board is 2.4x weaker).
 - **禁止 `--rate 5`** (Phase 58 REFUTED, 48× more overflows than `--rate 20`).
+- **Phase 145c USRP file-replay validation (NEW 2026-07-14)**:
+  Standardized one-command validation for USRP IQ. Captures with TX
+  enabled but **no wifi_phy_rx in capture flowgraph** (avoids realtime
+  RX chain backpressuring USRP source), then replays through file replay
+  test with winning config.
+  ```bash
+  ./usrp_validate_replay.sh 10 5250 0
+  ```
+  Result: `FCS_OK=5` on fresh USRP capture (5250 MHz cable, tx-gain 0).
+  Winning config: `IEEE80211_HDR_COMP_DISABLE=1` +
+  `IEEE80211_H52_2WAY_DEFAULT=0` + `IEEE80211_LSIG_RATE_FORCE=0xD` +
+  `IEEE80211_TIMING_OFFSET_APPLY=1`.
+  **Realtime capture blocking root cause**: wifi_phy_rx chain (sync_long
+  stuck in SYNC state consuming data without producing output)
+  backpressures USRP source, limiting capture to ~0.04 MHz instead of
+  20 MHz. `capture_usrp_txrx.py` removes wifi_phy_rx from capture
+  flowgraph to get complete captures.
+- **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
+  Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
+  L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
+  applying it as "CFO/SFO compensation" adds noise instead of removing it.
+  **Required for USRP file-replay validation.**
+- **IEEE80211_H52_2WAY_DEFAULT=0** — Phase 145c: Disables Phase 139
+  2-way L-LTF0+L-LTF1 SNR-weighted H52 averaging. L-LTF0 and L-LTF1 have
+  independent phase noise on USRP; averaging corrupts phase for most
+  frames. **Required for USRP file-replay validation.**
 - **Phase 82+ cable test config (NEW 2026-07-04, user accepted)**:
   Direct SMA cable (NO attenuator) is Phase 82 default per user
   decision after Phase 81 verdict. 30 dB SMA attenuator (HAT-30+)
