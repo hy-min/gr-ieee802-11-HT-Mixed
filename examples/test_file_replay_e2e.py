@@ -34,6 +34,12 @@ DEFAULT_ENV = {
     'IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR': '1',
     # Phase 89: sync_short adaptive threshold (median*10 with 3.0 startup gate)
     'IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH': '1',
+    # Phase 145c: disable header CFO/SFO compensation (L-LTF0/L-LTF1 phase_diff
+    # is noise-dominated on USRP; compensation adds noise)
+    'IEEE80211_HDR_COMP_DISABLE': '1',
+    # Phase 145c: disable 2-way H52 averaging (L-LTF0/L-LTF1 have independent
+    # phase noise; averaging corrupts phase for most frames)
+    'IEEE80211_H52_2WAY_DEFAULT': '0',
 }
 for k, v in DEFAULT_ENV.items():
     os.environ.setdefault(k, v)
@@ -244,7 +250,27 @@ def main():
                         '(IEEE80211_WIENER_LOG=1)')
     p.add_argument('--wiener-fifo-n', type=int, default=4,
                    help='Phase 141: R_hh FIFO depth (default 4, range 1..8)')
+    # Phase 145c: USRP validation helpers
+    p.add_argument('--hdr-comp-disable', action='store_true', default=True,
+                   help='Phase 145c: disable header CFO/SFO compensation '
+                        '(default ON for USRP validation)')
+    p.add_argument('--no-hdr-comp-disable', dest='hdr_comp_disable',
+                   action='store_false',
+                   help='Disable HDR_COMP_DISABLE (re-enable CFO/SFO compensation)')
+    p.add_argument('--no-2way', action='store_true', default=True,
+                   help='Phase 145c: disable 2-way H52 averaging '
+                        '(default ON for USRP validation)')
+    p.add_argument('--enable-2way', dest='no_2way', action='store_false',
+                   help='Re-enable 2-way H52 averaging')
     args = p.parse_args()
+
+    # Phase 145c: USRP validation defaults (can be overridden by CLI flags)
+    if not args.hdr_comp_disable:
+        os.environ.pop('IEEE80211_HDR_COMP_DISABLE', None)
+        print("[TEST] HDR compensation RE-ENABLED (IEEE80211_HDR_COMP_DISABLE unset)", flush=True)
+    if not args.no_2way:
+        os.environ['IEEE80211_H52_2WAY_DEFAULT'] = '1'
+        print("[TEST] 2-way H52 RE-ENABLED (IEEE80211_H52_2WAY_DEFAULT=1)", flush=True)
 
     # Phase 137: stable-null-aware masking (opt-in via --phase137-on).
     # Default OFF preserves baseline.
