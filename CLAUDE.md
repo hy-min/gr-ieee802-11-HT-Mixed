@@ -1,5 +1,8 @@
 # gr-ieee802-11 Project Instructions
 
+> **📌 先读这个：** [项目阶段性反思总结（100+ phase 经验教训）](docs/superpowers/notes/2026-07-15-project-retrospective.md) —
+> 核心教训：解码器早已正确；真正的瓶颈是"帧到不了解码器"（调度 stall / 段错误 / 同步），不是均衡器。先根因后修复；每次卡住先定位"瓶颈在哪一层"。
+
 ## Project Goal: USRP Realtime FCS_OK (ABSOLUTE — DO NOT ACCEPT CLOSURE)
 
 **This is the user's explicit, binding goal: 实现 USRP realtime FCS_OK
