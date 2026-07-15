@@ -121,7 +121,16 @@ public:
             float effective_threshold = d_threshold;
             if (d_use_adaptive) {
                 if (d_corr_window_filled >= 4096) {
-                    static float sorted_buf[4096];
+                    // Phase 147 fix: was `static float sorted_buf[4096]`. The
+                    // static made this scratch buffer SHARED across ALL
+                    // sync_short instances. A realtime transceiver has TWO
+                    // (wifi_phy_hier RX path + RX-only chain) running on
+                    // separate GNU Radio threads; their concurrent
+                    // memcpy/std::sort raced -> std::sort walked OOB -> SIGSEGV
+                    // (the intermittent Heisenbug). Use a stack-private buffer
+                    // (fully initialized by the memcpy below) -> thread/instance
+                    // safe. Offline replay has one instance so never crashed.
+                    float sorted_buf[4096];
                     memcpy(sorted_buf, d_corr_window, sizeof(sorted_buf));
                     std::sort(sorted_buf, sorted_buf + d_corr_window_filled);
                     int p90_idx = d_corr_window_filled * 9 / 10;

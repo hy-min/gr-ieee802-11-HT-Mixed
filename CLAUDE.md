@@ -103,6 +103,24 @@ following hierarchy applies:
   `p146_rx_throughput_probe.py`, `p146_bisect.py`. REFUTED lever: L2
   sync_long early-out (sync_long is fast, 263 MHz front-end).
   Verdict: `docs/superpowers/notes/2026-07-15-phase146-scheduler-stall-rootcause.md`.
+- **Phase 147 realtime segfault ROOT-CAUSED + FIXED (NEW 2026-07-15)**:
+  The intermittent realtime segfault (the true cause of Phase 146's
+  "FCS_OK=2 in 30s", NOT the decoder) was a **data race on `static float
+  sorted_buf[4096]` in `sync_short.cc:124`** (adaptive-threshold p90 recompute).
+  The static was shared across ALL sync_short instances; a realtime transceiver
+  has TWO (wifi_phy_hier RX path `wifi_phy_hier.py:91` + RX-only chain) on
+  separate GNU Radio threads, so their concurrent `memcpy`/`std::sort` raced →
+  std::sort OOB → SIGSEGV (Heisenbug, vanished under gdb). ASan realtime
+  pinpointed it; offline replay has ONE instance so never crashed. **Fix =
+  stack-private buffer** (removed `static`). Validated: USRP realtime 45s
+  sustained **FCS_OK=46** (was 2/30s + ~50% crash), no crash; file-replay
+  regression intact. ASan flow: `cmake -DCMAKE_CXX_FLAGS="-fsanitize=address -g"`,
+  `make && make install`, run with `LD_PRELOAD=<conda>/lib/libasan.so`. Harnesses:
+  `p147_race_repro.py` (2-instance race repro), `test_usrp_rxonly_instrumented.py`
+  (build-once + gain.set_k sweep + windowed PDU count). **Lesson: any
+  function-local `static` mutable buffer in a multi-instance block is a
+  cross-instance race — keep scratch buffers stack/member-private.** Verdict:
+  `docs/superpowers/notes/2026-07-15-phase147-sync-short-race-fix-verdict.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
