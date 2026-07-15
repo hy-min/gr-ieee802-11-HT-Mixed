@@ -9,10 +9,7 @@ Exit code 0 = trustworthy (PASS), 1 = non-deterministic (FAIL).
 """
 import argparse, os, statistics, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from p148_parse import parse
-
-STAGES = ["sync_long_tag", "frame_detect", "lsig_ok", "ht_cand",
-          "fcs_ok", "fcs_fail", "decoded"]
+from p148_parse import parse, STAGES
 
 
 def run_once(harness, iq, nsamp, err):
@@ -37,7 +34,11 @@ def main():
     rows = []
     for r in range(args.runs):
         err = f"/tmp/p148_run{r}.err"
-        run_once(args.harness, args.iq, nsamp, err)
+        try:
+            run_once(args.harness, args.iq, nsamp, err)
+        except subprocess.CalledProcessError as e:
+            print(f"[run {r}] harness exited {e.returncode} (see {err})", file=sys.stderr)
+            sys.exit(2)
         row = parse(err)
         rows.append(row)
         print(f"[run {r}] fcs_ok={row['fcs_ok']} fcs_fail={row['fcs_fail']} decoded={row['decoded']}",
@@ -56,7 +57,7 @@ def main():
     ok_m, ok_sd, ok_cv, ok_min, ok_max = res['fcs_ok']
     dc_m, dc_sd, dc_cv, dc_min, dc_max = res['decoded']
     full_det = (ok_min == ok_max) and (dc_min == dc_max)
-    trustworthy = dc_cv < args.cv_thresh
+    trustworthy = (dc_m > 0) and (dc_cv < args.cv_thresh)
     print(f"\nDETERMINISM: fcs_ok cv={ok_cv:.3f} [{ok_min}..{ok_max}]  "
           f"decoded cv={dc_cv:.3f} [{dc_min}..{dc_max}]  fully-constant={full_det}")
     print("VERDICT:", "PASS (trustworthy)" if trustworthy

@@ -34,6 +34,8 @@ def parse(path):
                 n["ht_cand"] += 1
             if "[DECODE_SUCCESS]" in line:
                 n["fcs_ok"] += 1
+            # NOTE: decode_mac has other terminal-fail lines (invalid n_pad, viterbi null,
+            # LDPC init failed) that are NOT counted here; decoded may slightly undercount.
             if "[DECODE_FAIL] LDPC FCS error" in line:
                 n["fcs_fail"] += 1
     n["decoded"] = n["fcs_ok"] + n["fcs_fail"]
