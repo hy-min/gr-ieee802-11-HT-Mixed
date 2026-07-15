@@ -64,6 +64,27 @@ static int get_frame_start_offset() {
     return g_frame_start_offset;
 }
 
+// Phase 146 L2 (2026-07-15): noise early-out toggle (default ON). This is a
+// behavior-identical optimization in search_frame_start() — skip the O(n log n)
+// sort + vector allocs when no correlation magnitude reaches the detection floor.
+// The toggle exists for A/B verification and as a safety switch; it is read once
+// at startup (static init) so there is no per-call getenv cost on the hot path.
+// Set IEEE80211_SYNC_LONG_EARLYOUT=0 to disable.
+static bool g_earlyout_inited = false;
+static bool g_earlyout_enabled = true;
+static bool earlyout_enabled() {
+    if (!g_earlyout_inited) {
+        const char* env = std::getenv("IEEE80211_SYNC_LONG_EARLYOUT");
+        if (env && env[0] == '0') {
+            g_earlyout_enabled = false;
+        }
+        fprintf(stderr, "[SYNC_LONG_P146] noise early-out %s\n",
+                g_earlyout_enabled ? "ENABLED (default)" : "DISABLED via IEEE80211_SYNC_LONG_EARLYOUT=0");
+        g_earlyout_inited = true;
+    }
+    return g_earlyout_enabled;
+}
+
 // Phase 133: Multi-feature L-LTF detector
 // Pattern: noise false-positives at FIR (Phase 87 verdict) caused sync_long
 // to produce 156 NOISE frames in 80M samples. Root cause was structured noise
@@ -566,8 +587,40 @@ public:
     {
         bool valid = false;
 
+        // Minimum thresholds (hoisted above the sort so the Phase 146 noise
+        // early-out can use them before any O(n log n) work).
+        // Minimum absolute magnitude for correlation peak detection.
+        // Correct LTF template peak = 0.0225 (after 1/sqrt(52) window scaling).
+        // With signal RMS=0.025: FIR peak ≈ 0.0045. Threshold 0.01 catches weak signals.
+        // Previous value 3.0 was based on an incorrectly scaled x10 template.
+        const double MIN_ABS_MAGNITUDE = 0.01;
+        const double MIN_PEAK_RATIO = 0.30;
+
         // sort list (highest correlation first)
         assert(d_cor.size() == SYNC_LENGTH);
+
+        // Phase 146 L2 (2026-07-15): noise early-out. search_frame_start() runs
+        // every SYNC_LENGTH=320 samples on the full 20 MHz stream (~62,500 calls/sec),
+        // independent of sync_short detections. On noise windows EVERY correlation
+        // magnitude is below MIN_ABS_MAGNITUDE, so the sort + vector building +
+        // candidate loops below are pure waste (sort of a 320-element std::list is
+        // allocation/cache heavy). Do a cheap O(n) max-scan first and bail out before
+        // the O(n log n) sort on ~99.9% of noise windows. This is behavior-identical
+        // to the no-detection fallback path at the bottom (same d_frame_start /
+        // d_freq_offset, returns false); it only skips unreachable work.
+        if (earlyout_enabled()) {
+            double peak_mag = 0.0;
+            for (const auto& e : d_cor) {
+                double m = abs(e.first);
+                if (m > peak_mag) peak_mag = m;
+            }
+            if (peak_mag < MIN_ABS_MAGNITUDE) {
+                d_frame_start = SYNC_LENGTH;
+                d_freq_offset = 0.0f;
+                return false;
+            }
+        }
+
         d_cor.sort(compare_abs);
 
         // copy list in vector for nicer access
@@ -585,14 +638,6 @@ public:
         // one with best amplitude balance and position score.
         double top_mag = abs(get<0>(vec[0]));
         fprintf(stderr, "[SYNC_LONG] Top correlation magnitude: %.4f\n", top_mag);
-
-        // Minimum thresholds (keep from previous implementation)
-        // Minimum absolute magnitude for correlation peak detection.
-        // Correct LTF template peak = 0.0225 (after 1/sqrt(52) window scaling).
-        // With signal RMS=0.025: FIR peak ≈ 0.0045. Threshold 0.01 catches weak signals.
-        // Previous value 3.0 was based on an incorrectly scaled x10 template.
-        const double MIN_ABS_MAGNITUDE = 0.01;
-        const double MIN_PEAK_RATIO = 0.30;
 
         // ============================================================
         // HT-mode: Find ALL candidate pairs in diff range [70, 90]

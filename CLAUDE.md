@@ -84,6 +84,25 @@ following hierarchy applies:
   backpressures USRP source, limiting capture to ~0.04 MHz instead of
   20 MHz. `capture_usrp_txrx.py` removes wifi_phy_rx from capture
   flowgraph to get complete captures.
+- **Phase 146 realtime ROOT CAUSE (NEW 2026-07-15, CORRECTS the above)**:
+  Systematic-debugging found the TRUE mechanism is NOT "sync_long
+  consuming without producing" and NOT compute. It is a **GNU Radio
+  scheduler STALL**: `wifi_phy_rx` is a full transceiver hier used for RX
+  only; its IDLE TX path contains a tag-starved `ofdm_cyclic_prefixer`
+  (waits for a `packet_len` tag that never arrives because `mac_in` is
+  unconnected) which stalls the ENTIRE flowgraph ~5000×.
+  **Evidence (hardware-free, reproducible):** manual RX-only chain runs
+  **207–263 MHz AND decodes (38 L-SIG + FCS_OK)** on real USRP IQ, while
+  the same blocks inside `wifi_phy_hier` run ~0.035 MHz; all threads show
+  0 CPU during the stall; adding a single idle `ofdm_cyclic_prefixer` to a
+  fast chain stalls it regardless of buffer size. Culprit isolated via
+  `p146_bisect.py` (depth 0–5 + `--with-idle-hier` / `--with-ofdm-cp`).
+  **Implication: the decode algorithm is fast and correct; the realtime
+  blocker is a fixable flowgraph-structure bug, NOT the 1.77 rad noise
+  floor.** Fix = RX-only RX path (no idle TX blocks). Harnesses:
+  `p146_rx_throughput_probe.py`, `p146_bisect.py`. REFUTED lever: L2
+  sync_long early-out (sync_long is fast, 263 MHz front-end).
+  Verdict: `docs/superpowers/notes/2026-07-15-phase146-scheduler-stall-rootcause.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
