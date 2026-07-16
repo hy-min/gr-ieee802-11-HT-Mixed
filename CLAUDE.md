@@ -124,6 +124,22 @@ following hierarchy applies:
   function-local `static` mutable buffer in a multi-instance block is a
   cross-instance race — keep scratch buffers stack/member-private.** Verdict:
   `docs/superpowers/notes/2026-07-15-phase147-sync-short-race-fix-verdict.md`.
+- **Phase 150 realtime path SOLIDIFIED (NEW 2026-07-16)**: The working realtime
+  FCS_OK path is now reproducible + regression-gated + reboot-persistent via
+  one command: **`./usrp_realtime_validate.sh`** (~65s; PASS if ground-truth
+  `DECODE_SUCCESS >= 15` across 45s). RF config (antenna/air): `freq=5250
+  tx-gain=0 rx-gain=31.5 rx-scale=40 interval=100ms`. Decoder env = 145c winning
+  (LSIG_RATE_FORCE=0xD + TIMING_OFFSET_APPLY=1 + HDR_COMP_DISABLE=1 +
+  H52_2WAY_DEFAULT=0 + boxcar + adaptive thresh). **Underflow fix persisted
+  across reboot**: `/etc/sysctl.d/99-gr-ieee80211-uhd.conf`
+  (wmem/rmem_max=2453333) + systemd `gr-cpu-performance.service` (governor
+  powersave→performance). Best this session: `DECODE_SUCCESS=55/45s`, arrival
+  12.2%, 0 underflow/overflow. **Ceiling = H52 1.77 rad phase-noise wall
+  (UBX-160 internal LO)** — software/streaming REFUTED on ground-truth testbed
+  (2-way marginal, Wiener/cross-frame hurt); only real lever = external 10 MHz
+  ref clock / GPSDO (unavailable). Offline statistical ruler: `p148_parse.py` /
+  `p148_stats.py` / `p148_funnel.py` / `p150_count_frames.py`. Verdict:
+  `docs/superpowers/notes/2026-07-16-phase150-realtime-path-solidified.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
