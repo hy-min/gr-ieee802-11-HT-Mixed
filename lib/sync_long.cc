@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <list>
 #include <tuple>
 
@@ -165,11 +166,21 @@ public:
           d_sc_r_idx(0),
           d_sum_sc_p(gr_complex(0, 0)),
           d_sum_sc_r(0.0f),
-          SYNC_LENGTH(sync_length)
+          SYNC_LENGTH(sync_length),
+          d_chunk_invariant(false),
+          d_stash_len(0)
     {
 
         set_tag_propagation_policy(block::TPP_DONT);
         d_correlation = (gr_complex*)volk_malloc(sizeof(gr_complex) * 8192, volk_get_alignment());
+
+        // Phase 151: allocate chunk-invariance work buffers + read env gate.
+        d_eff0 = (gr_complex*)volk_malloc(sizeof(gr_complex) * kEffCap, volk_get_alignment());
+        d_eff1 = (gr_complex*)volk_malloc(sizeof(gr_complex) * kEffCap, volk_get_alignment());
+        d_chunk_invariant = (getenv("IEEE80211_SYNC_LONG_CHUNK_INVARIANT") != nullptr);
+        if (d_chunk_invariant) {
+            fprintf(stderr, "[SYNC_LONG_P151] chunk-invariant accumulation ENABLED\n");
+        }
 
         // Phase 133 T3: Initialize Schmidl-Cox ring buffers
         for (int k = 0; k < SCHMIDL_COX_WINDOW; k++) {
@@ -194,6 +205,8 @@ public:
 
     ~sync_long_impl() {
         volk_free(d_correlation);
+        volk_free(d_eff0);
+        volk_free(d_eff1);
     }
 
     int general_work(int noutput,
@@ -334,6 +347,91 @@ public:
         switch (d_state) {
 
         case SYNC: {
+            if (d_chunk_invariant) {
+                // --------------------------------------------------------
+                // Phase 151: chunk-invariant accumulation. Prepend stashed
+                // small-chunk samples so every sample's correlation is
+                // computed exactly once, independent of ninput partitioning.
+                // --------------------------------------------------------
+                int eff_len = d_stash_len + ninput;
+                std::memcpy(d_eff0, d_stash0, d_stash_len * sizeof(gr_complex));
+                std::memcpy(d_eff0 + d_stash_len, in, ninput * sizeof(gr_complex));
+                std::memcpy(d_eff1, d_stash1, d_stash_len * sizeof(gr_complex));
+                std::memcpy(d_eff1 + d_stash_len, in_delayed, ninput * sizeof(gr_complex));
+
+                int i_eff = 0;
+                if (eff_len >= 64) {
+                    int filter_len_ci = std::min(SYNC_LENGTH, eff_len - 63);
+                    d_fir.filterN(d_correlation, d_eff0, filter_len_ci);
+                    while (i_eff + 63 < eff_len) {
+                        // Schmidl-Cox (Phase 133), on the combined port-1 stream.
+                        if (is_schmidl_cox_enabled()) {
+                            const gr_complex* sig = d_eff1;
+                            gr_complex cur = sig[i_eff];
+                            float mag_sq = std::norm(cur);
+                            gr_complex mult = (i_eff >= SCHMIDL_COX_LAG)
+                                ? cur * std::conj(sig[i_eff - SCHMIDL_COX_LAG]) : gr_complex(0, 0);
+                            d_sum_sc_p += mult;
+                            d_sum_sc_p -= d_sc_mult_ring[d_sc_p_idx];
+                            d_sc_mult_ring[d_sc_p_idx] = mult;
+                            d_sc_p_idx = (d_sc_p_idx + 1) % SCHMIDL_COX_WINDOW;
+                            float mag_sq_old = (i_eff >= SCHMIDL_COX_LAG) ? std::norm(sig[i_eff - SCHMIDL_COX_LAG]) : 0.0f;
+                            d_sum_sc_r += mag_sq + mag_sq_old;
+                            d_sum_sc_r -= d_sc_pow_ring[d_sc_r_idx];
+                            d_sc_pow_ring[d_sc_r_idx] = mag_sq + mag_sq_old;
+                            d_sc_r_idx = (d_sc_r_idx + 1) % SCHMIDL_COX_WINDOW;
+                            float metric = -1.0f;
+                            if (i_eff >= SCHMIDL_COX_LAG) {
+                                float p_abs_sq = std::norm(d_sum_sc_p);
+                                float r_sq = d_sum_sc_r * d_sum_sc_r;
+                                metric = p_abs_sq / (r_sq + 1e-9f);
+                            }
+                            d_sc_metric_at.push_back(std::make_pair(metric, d_offset));
+                        }
+
+                        d_cor.push_back(pair<gr_complex, int>(d_correlation[i_eff], d_offset));
+                        i_eff++;
+                        d_offset++;
+
+                        if (d_offset == SYNC_LENGTH) {
+                            bool detected = search_frame_start();
+                            mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
+                            d_offset = 0;
+                            d_count = 0;
+                            if (detected) {
+                                d_state = COPY;
+                            } else {
+                                d_cor.clear();
+                                d_sc_metric_at.clear();
+                                d_state = SYNC;
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // Consumption: the first d_stash_len eff-positions were already
+                // consumed when stashed; only NEW samples count as consumed now.
+                int processed = i_eff;
+                int from_stash = std::min(processed, d_stash_len);
+                int new_consumed = processed - from_stash;
+                int stash_left = d_stash_len - from_stash;
+                if (stash_left > 0) {
+                    std::memmove(d_stash0, d_stash0 + from_stash, stash_left * sizeof(gr_complex));
+                    std::memmove(d_stash1, d_stash1 + from_stash, stash_left * sizeof(gr_complex));
+                }
+                d_stash_len = stash_left;
+                if (processed == 0 && ninput > 0) {
+                    // Chunk too small to correlate: consume into stash (advances
+                    // read ptr => no deadlock) but keep samples for next call.
+                    std::memcpy(d_stash0 + d_stash_len, in, ninput * sizeof(gr_complex));
+                    std::memcpy(d_stash1 + d_stash_len, in_delayed, ninput * sizeof(gr_complex));
+                    d_stash_len += ninput;
+                    new_consumed = ninput;
+                }
+                i = new_consumed;
+                d_sync_samples += i;
+            } else {
             int filter_len = std::min(SYNC_LENGTH, std::max(ninput - 63, 0));
             d_fir.filterN(d_correlation, in, filter_len);
 
@@ -448,6 +546,7 @@ public:
 
             // Track actual SYNC consumption for CFO compensation
             d_sync_samples += i;
+            }  // end else (baseline SYNC path)
 
             break;
         }
@@ -902,6 +1001,26 @@ private:
     gr_complex d_sum_sc_p;
     float d_sum_sc_r;
     std::vector<std::pair<float, int>> d_sc_metric_at;  // (metric, offset), -1.0 = invalid
+
+    // Phase 151: chunk-invariance (deterministic) correlation accumulation.
+    // ROOT CAUSE (Phase 148): the baseline SYNC path consumes small chunks
+    // (ninput<=63) via a deadlock skip WITHOUT computing correlation. d_offset
+    // then lags true consumption by the skipped amount, shifting every
+    // subsequent SYNC_LENGTH correlation window by up to 63 samples. The L-LTF
+    // peak then leaves its +/-50 position tolerance in search_frame_start(),
+    // so the SAME capture yields DIFFERENT detection/decode counts run-to-run.
+    // FIX: stash small chunks and prepend them to the next chunk so EVERY
+    // sample's correlation is computed exactly once, independent of how GNU
+    // Radio partitions the input. Opt-in via
+    // IEEE80211_SYNC_LONG_CHUNK_INVARIANT=1 (default OFF = baseline behavior).
+    bool d_chunk_invariant;
+    int d_stash_len;
+    static constexpr int kStashCap = 128;      // > 63 max pending + margin
+    static constexpr int kEffCap = 8192 + 128; // max ninput (8192) + stash
+    gr_complex d_stash0[kStashCap];            // port-0 pending (too-small chunk)
+    gr_complex d_stash1[kStashCap];            // port-1 pending (aligned for SC)
+    gr_complex* d_eff0;                        // work: stash + chunk (port 0)
+    gr_complex* d_eff1;                        // work: stash + chunk (port 1)
 
     // Lookup helper for Schmidl-Cox metric at given d_offset
     double lookup_sc_metric(int offset) {

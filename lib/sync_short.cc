@@ -27,6 +27,8 @@
 #include <ieee802_11/sync_short.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -48,6 +50,24 @@ using namespace gr::ieee802_11;
 // preventing gap detector from firing during valid frame data.
 static const int GAP_THRESHOLD = 500;
 static const int MAX_SAMPLES = 5400 * 80;
+
+// Phase 151c: parse IEEE80211_SYNC_SHORT_ADAPTIVE_EMA_ALPHA env var.
+// Alpha in [0,1]: 0 = no EMA smoothing (default, preserves original behavior);
+// alpha is the weight given to the freshly computed target, (1-alpha) is the
+// weight of the previous threshold. Empirically some values (e.g. 0.75) can
+// suppress run-to-run jitter in certain chunk partitions, but stability is not
+// guaranteed across all flowgraph buffer configurations.
+static float parse_adaptive_ema_alpha() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_ADAPTIVE_EMA_ALPHA");
+    if (!env || !*env) return 0.0f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v < 0.0 || v > 1.0) {
+        fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] invalid EMA alpha '%s', using 0.0\n", env);
+        return 0.0f;
+    }
+    return static_cast<float>(v);
+}
 
 class sync_short_impl : public sync_short
 {
@@ -75,7 +95,8 @@ public:
                   ? true : false),
           d_corr_window_idx(0),
           d_corr_window_filled(0),
-          d_adaptive_thresh(threshold)
+          d_adaptive_thresh(threshold),
+          d_adaptive_ema_alpha(parse_adaptive_ema_alpha())
     {
         memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
@@ -132,6 +153,17 @@ public:
                     // safe. Offline replay has one instance so never crashed.
                     float sorted_buf[4096];
                     memcpy(sorted_buf, d_corr_window, sizeof(sorted_buf));
+                    // Phase 151b diagnostic: compute a bit-pattern checksum of the
+                    // window BEFORE sorting. This lets us determine whether p90
+                    // jitter comes from different window content (upstream
+                    // chunk-dependent in_cor) or from std::sort order instability.
+                    uint64_t win_cksum = 0;
+                    for (int ck = 0; ck < 4096; ck++) {
+                        uint32_t bits;
+                        static_assert(sizeof(bits) == sizeof(sorted_buf[ck]), "float size");
+                        memcpy(&bits, &sorted_buf[ck], sizeof(bits));
+                        win_cksum ^= (static_cast<uint64_t>(bits) << ((ck % 2) * 32)) ^ ck;
+                    }
                     std::sort(sorted_buf, sorted_buf + d_corr_window_filled);
                     int p90_idx = d_corr_window_filled * 9 / 10;
                     float p90 = sorted_buf[p90_idx];
@@ -147,12 +179,24 @@ public:
                     // trigger "Frame detected!" at 0.05 floor. Real L-STF boxcar
                     // values are ~1.4-2.3 (verified Phase 96-98 cable logs), so
                     // 0.2 floor is below signal but above observed noise.
+                    float prev_thresh = d_adaptive_thresh;
                     d_adaptive_thresh = std::max(std::max(p90 * 1.5f, 0.01f), 0.2f);
+                    // Phase 151c: optionally smooth the threshold with an EMA to
+                    // filter tiny p90 run-to-run jitter caused by chunk-partition
+                    // differences. Default alpha=0 preserves original behavior.
+                    // alpha is the weight given to the NEW target (0..1); values
+                    // close to 0 mean heavy smoothing, values close to 1 mean fast
+                    // tracking.
+                    if (d_adaptive_ema_alpha > 0.0f) {
+                        d_adaptive_thresh = d_adaptive_ema_alpha * d_adaptive_thresh +
+                                            (1.0f - d_adaptive_ema_alpha) * prev_thresh;
+                    }
                     effective_threshold = d_adaptive_thresh;
                     if (d_adaptive_dump) {
                         fprintf(stderr, "[SYNC-SHORT-ADAPTIVE] filled=%d p90=%.6f "
-                                "adaptive_thresh=%.6f\n",
-                                d_corr_window_filled, p90, d_adaptive_thresh);
+                                "adaptive_thresh=%.6f win_cksum=%016lx\n",
+                                d_corr_window_filled, p90, d_adaptive_thresh,
+                                static_cast<unsigned long>(win_cksum));
                     }
                 } else {
                     // Phase 89 T5c: startup gate. Until window is fully populated,
@@ -292,6 +336,9 @@ private:
     int d_corr_window_idx;
     int d_corr_window_filled;
     float d_adaptive_thresh;
+    // Phase 151c: EMA smoothing coefficient for adaptive threshold.
+    // 0.0 = no smoothing (default); values near 1.0 = strong smoothing.
+    const float d_adaptive_ema_alpha;
 };
 
 sync_short::sptr
