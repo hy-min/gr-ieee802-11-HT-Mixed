@@ -250,23 +250,15 @@ public:
             const float POWER_THRESHOLD = 0.01f;
             while (o < ninput && o < noutput && d_copied < MAX_SAMPLES) {
                 float power = std::norm(in[o]);
-                bool high_correlation = (in_cor[o] > d_threshold);
                 bool high_power = (power >= POWER_THRESHOLD);
-                // CRITICAL FIX: Only consider it a valid signal spike if BOTH
-                // correlation AND power are high. During noise-only gaps, the
-                // normalized correlation can spike artificially when instantaneous
-                // noise power is low (division by small number). Requiring high
-                // power prevents false gap-counter resets.
-                if (high_correlation && high_power) {
-                    if (d_plateau < MIN_PLATEAU) {
-                        d_plateau++;
-                    } else {
-                        // Sustained correlation above threshold with real signal power.
-                        // Reset gap detector.
-                        d_below_threshold = 0;
-                    }
+                // Phase 151d: gap detection should rely on power drop, not on
+                // correlation staying above a threshold. During a real frame both
+                // power and correlation are high; in the inter-frame gap power
+                // drops. Requiring high correlation allows noise spikes to keep
+                // resetting the gap counter and traps sync_short in COPY.
+                if (high_power) {
+                    d_below_threshold = 0;
                 } else {
-                    d_plateau = 0;
                     d_below_threshold++;
                     if (d_below_threshold > max_below) max_below = d_below_threshold;
                     // Gap detector: if signal stays weak for GAP_THRESHOLD consecutive
