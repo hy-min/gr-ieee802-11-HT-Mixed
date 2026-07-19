@@ -249,6 +249,9 @@ public:
                 const gr_complex* in_rem = in + copy_start;
                 float min_cor = 1e9, max_cor = -1e9;
                 int max_below = 0;
+                // Phase 155 REFUTED: raising this threshold 0.01 -> 0.3
+                // REGRESSED USRP batch mean 200 -> 102 (real frames harmed).
+                // 0.01 is load-bearing; see p155 verdict before retuning.
                 const float POWER_THRESHOLD = 0.01f;
                 while (o < rem && o < noutput && d_copied < MAX_SAMPLES) {
                     float power = std::norm(in_rem[o]);
@@ -310,6 +313,9 @@ public:
             int max_below = 0;
             // Power threshold for gap detector: noise power ~0.001 (30dB SNR),
             // signal power ~1.0. Use 0.01 as threshold (20dB below signal).
+            // Phase 155 REFUTED raising this to 0.3 (USRP batch mean 200 ->
+            // 102, real frames harmed); 0.01 is load-bearing — do not retune
+            // without a verified model of the regression.
             const float POWER_THRESHOLD = 0.01f;
             while (o < ninput && o < noutput && d_copied < MAX_SAMPLES) {
                 float power = std::norm(in[o]);
