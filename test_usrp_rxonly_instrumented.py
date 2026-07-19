@@ -135,9 +135,9 @@ class InstrumentedRxOnly(gr.top_block):
         self.sync_short_fused = ieee802_11.sync_short_fused(0.01, 3.0, 1024)
         self.sync_short_fused.set_min_output_buffer(BUF)
         # MIN_PLATEAU: Phase 154b default 24 (sweep optimum); env override
-        # matches wifi_phy_hier.py convention (Phase 89). Real L-STF plateau
-        # is ~1600 samples at 20 MHz, so 24 passes real frames while
-        # rejecting noise excursions.
+        # matches wifi_phy_hier.py convention (Phase 89). Real L-STF is
+        # 160 samples at 20 MHz (10x16) -> boxcar plateau ~128; noise
+        # excursions are capped at ~16 (boxcar window), so 24 sits between.
         min_plateau = int(os.environ.get('IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE', '24'))
         self.sync_short = ieee802_11.sync_short(0.01, min_plateau, True, True)
         self.sync_short.set_min_output_buffer(BUF)

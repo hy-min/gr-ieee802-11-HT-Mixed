@@ -145,8 +145,9 @@ following hierarchy applies:
   DECODE_SUCCESS/45s; default locked at **24**, arrival ~44%).
   `IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE=24` is now the harness setdefault
   (test_usrp_rxonly_instrumented.py; env-overridable, C++ default unchanged).
-  Detection requires 25 consecutive above-threshold samples (was 3); real L-STF
-  plateau ~1600 samples always passes, noise boxcar excursions don't. Mechanism
+  Detection requires 25 consecutive above-threshold samples (was 3); real
+  L-STF is 160 samples at 20 MHz (10x16) giving a ~128-sample boxcar
+  plateau, noise boxcar excursions are capped at ~16 (window length). Mechanism
   (from Phase 153 funnel): false wifi_start tags from noise detections yanked
   sync_long out of real-frame alignment — most L-SIG garbage was chain-state
   pollution, not only the 1.77 rad wall. Residual ~20% detection loss is still

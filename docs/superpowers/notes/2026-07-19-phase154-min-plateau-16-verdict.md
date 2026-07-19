@@ -10,8 +10,9 @@
 
 `IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE=16`（Phase 89 预留旋钮）：
 sync_short 检测需要 **17 个连续**超门限样本（原 MIN_PLATEAU=2 → 仅需 3 个）。
-真帧 L-STF 平台 ~1600 样本必过；噪声 boxcar（16 样本平滑）的尖峰很难
-持续 17 个连续样本。
+真帧 L-STF 平台 ~128 样本必过（L-STF=160 样本=10×16 周期，boxcar 满值区
+144-16≈128）；噪声 boxcar（16 样本平滑）的尖峰被窗口长度限制在 ~16，
+很难凑够 17-25 个连续样本。
 
 已设为 `test_usrp_rxonly_instrumented.py` 的 `os.environ.setdefault`
 默认值（与 145c 获胜配置同位置），外部可覆盖。C++ 默认不变（其他用户
