@@ -140,6 +140,19 @@ following hierarchy applies:
   ref clock / GPSDO (unavailable). Offline statistical ruler: `p148_parse.py` /
   `p148_stats.py` / `p148_funnel.py` / `p150_count_frames.py`. Verdict:
   `docs/superpowers/notes/2026-07-16-phase150-realtime-path-solidified.md`.
+- **Phase 154 MIN_PLATEAU=16 BREAKTHROUGH (NEW 2026-07-19)**: Arrival 2.1×
+  (batch mean 59.5±1.7 → **124.5±16.7** DECODE_SUCCESS/45s, arrival ~13%→~28%).
+  `IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE=16` is now the harness setdefault
+  (test_usrp_rxonly_instrumented.py; env-overridable, C++ default unchanged).
+  Detection requires 17 consecutive above-threshold samples (was 3); real L-STF
+  plateau ~1600 samples always passes, noise boxcar excursions don't. Mechanism
+  (from Phase 153 funnel): false wifi_start tags from noise detections yanked
+  sync_long out of real-frame alignment — most L-SIG garbage was chain-state
+  pollution, not only the 1.77 rad wall. Phase 153 funnel (measured):
+  450 sent → 71.5% sync_short detect → 97% frame-start → 69% L-SIG viterbi →
+  17% good L-SIG → 96% HT-SIG → 81% FCS. Verdicts:
+  `docs/superpowers/notes/2026-07-19-phase153-arrival-funnel-verdict.md` +
+  `2026-07-19-phase154-min-plateau-16-verdict.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
