@@ -212,7 +212,7 @@ public:
                     dump_call_count, n, batch_power, d_noise_floor,
                     gate_threshold, gated ? 1 : 0, max_cor, n_above_001, n_above_01);
             dump_call_count++;
-        } else if (dump_enabled && dump_call_count < 3000 &&
+        } else if (dump_enabled && dump_call_count < 1000000 &&
                    d_noise_floor * d_energy_gate_factor > 0.0f &&
                    batch_power > d_noise_floor * d_energy_gate_factor * 5.0f) {
             // Only log spikes where batch_power > 5x gate threshold (signal region)
@@ -220,10 +220,13 @@ public:
             for (int i = 0; i < n; i++) {
                 if (out2[i] > max_cor) max_cor = out2[i];
             }
+            // pos = absolute input sample index (USRP timeline domain) — lets
+            // offline analysis align spikes with sync_short detection positions.
             fprintf(stderr, "[SYNC-SHORT-FUSED-SPIKE] call=%d batch_power=%.6f "
-                    "noise_floor=%.6f gate_thresh=%.6f max_cor=%.4f\n",
+                    "noise_floor=%.6f gate_thresh=%.6f max_cor=%.4f pos=%llu\n",
                     dump_call_count, batch_power, d_noise_floor,
-                    d_noise_floor * d_energy_gate_factor, max_cor);
+                    d_noise_floor * d_energy_gate_factor, max_cor,
+                    (unsigned long long)nitems_read(0));
             dump_call_count++;
         }
 

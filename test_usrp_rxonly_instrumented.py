@@ -27,6 +27,10 @@ os.environ.setdefault('IEEE80211_HDR_COMP_DISABLE', '1')
 os.environ.setdefault('IEEE80211_H52_2WAY_DEFAULT', '0')
 os.environ.setdefault('IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR', '1')
 os.environ.setdefault('IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH', '1')
+# Phase 154: require 17 consecutive above-threshold samples (MIN_PLATEAU=16)
+# instead of 3. Real L-STF plateau is ~1600 samples; noise boxcar excursions
+# rarely sustain 17. USRP batch mean 59.5 -> 124.5 DECODE_SUCCESS/45s.
+os.environ.setdefault('IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE', '16')
 
 from gnuradio import gr, blocks, uhd, fft
 from gnuradio.fft import window
@@ -127,7 +131,11 @@ class InstrumentedRxOnly(gr.top_block):
         # ---- RX-ONLY decode chain ----
         self.sync_short_fused = ieee802_11.sync_short_fused(0.01, 3.0, 1024)
         self.sync_short_fused.set_min_output_buffer(BUF)
-        self.sync_short = ieee802_11.sync_short(0.01, 2, True, True)
+        # MIN_PLATEAU: Phase 154 default 16 (was 2); env override matches
+        # wifi_phy_hier.py convention (Phase 89). Real L-STF plateau is ~1600
+        # samples, so 16 passes real frames while rejecting short noise runs.
+        min_plateau = int(os.environ.get('IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE', '16'))
+        self.sync_short = ieee802_11.sync_short(0.01, min_plateau, True, True)
         self.sync_short.set_min_output_buffer(BUF)
         self.delay = blocks.delay(gr.sizeof_gr_complex, 320)
         self.delay.set_min_output_buffer(BUF)
