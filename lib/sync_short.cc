@@ -212,12 +212,14 @@ public:
             }
 
             int i2;
+            int copy_start = -1;
             for (i2 = 0; i2 < ninput; i2++) {
                 if (in_cor[i2] > effective_threshold) {
                     if (d_plateau < MIN_PLATEAU) {
                         d_plateau++;
 
                     } else {
+                        copy_start = i2;
                         d_state = COPY;
                         d_copied = 0;
                         // Phase 110: Set freq_offset to 0 (was arg(in_abs[i2]) / 16).
@@ -234,6 +236,67 @@ public:
                 } else {
                     d_plateau = 0;
                 }
+            }
+
+            // Phase 151e: instead of returning immediately after detection, continue
+            // copying the remainder of this input chunk in COPY state within the same
+            // general_work call. This removes the scheduler/chunk boundary at frame
+            // start. Consumption is deterministic: exactly the processed region
+            // (consume_each(copy_start + o)), independent of chunk partitioning.
+            if (copy_start >= 0) {
+                int o = 0;
+                const int rem = ninput - copy_start;
+                const gr_complex* in_rem = in + copy_start;
+                float min_cor = 1e9, max_cor = -1e9;
+                int max_below = 0;
+                const float POWER_THRESHOLD = 0.01f;
+                while (o < rem && o < noutput && d_copied < MAX_SAMPLES) {
+                    float power = std::norm(in_rem[o]);
+                    bool high_power = (power >= POWER_THRESHOLD);
+                    if (high_power) {
+                        d_below_threshold = 0;
+                    } else {
+                        d_below_threshold++;
+                        if (d_below_threshold > max_below) max_below = d_below_threshold;
+                        if (d_below_threshold >= GAP_THRESHOLD) {
+                            d_state = SEARCH;
+                            d_below_threshold = 0;
+                            d_copied = 0;
+                            d_plateau = 0;
+                            USRP_LOG( "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
+                                    o, power);
+                            break;
+                        }
+                    }
+                    if (in_cor[copy_start + o] < min_cor) min_cor = in_cor[copy_start + o];
+                    if (in_cor[copy_start + o] > max_cor) max_cor = in_cor[copy_start + o];
+
+                    out[o] = in_rem[o];
+                    o++;
+                    d_copied++;
+                }
+
+                if (o > 0) {
+                    USRP_LOG( "[SYNC-SHORT] COPY work (SEARCH continuation): consumed=%d min_cor=%.4f max_cor=%.4f max_below=%d threshold=%.3f\n",
+                            o, min_cor, max_cor, max_below, d_threshold);
+                }
+
+                if (d_copied == MAX_SAMPLES) {
+                    d_state = SEARCH;
+                }
+
+                // Consume ONLY the processed region (skipped prefix + copied
+                // samples). The while loop can stop before rem when output
+                // space runs out (ninput > noutput, common in unthrottled
+                // loopback with huge chunks), on gap-break, or at MAX_SAMPLES;
+                // consuming the whole ninput then would silently drop frame
+                // samples never written to the output (destroyed frames,
+                // deterministic loopback failure caught in Phase 151e
+                // regression). Unprocessed tail stays buffered for the next
+                // call (COPY branch continues there) — consumption still
+                // equals processed region, so chunk-invariance is preserved.
+                consume_each(copy_start + o);
+                return o;
             }
 
             consume_each(i2);
