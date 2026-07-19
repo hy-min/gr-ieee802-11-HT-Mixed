@@ -74,7 +74,13 @@ echo "[RTV] TX underflow = $UF   RX overflow = $OF   (both should be ~0)"
 echo "==================================================================="
 
 if [ "$rc" -ne 0 ]; then
-  echo "[RTV] FAIL: harness exited rc=$rc (crash/hang?)"; exit 1
+  echo "[RTV] FAIL: harness exited rc=$rc (crash/hang?)"
+  if [ -s "$ERR" ]; then
+    echo "[RTV] --- harness stderr begin ---"
+    cat "$ERR"
+    echo "[RTV] --- harness stderr end ---"
+  fi
+  exit 1
 fi
 if [ "$GT_OK" -ge "$THRESHOLD" ]; then
   echo "[RTV] PASS: DECODE_SUCCESS=$GT_OK >= $THRESHOLD  (realtime path WORKS)"
