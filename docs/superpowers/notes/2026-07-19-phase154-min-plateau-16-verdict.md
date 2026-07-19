@@ -63,3 +63,30 @@ HT-SIG OK 2.2× → FCS 2.1×。各环节增益一致。
 - 验证批：`batch_results/`（=16 6 跑 mean 124.5）
 
 **相关：** [[Phase 153 arrival funnel]], [[Phase 151e]], [[Phase 152]]
+
+---
+
+## Phase 154b 补遗：M 值扫描 → 最优 24（同日稍后）
+
+| M | mean DECODE_SUCCESS/45s | arrival |
+|---|---|---|
+| 2 | 59.5±1.7（n=4） | ~13% |
+| 16 | 124.5±16.7（n=6） | ~28% |
+| **24** | **200.0±8.5（n=3）** | **~44%** |
+| 32 | 202.3±15.7（n=3） | ~45% |
+| 48 | 128.7±11.1（n=3） | ~29% |
+
+- 24-32 为宽平台区，48 出现悬崖（开始误伤真帧 onset 相关性爬升段）。
+  **默认定为 24**（与 32 同均值，std 更紧 8.5 vs 15.7，离悬崖更远）。
+- 残余漏检签名分析（=16 诊断跑，131/650 漏）：56% 直接 COPY 捕获
+  （det before=3-12718）+ 44% 长 COPY episode 远端触发（before 高达
+  548k；噪声功率围绕 gap 检测器 0.01 阈值波动 → gap 计数器被重置 →
+  假 COPY episode 平均 ~6ms）→ 残余 20% 本质仍全是 COPY 捕获，
+  更高 M 直接对症（扫描证实）。
+- **10 MHz loopback 伪影**：`test_direct_loopback.py` 用
+  `wifi_phy_hier(bandwidth=10e6)`，10 MHz 下 L-STF 周期为 8 样本，
+  16-lag boxcar 失配 → M=24 在 loopback 漏检（OK=0）；M=16 勉过。
+  **loopback 回归门在默认配置（M=2）下不受影响（OK=1 已验证）**；
+  sync 调谐是 20 MHz USRP 专属。boxcar+adaptive env 本身就会使
+  10 MHz loopback OK=0（配置域不同，与 M 无关）。
+- 已提交为 harness setdefault 默认 24（可 env 覆盖，C++ 默认不变）。
