@@ -157,9 +157,13 @@ following hierarchy applies:
   gate at default M=2 is unaffected, and boxcar+adaptive env alone breaks
   10 MHz loopback (different config domain). Phase 153 funnel (measured):
   450 sent → 71.5% sync_short detect → 97% frame-start → 69% L-SIG viterbi →
-  17% good L-SIG → 96% HT-SIG → 81% FCS. Verdicts:
+  17% good L-SIG → 96% HT-SIG → 81% FCS. **Phase 155 REFUTED**: raising
+  COPY-state gap-detector POWER_THRESHOLD 0.01→0.3 regressed batch mean
+  200→102.5 (revert restored 217.5, best run 249=55.3%) — 0.01 is
+  load-bearing, do not retune without a verified model. Verdicts:
   `docs/superpowers/notes/2026-07-19-phase153-arrival-funnel-verdict.md` +
-  `2026-07-19-phase154-min-plateau-16-verdict.md`.
+  `2026-07-19-phase154-min-plateau-16-verdict.md` +
+  `2026-07-19-phase155-gap-threshold-refuted.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so

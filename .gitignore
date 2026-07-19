@@ -14,3 +14,4 @@ install/
 test_output*.txt
 docs/superpowers/plans/
 .claude/
+batch_results/
