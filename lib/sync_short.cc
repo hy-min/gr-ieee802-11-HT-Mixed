@@ -69,6 +69,21 @@ static float parse_adaptive_ema_alpha() {
     return static_cast<float>(v);
 }
 
+// Phase 157: parse IEEE80211_SYNC_SHORT_GAP_POWER_THRESHOLD env var.
+// COPY-state gap-detector power threshold. Default 0.01 (baseline, Phase 155
+// showed 0.3 regresses on air). Env-gated for controlled experiments only.
+static float parse_gap_power_threshold() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_GAP_POWER_THRESHOLD");
+    if (!env || !*env) return 0.01f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v <= 0.0) {
+        fprintf(stderr, "[SYNC-SHORT] invalid GAP_POWER_THRESHOLD '%s', using 0.01\n", env);
+        return 0.01f;
+    }
+    return static_cast<float>(v);
+}
+
 class sync_short_impl : public sync_short
 {
 
@@ -252,7 +267,7 @@ public:
                 // Phase 155 REFUTED: raising this threshold 0.01 -> 0.3
                 // REGRESSED USRP batch mean 200 -> 102 (real frames harmed).
                 // 0.01 is load-bearing; see p155 verdict before retuning.
-                const float POWER_THRESHOLD = 0.01f;
+                const float POWER_THRESHOLD = parse_gap_power_threshold();
                 while (o < rem && o < noutput && d_copied < MAX_SAMPLES) {
                     float power = std::norm(in_rem[o]);
                     bool high_power = (power >= POWER_THRESHOLD);
@@ -316,7 +331,7 @@ public:
             // Phase 155 REFUTED raising this to 0.3 (USRP batch mean 200 ->
             // 102, real frames harmed); 0.01 is load-bearing — do not retune
             // without a verified model of the regression.
-            const float POWER_THRESHOLD = 0.01f;
+            const float POWER_THRESHOLD = parse_gap_power_threshold();
             while (o < ninput && o < noutput && d_copied < MAX_SAMPLES) {
                 float power = std::norm(in[o]);
                 bool high_power = (power >= POWER_THRESHOLD);
