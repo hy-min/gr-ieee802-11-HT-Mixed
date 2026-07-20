@@ -49,7 +49,7 @@ def run_stream(power, cor, redetect_on):
 
 
 def build_scenario_a():
-    """fill(4500) + false-detect(30) + trap(3000) + L-STF(160) + data(400) + gap(600)."""
+    """fill(4500) + false-detect(30) + trap(8000) + L-STF(160) + data(400) + gap(600)."""
     power, cor = [], []
 
     def seg(p, c, n):
@@ -59,11 +59,17 @@ def build_scenario_a():
     seg(0.005, 0.15, 4500)          # fill 4096-sample adaptive window, no detection
     seg(0.005, 0.40, 30)            # weak false detection (25th sample -> COPY)
     # trap: noise hovers below gap threshold, power spike every 100 samples
-    # resets the gap counter -> COPY never exits (the Phase 153 trap)
-    for k in range(30):
+    # resets the gap counter -> COPY never exits (the Phase 153 trap).
+    # Trap length is chosen to keep the L-STF out of the false-detection
+    # chunk's adaptive-window look-ahead: the SEARCH branch fills the
+    # 4096-sample window with the WHOLE chunk before scanning, so a trap
+    # shorter than ~4096 samples would let the L-STF/data pollute p90 and
+    # kill the false detection. Assumes the environment's ~4096-sample
+    # chunking.
+    for k in range(80):
         seg(0.005, 0.15, 99)
         seg(0.02, 0.15, 1)          # gap-counter reset spike
-    lstf_in_start = len(power)      # = 4500+30+3000 = 7530
+    lstf_in_start = len(power)      # = 4500+30+8000 = 12530
     seg(3.0, 1.8, 160)              # real L-STF arrives DURING the trap
     seg(3.0, 0.3, 400)              # rest of frame (high power, weak corr)
     seg(0.005, 0.1, 600)            # gap -> exit COPY
