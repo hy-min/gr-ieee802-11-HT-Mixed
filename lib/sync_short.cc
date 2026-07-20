@@ -289,6 +289,10 @@ public:
                         // range). frame_equalizer handles its own CFO/SFO via L-LTF.
                         d_freq_offset = 0;
                         d_plateau = 0;
+                        // Phase 158: arm re-detection for the new COPY episode.
+                        d_redetect_plateau = 0;
+                        d_redetect_cooldown = false;
+                        d_redetect_seen_drop = false;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i2);
                         dout << "SHORT Frame!" << std::endl;
                         USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f thresh=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
@@ -335,6 +339,11 @@ public:
                     }
                     if (in_cor[copy_start + o] < min_cor) min_cor = in_cor[copy_start + o];
                     if (in_cor[copy_start + o] > max_cor) max_cor = in_cor[copy_start + o];
+
+                    // Phase 158
+                    copy_redetect_step(power, in_cor[copy_start + o],
+                                       nitems_written(0) + o,
+                                       nitems_read(0) + copy_start + o);
 
                     out[o] = in_rem[o];
                     o++;
@@ -407,6 +416,10 @@ public:
                 if (in_cor[o] < min_cor) min_cor = in_cor[o];
                 if (in_cor[o] > max_cor) max_cor = in_cor[o];
 
+                // Phase 158
+                copy_redetect_step(power, in_cor[o],
+                                   nitems_written(0) + o, nitems_read(0) + o);
+
                 out[o] = in[o];  // CFO compensation disabled - no real CFO in simulation
                 o++;
                 d_copied++;
@@ -430,6 +443,52 @@ public:
 
         throw std::runtime_error("sync short: unknown state");
         return 0;
+    }
+
+    // Phase 158: COPY-state smart re-detection step ("refractory but not blind").
+    // Called once per copied sample from both COPY loops. See verdict:
+    // docs/superpowers/notes/2026-07-19-phase157-refractory-model-verdict.md
+    // out_idx/in_idx are the ABSOLUTE stream positions of this sample for tagging.
+    inline void copy_redetect_step(float power, float cor, uint64_t out_idx, uint64_t in_idx)
+    {
+        if (!d_copy_redetect) return;
+        d_copy_power_ema += (power - d_copy_power_ema) * (1.0f / 512.0f);
+        if (d_redetect_cooldown && d_copy_power_ema >= d_copy_redetect_ema_max) {
+            d_redetect_cooldown = false;
+        }
+        const float strong_thresh =
+            std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
+            d_copy_redetect_factor;
+        if (cor <= strong_thresh) {
+            d_redetect_seen_drop = true;
+            d_redetect_plateau = 0;
+            return;
+        }
+        if (!d_redetect_seen_drop || d_redetect_cooldown ||
+            d_copy_power_ema >= d_copy_redetect_ema_max) {
+            d_redetect_plateau = 0;
+            return;
+        }
+        if (d_redetect_plateau < static_cast<int>(MIN_PLATEAU)) {
+            d_redetect_plateau++;
+            return;
+        }
+        // FIRE: clearly stronger sustained L-STF plateau inside a false COPY.
+        // Re-tag frame start here; sync_long's COPY-state wifi_start handler
+        // (d_count >= 1000) re-syncs from this point. Episode NOT shortened.
+        insert_tag(out_idx, 0.0, in_idx);
+        d_copied = 0;  // new frame gets the full MAX_SAMPLES budget
+        d_below_threshold = 0;
+        d_plateau = 0;
+        d_redetect_plateau = 0;
+        d_redetect_cooldown = true;
+        char p158buf[192];
+        snprintf(p158buf, sizeof(p158buf),
+                 "[SYNC-SHORT-P158] COPY re-detect: out=%llu corr=%.4f "
+                 "strong_thresh=%.4f ema=%.4f\n",
+                 (unsigned long long)out_idx, cor, strong_thresh, d_copy_power_ema);
+        USRP_LOG("%s", p158buf);
+        fprintf(stderr, "%s", p158buf);
     }
 
     void insert_tag(uint64_t item, double freq_offset, uint64_t input_item)
