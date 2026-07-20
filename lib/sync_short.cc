@@ -84,6 +84,50 @@ static float parse_gap_power_threshold() {
     return static_cast<float>(v);
 }
 
+// Phase 158: COPY-state smart re-detection ("refractory but not blind").
+// Phase 157 confirmed the long COPY episode is a protective refractory period
+// against noise-burst re-triggering (gap 0.3 -> 22x re-trigger explosion ->
+// false wifi_start bombardment -> sync_long de-aligned). Do NOT shorten COPY
+// episodes. Instead, keep the refractory but let a CLEARLY STRONGER real L-STF
+// plateau arriving during a false COPY re-trigger a wifi_start tag so
+// sync_long re-syncs (sync_long.cc COPY-state wifi_start handler, d_count>=1000
+// -> direct SYNC). Master switch default OFF.
+static bool parse_copy_redetect_enabled() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_COPY_REDETECT");
+    return env && *env && env[0] != '0';
+}
+
+// Strength gate: re-detect requires in_cor > FACTOR * effective threshold.
+// Noise boxcar ~0.13-0.2; real L-STF boxcar ~1.4-2.3; adaptive floor 0.2.
+// 5 x 0.2 = 1.0 sits between. Must be > 1.0.
+static float parse_copy_redetect_factor() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_COPY_REDETECT_FACTOR");
+    if (!env || !*env) return 5.0f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v <= 1.0) {
+        fprintf(stderr, "[SYNC-SHORT] invalid COPY_REDETECT_FACTOR '%s', using 5.0\n", env);
+        return 5.0f;
+    }
+    return static_cast<float>(v);
+}
+
+// Power-EMA gate ceiling: re-detect armed only when the COPY-state power EMA
+// (alpha 1/512) is below this. Trap noise ~0.005-0.02; real frame power 3-28.
+// This is what distinguishes "L-STF of a NEW frame while trapped" from "L-LTF /
+// CP correlation inside a correctly-detected frame" (both have strong corr).
+static float parse_copy_redetect_ema_max() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_COPY_REDETECT_EMA_MAX");
+    if (!env || !*env) return 0.5f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v <= 0.0) {
+        fprintf(stderr, "[SYNC-SHORT] invalid COPY_REDETECT_EMA_MAX '%s', using 0.5\n", env);
+        return 0.5f;
+    }
+    return static_cast<float>(v);
+}
+
 class sync_short_impl : public sync_short
 {
 
@@ -111,7 +155,10 @@ public:
           d_corr_window_idx(0),
           d_corr_window_filled(0),
           d_adaptive_thresh(threshold),
-          d_adaptive_ema_alpha(parse_adaptive_ema_alpha())
+          d_adaptive_ema_alpha(parse_adaptive_ema_alpha()),
+          d_copy_redetect(parse_copy_redetect_enabled()),
+          d_copy_redetect_factor(parse_copy_redetect_factor()),
+          d_copy_redetect_ema_max(parse_copy_redetect_ema_max())
     {
         memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
@@ -415,6 +462,14 @@ private:
     // Phase 151c: EMA smoothing coefficient for adaptive threshold.
     // 0.0 = no smoothing (default); values near 1.0 = strong smoothing.
     const float d_adaptive_ema_alpha;
+    // Phase 158: COPY-state smart re-detection state (opt-in).
+    const bool d_copy_redetect;
+    const float d_copy_redetect_factor;
+    const float d_copy_redetect_ema_max;
+    float d_copy_power_ema = 0.0f;      // EMA (alpha 1/512) of COPY-state sample power
+    int d_redetect_plateau = 0;         // consecutive above-strong-threshold samples
+    bool d_redetect_cooldown = false;   // set after a re-detect fires; clears when EMA >= EMA_MAX
+    bool d_redetect_seen_drop = false;  // corr dropped below strong gate at least once since COPY entry
 };
 
 sync_short::sptr
