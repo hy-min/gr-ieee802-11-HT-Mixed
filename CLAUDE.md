@@ -182,6 +182,30 @@ following hierarchy applies:
   cable rx-gain must be ≥20 (lower pushes boxcar near the 0.2 floor).
   Verdicts: `docs/superpowers/notes/2026-07-19-phase156-cable-experiment-verdict.md`
   + `2026-07-19-phase157-refractory-model-verdict.md`.
+- **Phase 158 COPY-state smart re-detection PRELIMINARY POSITIVE (NEW 2026-07-20)**:
+  Phase 157's "refractory but not blind" prescription implemented in
+  `lib/sync_short.cc` (commits 982d417/5c98910/diag 1ff4970). 4-gate
+  re-detect inside COPY (seen_drop / cooldown / power-EMA<0.5 /
+  corr>5×thresh sustained >MIN_PLATEAU) re-tags `wifi_start` for a clearly
+  stronger L-STF during a false COPY trap WITHOUT shortening the refractory.
+  TDD unit test 3/3 GREEN (`p158_redetect_unit.py`); loopback OK=1 both
+  configs. USRP A/B: control n=11 169.7±13.9 vs experiment n=2 mean 195.0
+  (**+25.3/+14.9%**), perf-governor spot check +17 — consistent direction,
+  mechanism confirmed firing on air (17 fires/45s, corr 1.03-2.68), but
+  experiment n=3 total → **PRELIMINARY, not CONFIRMED** (needs full N=16).
+  New env (all opt-in, default OFF): `IEEE80211_SYNC_SHORT_COPY_REDETECT`,
+  `_FACTOR` (5.0), `_EMA_MAX` (0.5), `_DIAG` (per-episode stats).
+  **Operational lessons**: harness stderr lands in `/tmp/rt_validate.err`
+  (overwritten per run; batch `run_XX.err` is only script stderr — counting
+  fires there gives false zeros); check CPU governor before every batch
+  (2026-07-20 low baseline 162-170 vs historical 200 was powersave, NOT
+  device drift — `sudo systemctl start gr-cpu-performance.service`);
+  batch script has no hang timeout — killing a batch mid-run can leave the
+  X310 in a bad state and hang the next UHD init (recover: kill stale
+  processes + `uhd_usrp_probe` nudge). Verdict:
+  `docs/superpowers/notes/2026-07-20-phase158-copy-redetect-verdict.md`.
+  Next: full N=16 A/B under performance governor; if CONFIRMED, FACTOR
+  sweep (5→3/4) + outlier-fire (corr 44.8/105.3 transients) upper guard.
 - **Phase 158-W32 boxcar window axis CLOSED (NEW 2026-07-20)**: User-proposed
   boxcar smoothing window 16→32 tested as single-variable A/B (pre-registered
   prediction: <1σ difference — CONFIRMED). USRP back-to-back N=16 each:
