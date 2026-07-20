@@ -128,6 +128,12 @@ static float parse_copy_redetect_ema_max() {
     return static_cast<float>(v);
 }
 
+// Phase 158 diagnostic: per-COPY-episode stats at episode end (opt-in).
+static bool parse_copy_redetect_diag() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_COPY_REDETECT_DIAG");
+    return env && *env && env[0] != '0';
+}
+
 class sync_short_impl : public sync_short
 {
 
@@ -158,7 +164,8 @@ public:
           d_adaptive_ema_alpha(parse_adaptive_ema_alpha()),
           d_copy_redetect(parse_copy_redetect_enabled()),
           d_copy_redetect_factor(parse_copy_redetect_factor()),
-          d_copy_redetect_ema_max(parse_copy_redetect_ema_max())
+          d_copy_redetect_ema_max(parse_copy_redetect_ema_max()),
+          d_copy_redetect_diag(parse_copy_redetect_diag())
     {
         memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
@@ -293,6 +300,9 @@ public:
                         d_redetect_plateau = 0;
                         d_redetect_cooldown = false;
                         d_redetect_seen_drop = false;
+                        // Phase 158 diag: reset per-episode accumulators.
+                        d_episode_len = 0; d_episode_max_cor = 0.0f;
+                        d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i2);
                         dout << "SHORT Frame!" << std::endl;
                         USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f thresh=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
@@ -332,6 +342,17 @@ public:
                             d_below_threshold = 0;
                             d_copied = 0;
                             d_plateau = 0;
+                            if (d_copy_redetect_diag) {
+                                fprintf(stderr,
+                                    "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                                    "ema=%.4f max_plateau=%d cause=%s\n",
+                                    d_episode_len, d_episode_max_cor,
+                                    std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
+                                        d_copy_redetect_factor,
+                                    d_copy_power_ema, d_episode_max_plateau, "gap");
+                                d_episode_len = 0; d_episode_max_cor = 0.0f;
+                                d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
+                            }
                             USRP_LOG( "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
                                     o, power);
                             break;
@@ -356,6 +377,17 @@ public:
                 }
 
                 if (d_copied == MAX_SAMPLES) {
+                    if (d_copy_redetect_diag) {
+                        fprintf(stderr,
+                            "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                            "ema=%.4f max_plateau=%d cause=%s\n",
+                            d_episode_len, d_episode_max_cor,
+                            std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
+                                d_copy_redetect_factor,
+                            d_copy_power_ema, d_episode_max_plateau, "max_samples");
+                        d_episode_len = 0; d_episode_max_cor = 0.0f;
+                        d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
+                    }
                     d_state = SEARCH;
                 }
 
@@ -408,6 +440,17 @@ public:
                         d_below_threshold = 0;
                         d_copied = 0;
                         d_plateau = 0;
+                        if (d_copy_redetect_diag) {
+                            fprintf(stderr,
+                                "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                                "ema=%.4f max_plateau=%d cause=%s\n",
+                                d_episode_len, d_episode_max_cor,
+                                std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
+                                    d_copy_redetect_factor,
+                                d_copy_power_ema, d_episode_max_plateau, "gap");
+                            d_episode_len = 0; d_episode_max_cor = 0.0f;
+                            d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
+                        }
                         USRP_LOG( "[SYNC-SHORT] Gap detected after %d samples (power=%.4f), transitioning to SEARCH\n",
                                 o, power);
                         break;
@@ -431,6 +474,17 @@ public:
             }
 
             if (d_copied == MAX_SAMPLES) {
+                if (d_copy_redetect_diag) {
+                    fprintf(stderr,
+                        "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                        "ema=%.4f max_plateau=%d cause=%s\n",
+                        d_episode_len, d_episode_max_cor,
+                        std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
+                            d_copy_redetect_factor,
+                        d_copy_power_ema, d_episode_max_plateau, "max_samples");
+                    d_episode_len = 0; d_episode_max_cor = 0.0f;
+                    d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
+                }
                 d_state = SEARCH;
             }
 
@@ -451,8 +505,24 @@ public:
     // out_idx/in_idx are the ABSOLUTE stream positions of this sample for tagging.
     inline void copy_redetect_step(float power, float cor, uint64_t out_idx, uint64_t in_idx)
     {
+        if (d_copy_redetect_diag) {
+            const float strong_thresh_d =
+                std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
+                d_copy_redetect_factor;
+            d_episode_len++;
+            if (cor > d_episode_max_cor) d_episode_max_cor = cor;
+            if (cor > strong_thresh_d) {
+                d_episode_cur_plateau++;
+                if (d_episode_cur_plateau > d_episode_max_plateau)
+                    d_episode_max_plateau = d_episode_cur_plateau;
+            } else {
+                d_episode_cur_plateau = 0;
+            }
+        }
+        if (d_copy_redetect || d_copy_redetect_diag) {
+            d_copy_power_ema += (power - d_copy_power_ema) * (1.0f / 512.0f);
+        }
         if (!d_copy_redetect) return;
-        d_copy_power_ema += (power - d_copy_power_ema) * (1.0f / 512.0f);
         if (d_redetect_cooldown && d_copy_power_ema >= d_copy_redetect_ema_max) {
             d_redetect_cooldown = false;
         }
@@ -525,6 +595,12 @@ private:
     const bool d_copy_redetect;
     const float d_copy_redetect_factor;
     const float d_copy_redetect_ema_max;
+    const bool d_copy_redetect_diag;
+    // Episode diagnostic accumulators (active when d_copy_redetect_diag).
+    int d_episode_len = 0;          // samples copied this COPY episode
+    float d_episode_max_cor = 0.0f; // max in_cor this episode
+    int d_episode_max_plateau = 0;  // max consecutive samples with cor > strong gate
+    int d_episode_cur_plateau = 0;
     float d_copy_power_ema = 0.0f;      // EMA (alpha 1/512) of COPY-state sample power
     int d_redetect_plateau = 0;         // consecutive above-strong-threshold samples
     bool d_redetect_cooldown = false;   // set after a re-detect fires; clears when EMA >= EMA_MAX
