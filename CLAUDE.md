@@ -182,6 +182,21 @@ following hierarchy applies:
   cable rx-gain must be ≥20 (lower pushes boxcar near the 0.2 floor).
   Verdicts: `docs/superpowers/notes/2026-07-19-phase156-cable-experiment-verdict.md`
   + `2026-07-19-phase157-refractory-model-verdict.md`.
+- **Phase 158-W32 boxcar window axis CLOSED (NEW 2026-07-20)**: User-proposed
+  boxcar smoothing window 16→32 tested as single-variable A/B (pre-registered
+  prediction: <1σ difference — CONFIRMED). USRP back-to-back N=16 each:
+  W=16 162.44±15.93 vs W=32 161.81±15.86 (Δ=-0.4%, ~1/9 of the standard
+  error). Mechanism: adaptive threshold (p90×1.5) cancels white-noise √W
+  gains (synthetic margin only 1.18×); trap-causing structured bursts
+  (DC/LO spurs) integrate coherently so windows don't suppress them
+  (re-confirms Phase 88); residual ~20% loss lives in COPY state where the
+  detector isn't running. **Do not retest longer windows.** New env
+  `IEEE80211_SYNC_SHORT_FUSED_BOXCAR_LEN` (opt-in, default 16; 8/32/64
+  selectable). Lesson: control was 162 vs historical 200 — device drift is
+  real, always run fresh back-to-back controls. Verdict:
+  `docs/superpowers/notes/2026-07-20-phase158w32-boxcar-len-verdict.md`.
+  Next: Phase 158 COPY-state smart re-detection, plan
+  `docs/superpowers/plans/2026-07-20-phase158-copy-redetect.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
