@@ -11,8 +11,29 @@
 #include <ieee802_11/sync_short_fused.h>
 
 #include <cmath>
+#include <cstdlib>
 
 using namespace gr::ieee802_11;
+
+// Phase 158-W32 experiment: boxcar smoothing window length. Default 16 (one
+// L-STF period, Phase 89 baseline — matched filter to the period-16
+// structure). Longer windows suppress WHITE noise variance ~sqrt(W/16), but
+// (a) smear the L-STF rising edge (tag latency shifts downstream timing),
+// (b) shrink the full-height plateau to ~(144-W) samples, and (c) do NOT
+// suppress structured bursts (DC offset / LO spurs integrate coherently —
+// Phase 88's MA(48)/MA(64) long-window design was REFUTED on this axis).
+// Opt-in experiment only; powers of two 8..64 (bitmask ring).
+static int parse_boxcar_len() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_FUSED_BOXCAR_LEN");
+    if (!env || !*env) return 16;
+    char* end = nullptr;
+    long v = std::strtol(env, &end, 10);
+    if (end == env || (v != 8 && v != 16 && v != 32 && v != 64)) {
+        fprintf(stderr, "[SYNC-SHORT-FUSED] invalid BOXCAR_LEN '%s', using 16\n", env);
+        return 16;
+    }
+    return static_cast<int>(v);
+}
 
 class sync_short_fused_impl : public sync_short_fused
 {
@@ -40,6 +61,8 @@ public:
           d_schmidl_cox_dump(
               getenv("IEEE80211_SYNC_SHORT_FUSED_SCHMIDL_COX_DUMP")
                   ? true : false),
+          d_boxcar_len(parse_boxcar_len()),
+          d_boxcar_mask(d_boxcar_len - 1),
           d_noise_est_window(noise_est_window),
           d_alpha(std::exp(-1.0f / static_cast<float>(noise_est_window))),
           d_noise_floor(1e-6f),
@@ -63,10 +86,15 @@ public:
         for (int i = 0; i < 16; i++) d_delay_ring[i] = gr_complex(0, 0);
         for (int i = 0; i < 48; i++) d_mult_ring[i] = gr_complex(0, 0);
         for (int i = 0; i < 64; i++) d_mag_sq_ring[i] = 0.0f;
-        for (int i = 0; i < 16; i++) d_boxcar_ring[i] = 0.0f;
+        for (int i = 0; i < 64; i++) d_boxcar_ring[i] = 0.0f;
         // Phase 132: 32-sample rings for Schmidl-Cox two-period correlation
         for (int i = 0; i < 32; i++) d_sc_mult_ring[i] = gr_complex(0, 0);
         for (int i = 0; i < 32; i++) d_sc_pow_ring[i] = 0.0f;
+
+        if (d_boxcar_len != 16) {
+            fprintf(stderr, "[SYNC-SHORT-FUSED] boxcar_len=%d (Phase 158-W32 experiment)\n",
+                    d_boxcar_len);
+        }
     }
 
     int general_work(int noutput_items,
@@ -173,8 +201,8 @@ public:
                 d_sum_boxcar += ac_raw;
                 d_sum_boxcar -= d_boxcar_ring[d_boxcar_idx];
                 d_boxcar_ring[d_boxcar_idx] = ac_raw;
-                d_boxcar_idx = (d_boxcar_idx + 1) & 0xF;  // mod-16 via bitmask
-                out2_val = d_sum_boxcar;  // raw sum; ~16*sigma for noise, ~16*peak for L-STF
+                d_boxcar_idx = (d_boxcar_idx + 1) & d_boxcar_mask;
+                out2_val = d_sum_boxcar;  // raw sum; ~len*sigma for noise, ~len*peak for L-STF
             } else {
                 out2_val = (ma_ff > 1e-12f) ? (std::abs(ma_cc) / ma_ff) : 0.0f;
             }
@@ -240,6 +268,8 @@ private:
     const bool d_boxcar_dump;
     const bool d_use_schmidl_cox;   // Phase 132
     const bool d_schmidl_cox_dump;  // Phase 132
+    const int d_boxcar_len;         // Phase 158-W32: boxcar window (default 16)
+    const int d_boxcar_mask;        // d_boxcar_len - 1 (power-of-two bitmask)
     const int d_noise_est_window;
     const float d_alpha;
 
@@ -249,7 +279,7 @@ private:
     gr_complex d_delay_ring[16];
     gr_complex d_mult_ring[48];
     float d_mag_sq_ring[64];
-    float d_boxcar_ring[16];  // Phase 89: 16-sample boxcar over raw autocorr
+    float d_boxcar_ring[64];  // Phase 89: boxcar over raw autocorr (len via env, default 16)
     // Phase 132: Schmidl-Cox 32-sample rings
     gr_complex d_sc_mult_ring[32];  // sum of in[i]*conj(in[i-16]) over 32 samples
     float d_sc_pow_ring[32];        // sum of |in[i]|^2 over 32 samples
