@@ -165,6 +165,23 @@ following hierarchy applies:
   `docs/superpowers/notes/2026-07-19-phase153-arrival-funnel-verdict.md` +
   `2026-07-19-phase154-min-plateau-16-verdict.md` +
   `2026-07-19-phase155-gap-threshold-refuted.md`.
+- **Phase 157 refractory model CONFIRMED (NEW 2026-07-19)**: Phase 155's
+  gap-threshold regression root-caused — the 0.01 long COPY episode is a
+  protective **refractory period** suppressing noise-burst re-triggering of
+  false `wifi_start` tags. Gap 0.3 dismantles it: rapid re-triggers (<5k
+  sample gaps) exploded **10→218 (22×)** on air → sync_long yanked out of
+  alignment (good L-SIG -13%, FCS -14%). Truncation model REFUTED on SMA
+  cable (decode attempts == HT-SIG OK, zero truncation). **Do not shorten
+  COPY episodes; the residual ~20% COPY capture must be attacked with
+  "refractory but not blind" (COPY-state re-detect only for a clearly
+  stronger real L-STF plateau).** New env
+  `IEEE80211_SYNC_SHORT_GAP_POWER_THRESHOLD` (opt-in, default 0.01).
+  Phase 156 (cable experiment): COPY capture is noise-driven (occupancy
+  16.5%→2.4%, detection 86.6% on cable) but arrival only 48%→52% — the
+  bottleneck has substantively moved to the **1.77 rad LO phase-noise wall**;
+  cable rx-gain must be ≥20 (lower pushes boxcar near the 0.2 floor).
+  Verdicts: `docs/superpowers/notes/2026-07-19-phase156-cable-experiment-verdict.md`
+  + `2026-07-19-phase157-refractory-model-verdict.md`.
 - **IEEE80211_HDR_COMP_DISABLE=1** — Phase 145c (opt-in, default OFF):
   Skips header CFO/SFO compensation for L-SIG/HT-SIG0/HT-SIG1. On USRP,
   L-LTF0/L-LTF1 phase_diff is dominated by ~1.77 rad per-SC noise, so
