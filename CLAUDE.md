@@ -206,6 +206,24 @@ following hierarchy applies:
   `docs/superpowers/notes/2026-07-20-phase158-copy-redetect-verdict.md`.
   Next: full N=16 A/B under performance governor; if CONFIRMED, FACTOR
   sweep (5→3/4) + outlier-fire (corr 44.8/105.3 transients) upper guard.
+- **Phase 158-ABAB NOT CONFIRMED — axis CLOSED (NEW 2026-08-04)**: User-approved
+  time-saving replacement for the full N=16 A/B: **N=8 interleaved ABAB**
+  (`p158_abab_batch.py` — odd pairs OFF→ON / even ON→OFF cancels time drift;
+  240s hang timeout + killpg + probe retry per attempt fixes P158 lesson #3;
+  pre-registered paired t p<0.05 & mean>0 → CONFIRMED). 8/8 pairs valid,
+  0 retries, 0 UF/OF: diffs [−27,−25,+32,−8,+8,+7,+4,−40] → **mean −6.12,
+  t(7)=−0.74, p=0.485 (Wilcoxon 0.547)**. 95% CI [−25.8,+13.5] puts the
+  preliminary +25.3 OUTSIDE → it was cross-block environmental confounding
+  (control arm drifted 165–221 within 20 min; drift ±30 > the "effect").
+  Mechanism analysis: ON-arm fires only ~2.9/45s (vs 17 in the preliminary
+  DIAG run) — even 100% conversion is +1.6% arrival, so FACTOR=5 was never
+  a lever; FACTOR sweep not recommended (approaches P155/P157 refractory-
+  damage region; P156 showed the bottleneck is the LO wall). Feature stays
+  opt-in default OFF. **Methodology upgrade: `p158_abab_batch.py` is now the
+  STANDARD harness for all single-variable A/B** (paired design removes the
+  ±30 time-drift confound that made un-paired cross-block comparisons
+  unreliable). Verdict:
+  `docs/superpowers/notes/2026-08-04-phase158-abab-not-confirmed.md`.
 - **Phase 158-W32 boxcar window axis CLOSED (NEW 2026-07-20)**: User-proposed
   boxcar smoothing window 16→32 tested as single-variable A/B (pre-registered
   prediction: <1σ difference — CONFIRMED). USRP back-to-back N=16 each:
