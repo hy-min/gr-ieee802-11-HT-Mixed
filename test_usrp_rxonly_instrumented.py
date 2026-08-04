@@ -34,6 +34,13 @@ os.environ.setdefault('IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH', '1')
 # NOTE: 10 MHz loopback needs M<=16 (8-sample L-STF period artifact) — the
 # loopback regression gate runs with default M=2 and is unaffected.
 os.environ.setdefault('IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE', '24')
+# Phase 159: trigger-strength margin 2.5 CONFIRMED (N=8 interleaved ABAB
+# 2026-08-04, +55.8 DS p=0.0001, arrival +46.8 p=0.0002). Kills 99.6% of
+# noise-trap episodes (5015->18) so sync_long's diet is real-frame-only;
+# chain success 36%->51%. Real frames trigger at max_cor>=500 (2500x gate),
+# traps at 0.26-0.36 (1.3-1.8x) — the 0.4-10 band is empty, so 2.5 loses no
+# real frames. Env-overridable; C++ default unchanged (1.0).
+os.environ.setdefault('IEEE80211_SYNC_SHORT_TRIGGER_MARGIN', '2.5')
 
 from gnuradio import gr, blocks, uhd, fft
 from gnuradio.fft import window

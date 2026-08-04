@@ -1,26 +1,34 @@
 #!/usr/bin/env python3
-"""Phase 158 N=8 interleaved ABAB confirmation batch.
+"""Interleaved ABAB single-variable A/B harness for USRP realtime validation.
 
-Design (user-approved 2026-08-04, supersedes full N=16 A/B):
-  - 8 pairs; each pair = control(OFF) + experiment(COPY_REDETECT=1) back-to-back.
+History:
+  - Phase 158 (2026-08-04): N=8 ABAB replaced the full N=16 A/B (user-approved
+    time saver); proved the preliminary +25.3 was cross-block confounding.
+  - Now the STANDARD harness for all single-variable USRP A/B experiments
+    (P158-ABAB verdict: un-paired cross-block comparisons carry ~±30 drift
+    confound on this testbed; paired interleaving is mandatory).
+
+Design:
+  - N pairs; each pair = control(env absent) + experiment(env set) back-to-back.
   - Within-pair order alternates (odd pairs A->B, even pairs B->A) to cancel
-    linear time-of-day drift (P158 verdict lesson #4: baseline is
-    time/environment-modulated; back-to-back comparison is the only ruler).
-  - Per-run env identical except the single arm variable
-    IEEE80211_SYNC_SHORT_COPY_REDETECT (unset/'0' = OFF, '1' = ON).
-  - Hang timeout per attempt (P158 verdict lesson #3: batch without timeout
-    can wedge the X310 -> next UHD init hangs forever). On timeout: SIGKILL
-    the whole process group, uhd_usrp_probe nudge, retry (max 3 attempts).
+    linear time-of-day drift.
+  - Single variable: --exp-env NAME=VALUE (control arm unsets NAME).
+  - Hang timeout per attempt (P158 lesson #3): on timeout SIGKILL the whole
+    process group, uhd_usrp_probe nudge, retry (max 3 attempts).
   - Infra failures (UHD/RFNoC init fail on ALL attempts, or repeated hang)
-    are excluded from decoder statistics (P152 convention).
+    excluded from decoder statistics (P152 convention).
+  - Per-run metrics: DECODE_SUCCESS (primary, ground truth) + arrival proxy
+    (count of LSIG_DECODE enc=0 len=72 lines in harness stderr — frames that
+    reached a correct L-SIG; decode rate = DS/arrived, the LO-wall term).
 
 Pre-registered decision rule:
-  diff_i = gt_ok(B) - gt_ok(A) over pairs where BOTH arms are valid.
-  CONFIRMED iff mean(diff) > 0 AND two-sided paired t-test p < 0.05.
-  Wilcoxon signed-rank reported as a non-parametric cross-check.
+  diff_i = metric(B) - metric(A) over pairs where BOTH arms are valid.
+  CONFIRMED iff mean(diff) > 0 AND two-sided paired t p < 0.05 (primary =
+  DECODE_SUCCESS; arrival reported as mechanism evidence).
 
 Usage:
-  python3 p158_abab_batch.py [--pairs 8]
+  python3 p158_abab_batch.py [--pairs 8] [--tag p158_abab] \
+      [--exp-env IEEE80211_SYNC_SHORT_COPY_REDETECT=1]
 """
 import argparse
 import datetime
@@ -40,7 +48,6 @@ REPO = Path('/home/hy/gr-ieee802-11')
 SCRIPT = REPO / 'usrp_realtime_validate.sh'
 RUN_TIMEOUT = 240        # s per attempt; normal run is ~80s (warmup 20 + 45 + init)
 MAX_ATTEMPTS = 3
-REDETECT_ENV = 'IEEE80211_SYNC_SHORT_COPY_REDETECT'
 
 
 def uhd_nudge():
@@ -49,14 +56,27 @@ def uhd_nudge():
                    timeout=60)
 
 
-def run_once(tag, outdir, redetect_on):
+def count_arrivals(rt_err_copy):
+    """Arrival proxy: frames reaching a correct L-SIG (enc=0 len=72)."""
+    n = 0
+    try:
+        with open(rt_err_copy, errors='ignore') as f:
+            for line in f:
+                if 'LSIG_DECODE' in line and 'enc=0 len=72' in line:
+                    n += 1
+    except OSError:
+        pass
+    return n
+
+
+def run_once(tag, outdir, exp_name, exp_value):
     """One validation run. Returns parsed dict + infra_fail/timed_out flags."""
     env = os.environ.copy()
     env.setdefault('IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR', '1')
     env.setdefault('IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH', '1')
-    env.pop(REDETECT_ENV, None)
-    if redetect_on:
-        env[REDETECT_ENV] = '1'
+    env.pop(exp_name, None)
+    if exp_value is not None:
+        env[exp_name] = exp_value
 
     proc = None
     timed_out = False
@@ -96,10 +116,12 @@ def run_once(tag, outdir, redetect_on):
 
     # Archive the harness stderr (overwritten per run by the validate script).
     rt_err = Path('/tmp/rt_validate.err')
+    rt_copy = outdir / f'{tag}.rt.err'
     if rt_err.exists():
-        shutil.copy(rt_err, outdir / f'{tag}.rt.err')
+        shutil.copy(rt_err, rt_copy)
 
     parsed = parse_run(out or '')
+    parsed['arrived'] = count_arrivals(rt_copy)
     parsed['rc'] = proc.returncode
     parsed['attempts'] = attempt
     parsed['timed_out'] = timed_out
@@ -109,10 +131,46 @@ def run_once(tag, outdir, redetect_on):
     return parsed
 
 
+def paired_report(lines, label, a_vals, b_vals):
+    """Paired t + Wilcoxon on (B - A); appends lines, returns (mean, p)."""
+    diffs = [b - a for a, b in zip(a_vals, b_vals)]
+    lines.append(f'{label}: A={a_vals}')
+    lines.append(f'{label}: B={b_vals}')
+    lines.append(f'{label}: per-pair diff (B-A)={diffs}')
+    if len(diffs) < 3:
+        lines.append(f'{label}: <3 valid pairs, no stats')
+        return None, None
+    mean_d = statistics.mean(diffs)
+    std_d = statistics.stdev(diffs)
+    n = len(diffs)
+    t_stat = mean_d / (std_d / n ** 0.5) if std_d > 0 else float('inf')
+    p_val = None
+    try:
+        from scipy import stats as sps
+        p_val = float(sps.ttest_rel(b_vals, a_vals).pvalue)
+        w = sps.wilcoxon(diffs)
+        lines.append(f'{label}: mean diff = {mean_d:+.2f}  std = {std_d:.2f}  '
+                     f't({n - 1}) = {t_stat:.2f}  paired t p = {p_val:.4f}  '
+                     f'wilcoxon p = {float(w.pvalue):.4f}')
+    except Exception as e:
+        lines.append(f'{label}: mean diff = {mean_d:+.2f}  std = {std_d:.2f}  '
+                     f't({n - 1}) = {t_stat:.2f} (scipy unavailable: {e})')
+    return mean_d, p_val
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pairs', type=int, default=8)
+    ap.add_argument('--tag', default='p158_abab',
+                    help='subdir name under batch_results/')
+    ap.add_argument('--exp-env',
+                    default='IEEE80211_SYNC_SHORT_COPY_REDETECT=1',
+                    help='NAME=VALUE for the experiment arm (control unsets NAME)')
     args = ap.parse_args()
+    exp_name, _, exp_value = args.exp_env.partition('=')
+    if not exp_name:
+        print('[ABAB] FATAL: --exp-env must be NAME=VALUE', flush=True)
+        return 2
 
     gov = Path('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor')
     if gov.exists() and gov.read_text().strip() != 'performance':
@@ -121,10 +179,11 @@ def main():
         return 2
 
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    outdir = REPO / 'batch_results' / 'p158_abab' / ts
+    outdir = REPO / 'batch_results' / args.tag / ts
     outdir.mkdir(parents=True, exist_ok=True)
     print(f'[ABAB] output dir: {outdir}')
-    print(f'[ABAB] pairs={args.pairs}  arm A=control(OFF)  arm B=experiment(ON)')
+    print(f'[ABAB] pairs={args.pairs}  A=control({exp_name} unset)  '
+          f'B=experiment({exp_name}={exp_value})')
     print('[ABAB] order: odd pairs A->B, even pairs B->A (drift cancellation)')
 
     # Pre-flight probe: confirms X310 reachable before burning run 1.
@@ -141,57 +200,43 @@ def main():
         arms[pair] = {}
         for arm in order:
             tag = f'pair{pair:02d}_{arm}'
-            print(f'[ABAB] === {tag} start ({"ON" if arm == "B" else "OFF"}) ===',
+            is_exp = (arm == 'B')
+            print(f'[ABAB] === {tag} start ({"EXP" if is_exp else "CTL"}) ===',
                   flush=True)
-            r = run_once(tag, outdir, redetect_on=(arm == 'B'))
+            r = run_once(tag, outdir, exp_name, exp_value if is_exp else None)
             arms[pair][arm] = r
             print(f'[ABAB] {tag}: DECODE_SUCCESS={r["gt_ok"]:3d} '
-                  f'arrival={r["arrival"]:>6s} UF={r["uf"]} OF={r["of"]} '
-                  f'rc={r["rc"]} attempts={r["attempts"]} '
+                  f'arrived={r["arrived"]:3d} arrival={r["arrival"]:>6s} '
+                  f'UF={r["uf"]} OF={r["of"]} rc={r["rc"]} '
+                  f'attempts={r["attempts"]} '
                   f'{"INFRA_FAIL" if r["infra_fail"] else "OK"}', flush=True)
 
     # ---- paired statistics ----
-    diffs, valid_pairs = [], []
-    for pair in range(1, args.pairs + 1):
-        a, b = arms[pair].get('A'), arms[pair].get('B')
-        if a and b and not a['infra_fail'] and not b['infra_fail']:
-            diffs.append(b['gt_ok'] - a['gt_ok'])
-            valid_pairs.append(pair)
+    valid = [p for p in range(1, args.pairs + 1)
+             if arms[p].get('A') and arms[p].get('B')
+             and not arms[p]['A']['infra_fail'] and not arms[p]['B']['infra_fail']]
+    a_ds = [arms[p]['A']['gt_ok'] for p in valid]
+    b_ds = [arms[p]['B']['gt_ok'] for p in valid]
+    a_ar = [arms[p]['A']['arrived'] for p in valid]
+    b_ar = [arms[p]['B']['arrived'] for p in valid]
 
-    a_vals = [arms[p]['A']['gt_ok'] for p in valid_pairs]
-    b_vals = [arms[p]['B']['gt_ok'] for p in valid_pairs]
     lines = [
-        f'pairs run: {args.pairs}, valid (both arms non-infra): {len(valid_pairs)}',
-        f'valid pair order: {valid_pairs}',
-        f'A (OFF) values: {a_vals}',
-        f'B (ON)  values: {b_vals}',
-        f'per-pair diff (B-A): {diffs}',
+        f'experiment: {exp_name}={exp_value} vs unset',
+        f'pairs run: {args.pairs}, valid (both arms non-infra): {len(valid)}',
+        f'valid pair order: {valid}',
     ]
-    verdict = 'INCONCLUSIVE (insufficient valid pairs)'
-    if len(diffs) >= 3:
-        mean_d = statistics.mean(diffs)
-        std_d = statistics.stdev(diffs)
-        n = len(diffs)
-        t_stat = mean_d / (std_d / n ** 0.5) if std_d > 0 else float('inf')
-        lines.append(f'mean diff = {mean_d:+.2f}  std diff = {std_d:.2f}  '
-                     f't({n - 1}) = {t_stat:.2f}')
-        p_val = None
-        try:
-            from scipy import stats as sps
-            p_val = float(sps.ttest_rel(b_vals, a_vals).pvalue)
-            w = sps.wilcoxon(diffs)
-            lines.append(f'scipy paired t p = {p_val:.4f}; '
-                         f'wilcoxon p = {float(w.pvalue):.4f}')
-        except Exception as e:
-            lines.append(f'(scipy unavailable: {e}; compare t vs '
-                         f'crit 2.365@df7 / 2.447@df6 / 2.571@df5 / 2.776@df4)')
-            # Conservative manual fallback: |t| above two-sided 0.05 crit.
-            crit = {7: 2.365, 6: 2.447, 5: 2.571, 4: 2.776, 3: 3.182}
-            p_val = 0.01 if abs(t_stat) > crit.get(n - 1, 3.182) else 1.0
-        confirmed = mean_d > 0 and p_val is not None and p_val < 0.05
-        verdict = ('CONFIRMED: COPY re-detect improves arrival '
-                   f'(+{mean_d:.1f}/45s, p={p_val:.4f})' if confirmed else
-                   f'NOT CONFIRMED (mean diff {mean_d:+.1f}, p={p_val})')
+    mean_ds, p_ds = paired_report(lines, 'DECODE_SUCCESS', a_ds, b_ds)
+    mean_ar, p_ar = paired_report(lines, 'ARRIVAL(enc=0 len=72)', a_ar, b_ar)
+
+    if mean_ds is None:
+        verdict = 'INCONCLUSIVE (insufficient valid pairs)'
+    else:
+        confirmed = mean_ds > 0 and p_ds is not None and p_ds < 0.05
+        verdict = ('CONFIRMED: experiment improves DECODE_SUCCESS '
+                   f'(+{mean_ds:.1f}/45s, p={p_ds:.4f}; '
+                   f'arrival {mean_ar:+.1f})' if confirmed else
+                   f'NOT CONFIRMED (DS diff {mean_ds:+.1f}, p={p_ds}; '
+                   f'arrival {mean_ar:+.1f}, p={p_ar})')
     lines.append(f'VERDICT: {verdict}')
 
     summary = '\n'.join(lines)

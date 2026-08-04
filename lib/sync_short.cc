@@ -134,6 +134,26 @@ static bool parse_copy_redetect_diag() {
     return env && *env && env[0] != '0';
 }
 
+// Phase 159: trigger-strength margin for plateau counting (opt-in, default 1.0
+// = legacy). On-air DIAG (2026-08-04, p159 verdict): trap episodes have
+// max_cor 0.26-0.36 (1.3-1.8x the 0.2 floor) while real frames trigger at
+// max_cor >= 500 — the 0.4-10 band is empty. A 2.5x margin gate therefore
+// rejects ALL noise traps (46% of sync_long's diet; each forces a FAST_SYNC
+// restart or HT_MIXED ignore on the NEXT real frame) while losing zero real
+// frames. Missed frames (22%) never plateau above the un-margined threshold,
+// so they are unaffected.
+static float parse_trigger_margin() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_TRIGGER_MARGIN");
+    if (!env || !*env) return 1.0f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v < 1.0) {
+        fprintf(stderr, "[SYNC-SHORT] invalid TRIGGER_MARGIN '%s', using 1.0\n", env);
+        return 1.0f;
+    }
+    return static_cast<float>(v);
+}
+
 class sync_short_impl : public sync_short
 {
 
@@ -165,7 +185,8 @@ public:
           d_copy_redetect(parse_copy_redetect_enabled()),
           d_copy_redetect_factor(parse_copy_redetect_factor()),
           d_copy_redetect_ema_max(parse_copy_redetect_ema_max()),
-          d_copy_redetect_diag(parse_copy_redetect_diag())
+          d_copy_redetect_diag(parse_copy_redetect_diag()),
+          d_trigger_margin(parse_trigger_margin())
     {
         memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
@@ -283,7 +304,10 @@ public:
             int i2;
             int copy_start = -1;
             for (i2 = 0; i2 < ninput; i2++) {
-                if (in_cor[i2] > effective_threshold) {
+                // Phase 159: trigger-strength margin — noise traps only cross
+                // the bare threshold (1.3-1.8x floor), real frames cross by
+                // ~2500x; margin in the empty band kills traps, keeps frames.
+                if (in_cor[i2] > effective_threshold * d_trigger_margin) {
                     if (d_plateau < MIN_PLATEAU) {
                         d_plateau++;
 
@@ -303,6 +327,7 @@ public:
                         // Phase 158 diag: reset per-episode accumulators.
                         d_episode_len = 0; d_episode_max_cor = 0.0f;
                         d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
+                        d_episode_start = nitems_read(0) + i2;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i2);
                         dout << "SHORT Frame!" << std::endl;
                         USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f thresh=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
@@ -344,9 +369,10 @@ public:
                             d_plateau = 0;
                             if (d_copy_redetect_diag) {
                                 fprintf(stderr,
-                                    "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                                    "[P158-DIAG] episode_end start=%llu len=%d max_cor=%.4f strong=%.4f "
                                     "ema=%.4f max_plateau=%d cause=%s\n",
-                                    d_episode_len, d_episode_max_cor,
+                                    (unsigned long long)d_episode_start,
+                            d_episode_len, d_episode_max_cor,
                                     std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
                                         d_copy_redetect_factor,
                                     d_copy_power_ema, d_episode_max_plateau, "gap");
@@ -379,8 +405,9 @@ public:
                 if (d_copied == MAX_SAMPLES) {
                     if (d_copy_redetect_diag) {
                         fprintf(stderr,
-                            "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                            "[P158-DIAG] episode_end start=%llu len=%d max_cor=%.4f strong=%.4f "
                             "ema=%.4f max_plateau=%d cause=%s\n",
+                            (unsigned long long)d_episode_start,
                             d_episode_len, d_episode_max_cor,
                             std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
                                 d_copy_redetect_factor,
@@ -442,9 +469,10 @@ public:
                         d_plateau = 0;
                         if (d_copy_redetect_diag) {
                             fprintf(stderr,
-                                "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                                "[P158-DIAG] episode_end start=%llu len=%d max_cor=%.4f strong=%.4f "
                                 "ema=%.4f max_plateau=%d cause=%s\n",
-                                d_episode_len, d_episode_max_cor,
+                                (unsigned long long)d_episode_start,
+                            d_episode_len, d_episode_max_cor,
                                 std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
                                     d_copy_redetect_factor,
                                 d_copy_power_ema, d_episode_max_plateau, "gap");
@@ -476,7 +504,7 @@ public:
             if (d_copied == MAX_SAMPLES) {
                 if (d_copy_redetect_diag) {
                     fprintf(stderr,
-                        "[P158-DIAG] episode_end len=%d max_cor=%.4f strong=%.4f "
+                        "[P158-DIAG] episode_end start=%llu len=%d max_cor=%.4f strong=%.4f "
                         "ema=%.4f max_plateau=%d cause=%s\n",
                         d_episode_len, d_episode_max_cor,
                         std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
@@ -596,11 +624,13 @@ private:
     const float d_copy_redetect_factor;
     const float d_copy_redetect_ema_max;
     const bool d_copy_redetect_diag;
+    const float d_trigger_margin;   // Phase 159: plateau gate = margin x threshold
     // Episode diagnostic accumulators (active when d_copy_redetect_diag).
     int d_episode_len = 0;          // samples copied this COPY episode
     float d_episode_max_cor = 0.0f; // max in_cor this episode
     int d_episode_max_plateau = 0;  // max consecutive samples with cor > strong gate
     int d_episode_cur_plateau = 0;
+    uint64_t d_episode_start = 0;   // absolute input position of episode trigger
     float d_copy_power_ema = 0.0f;      // EMA (alpha 1/512) of COPY-state sample power
     int d_redetect_plateau = 0;         // consecutive above-strong-threshold samples
     bool d_redetect_cooldown = false;   // set after a re-detect fires; clears when EMA >= EMA_MAX

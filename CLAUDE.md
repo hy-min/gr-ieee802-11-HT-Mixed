@@ -206,6 +206,30 @@ following hierarchy applies:
   `docs/superpowers/notes/2026-07-20-phase158-copy-redetect-verdict.md`.
   Next: full N=16 A/B under performance governor; if CONFIRMED, FACTOR
   sweep (5→3/4) + outlier-fire (corr 44.8/105.3 transients) upper guard.
+- **Phase 159 trigger margin CONFIRMED BREAKTHROUGH (NEW 2026-08-04)**: First
+  arrival-focused win after user redirected the main task to 到达率 (arrival).
+  **Arrival budget newly measured** (episode-start position logging in
+  P158-DIAG + TX-lattice fit, `p159_lattice_analysis.py`): detection 78% /
+  sync_short trap-blindness 0.15% (dead axis post-M24) / **chain success
+  35% (main bottleneck)** / decode-of-arrived 95% (LO wall only ~5%).
+  Chain-failure mechanism: SEARCH-state sample dropping compresses the
+  episode stream into sync_long (100ms → ~3ms), so real-frame tags almost
+  always arrive mid-COPY → 687 FAST_SYNC restarts + 136 HT_MIXED ignores per
+  65s; **46% of sync_long's diet is noise-trap episodes**. Separation band:
+  trap max_cor ≤0.36 (1.3-1.8× floor) vs real ≥500 (2500×) — 0.4-10 empty.
+  **Lever**: `IEEE80211_SYNC_SHORT_TRIGGER_MARGIN` (plateau gate =
+  margin×threshold, default 1.0). N=8 interleaved ABAB: DS 176.8→232.5
+  (**+55.8, p=0.0001**, 8/8 pairs positive), arrival +46.8 (p=0.0002);
+  traps 5015→**18** (-99.6%), strong episodes -13%, chain success 36%→51%.
+  TDD `p159_margin_unit.py` 4/4; loopback OK=1. **Harness default flipped
+  to 2.5** (setdefault in test_usrp_rxonly_instrumented.py, env-overridable,
+  C++ default 1.0) — future A/B controls run on the 2.5 baseline.
+  **P132 S&C REFUTED same day**: amplitude-normalized |P|²/R² saturates on
+  weak narrowband spurs (|P|/R→1, ms-long plateaus) → 71661 tags/45s flood;
+  P88 MA-ratio story again (synthetic-only). Next per new budget: 49%
+  chain failure (real→real restart preamble truncation / L-SIG robustness)
+  > 22% missed detection (two-threshold hysteresis) > margin fine-tune.
+  Verdict: `docs/superpowers/notes/2026-08-04-phase159-trigger-margin-verdict.md`.
 - **Phase 158-ABAB NOT CONFIRMED — axis CLOSED (NEW 2026-08-04)**: User-approved
   time-saving replacement for the full N=16 A/B: **N=8 interleaved ABAB**
   (`p158_abab_batch.py` — odd pairs OFF→ON / even ON→OFF cancels time drift;

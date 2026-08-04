@@ -317,7 +317,7 @@ public:
                         // so 64-sample alignment in sync_long output is not critical.
                         if (d_count < 1000) {
                             // Still in first frame's preamble/data - ignore this wifi_start
-                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d\n", d_count);
+                            fprintf(stderr, "[SYNC_LONG_HT_MIXED] Ignoring wifi_start during HT-Mixed frame d_count=%d offset=%llu\n", d_count, (unsigned long long)offset);
                         } else {
                             // New frame: direct SYNC transition to preserve full preamble
                             int saved_count = d_count;
@@ -328,7 +328,7 @@ public:
                             d_count = 0;
                             d_sync_samples = 0;
                             d_tag_skip_count = 0;
-                            fprintf(stderr, "[SYNC_LONG_FAST_SYNC] Direct SYNC for new frame (was d_count=%d)\n", saved_count);
+                            fprintf(stderr, "[SYNC_LONG_FAST_SYNC] Direct SYNC for new frame (was d_count=%d) offset=%llu\n", saved_count, (unsigned long long)offset);
                         }
                     } else {
                         // Other tag - use original behavior
