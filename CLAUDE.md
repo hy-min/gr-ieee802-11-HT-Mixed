@@ -210,6 +210,37 @@ following hierarchy applies:
   `docs/superpowers/notes/2026-07-20-phase158-copy-redetect-verdict.md`.
   Next: full N=16 A/B under performance governor; if CONFIRMED, FACTOR
   sweep (5→3/4) + outlier-fire (corr 44.8/105.3 transients) upper guard.
+- **Phase 160 trailing-window fix + "99.6%" artifact correction (NEW
+  2026-08-05)**: **⚠️ Correction first** — P159b's "448/450 = 99.6%, goal
+  met" was a denominator artifact: `usrp_realtime_validate.sh`'s est_sent
+  counts only the 3×15s measurement windows but the DECODE_SUCCESS ground
+  truth counts stderr lines INCLUDING the 20s warmup (~200 frames). True
+  rate at the time was ~69% (PDU counts, which exclude warmup, cross-check:
+  311/450 = 69.1%; 300s run PDU 2030/3000 = 67.7%). The δ fix itself
+  stands (paired ABAB p<1e-4). **Lesson: ground-truth counts and est_sent
+  denominators must cover the same time domain.**
+  **Root-cause fix (detection self-poisoning)**: the remaining ~28%
+  detection misses were all SEARCH-state with L-STF strength identical to
+  detections (646.1 vs 646.4, fresh 60s capture + GT extraction
+  `p160_gt_extract.py` + real-chain replay DIAG per-slot join). Cause:
+  sync_short's SEARCH branch filled the 4096-sample adaptive window with
+  the WHOLE current chunk BEFORE scanning (look-ahead), so a strong
+  frame's own ~2000-sample correlation region pushed p90 to the frame's
+  level (646) and threshold ~969 killed its own detection (374/76586
+  calls with p90>100 measured). Fix = trailing window (fill after scan,
+  scanned prefix only; frame body never enters the window). TDD
+  `p160_poison_unit.py` 4/4 (was RED: strong frame deterministically
+  undetected); loopback OK=1; replay misses 100→2 (99.7%); USRP PDU
+  146-148/150 per window (was ~104). Commit `a03c3ad`.
+  **Margin re-sweep on δ-OFF baseline**: 1.0→389.5 / 1.5→433.0 /
+  2.0→433.8 / **2.5→453.2** (vs 1.0 p=0.016) — 2.5 stays the default;
+  "2.5 over-gates weak frames" REFUTED.
+  **Current true budget (300s x2)**: detection ~99.7% / chain 98.3% /
+  FCS 97.6% / **end-to-end 98.9%** (PDU 2968/3000). Residual 32/3000 for
+  the 99.9% goal: LDPC terminal 21 (4 is_ht misclass + 17 payload bit
+  errors — needs decode_mac TX-reference wiring for bit-level
+  localization) + ~10 detection edge cases (replay GT#212/#375).
+  Verdict: `docs/superpowers/notes/2026-08-05-phase160-trailing-window-verdict.md`.
 - **Phase 159b δ-correction REFUTED = ROOT CAUSE of L-SIG lottery — PROJECT
   GOAL ESSENTIALLY MET (NEW 2026-08-05)**: systematic-debugging on the
   post-margin ~49% chain failure localized it to `frame_equalizer_impl.cc:7466`:
