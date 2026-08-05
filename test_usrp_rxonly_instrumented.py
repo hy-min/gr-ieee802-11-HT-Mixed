@@ -22,7 +22,17 @@ os.environ['GR_CONF_CONTROLPORT_ON'] = 'False'
 os.environ['GR_RPC_ENABLE'] = 'False'
 
 os.environ.setdefault('IEEE80211_LSIG_RATE_FORCE', '0xD')
-os.environ.setdefault('IEEE80211_TIMING_OFFSET_APPLY', '1')
+# Phase 159b (2026-08-05): TIMING_OFFSET_APPLY flipped 1 -> 0. The Phase 34
+# retroactive delta correction (frame_equalizer_impl.cc:7466) rewrites the
+# cached L-SIG/HT-SIG symbols at counter=4 using a per-frame delta estimate
+# from the noise-dominated H52 phase slope; when the estimate is wrong (~50%
+# of frames) it DESTROYS the otherwise clean constellation (evidence: pre-delta
+# dump constellation template-match hamming 0-3 vs post-delta viterbi input
+# hamming 25/48). N=8 ABAB: DS 231.9 -> 453.8 (+221.9, p<1e-4), arrival
+# 240.6 -> 464.0 (~100% of sent), decode-of-arrived 97.8%. The "1.77 rad LO
+# wall" was substantially this correction's artifact. C++ default was already
+# OFF; loopback regression always ran delta-off.
+os.environ.setdefault('IEEE80211_TIMING_OFFSET_APPLY', '0')
 os.environ.setdefault('IEEE80211_HDR_COMP_DISABLE', '1')
 os.environ.setdefault('IEEE80211_H52_2WAY_DEFAULT', '0')
 os.environ.setdefault('IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR', '1')

@@ -62,11 +62,13 @@ following hierarchy applies:
   `snprintf` + `USRP_LOG("%s", buf)` per commit `e90e3f5`.
 - **env vars default OFF**: all new env vars opt-in to preserve baseline.
 - **Standard USRP test config** (preserved across all phases):
-  `IEEE80211_LSIG_RATE_FORCE=0xD IEEE80211_TIMING_OFFSET_APPLY=1
+  `IEEE80211_LSIG_RATE_FORCE=0xD IEEE80211_TIMING_OFFSET_APPLY=0
   --freq 5890 --tx-gain 20`
-  (Phase 65: removed `IEEE80211_LLTF_OFFSET_CORRECT=14` — 14-sample shift
-  already correctly applied at `sync_long.cc FRAME_START_BASE 160→174`;
-  re-shifting at splitter is the wrong axis per Phase 64 verdict.)
+  (Phase 159b, 2026-08-05: `TIMING_OFFSET_APPLY` flipped 1→0 — the Phase 34
+  retroactive δ correction was the root cause of the L-SIG 51/49 lottery;
+  see the Phase 159b entry below. Phase 65: removed
+  `IEEE80211_LLTF_OFFSET_CORRECT=14` — 14-sample shift already correctly
+  applied at `sync_long.cc FRAME_START_BASE 160→174`.)
 - **Same-board default**: `A:0` TX → `A:0` RX2 (per Phase 53 verdict,
   cross-board is 2.4x weaker).
 - **禁止 `--rate 5`** (Phase 58 REFUTED, 48× more overflows than `--rate 20`).
@@ -81,7 +83,9 @@ following hierarchy applies:
   Result: `FCS_OK=5` on fresh USRP capture (5250 MHz cable, tx-gain 0).
   Winning config: `IEEE80211_HDR_COMP_DISABLE=1` +
   `IEEE80211_H52_2WAY_DEFAULT=0` + `IEEE80211_LSIG_RATE_FORCE=0xD` +
-  `IEEE80211_TIMING_OFFSET_APPLY=1`.
+  `IEEE80211_TIMING_OFFSET_APPLY=1`.  (Phase 159b later REFUTED the last
+  one: δ-OFF is the 2026-08-05 baseline; 145c's replay validation did not
+  catch the δ harm because replay chunk dynamics differ.)
   **Realtime capture blocking root cause**: wifi_phy_rx chain (sync_long
   stuck in SYNC state consuming data without producing output)
   backpressures USRP source, limiting capture to ~0.04 MHz instead of
@@ -206,6 +210,28 @@ following hierarchy applies:
   `docs/superpowers/notes/2026-07-20-phase158-copy-redetect-verdict.md`.
   Next: full N=16 A/B under performance governor; if CONFIRMED, FACTOR
   sweep (5→3/4) + outlier-fire (corr 44.8/105.3 transients) upper guard.
+- **Phase 159b δ-correction REFUTED = ROOT CAUSE of L-SIG lottery — PROJECT
+  GOAL ESSENTIALLY MET (NEW 2026-08-05)**: systematic-debugging on the
+  post-margin ~49% chain failure localized it to `frame_equalizer_impl.cc:7466`:
+  the Phase 34 retroactive δ (timing-offset) correction rewrites cached
+  L-SIG/HT-SIG symbols at counter=4 using a per-frame δ estimate from the
+  noise-dominated H52 phase slope (1.77 rad/SC); ~50% of frames get a bad
+  estimate and their otherwise CLEAN constellation (pre-δ dump template
+  hamming 0-3/48) is converted to garbage (post-δ viterbi input hamming
+  25/48). All rival hypotheses refuted with evidence (alignment / magnitude /
+  CFO / SFO / time-clustering / TX populations / truncation). N=8 interleaved
+  ABAB (`TIMING_OFFSET_APPLY` 1→0): DS 231.9→**453.8/45s** (+221.9, t=34.55,
+  **p<1e-4**, 8/8 pairs +198..+251), arrival 240.6→**464.0 (~100% of sent)**,
+  decode-of-arrived 97.8%. Validation on new default: **DECODE_SUCCESS=448/450
+  = 99.6%**, 0 UF/OF, loopback OK=1 (loopback always ran δ-off; C++ default
+  was already OFF). **Harness default flipped to 0** (setdefault,
+  env-overridable). **The "1.77 rad LO wall" was substantially this
+  correction's artifact** — P150's "software-unbreakable" conclusion and the
+  30+ equalizer-layer REFUTED phases must be reinterpreted on the δ-OFF
+  baseline. Lesson for the Phase 34 legacy: any retroactive symbol rewrite
+  driven by a noise-sensitive per-frame estimate needs a per-frame validity
+  gate. Verdict:
+  `docs/superpowers/notes/2026-08-05-phase159b-timing-offset-refuted-verdict.md`.
 - **Phase 159 trigger margin CONFIRMED BREAKTHROUGH (NEW 2026-08-04)**: First
   arrival-focused win after user redirected the main task to 到达率 (arrival).
   **Arrival budget newly measured** (episode-start position logging in

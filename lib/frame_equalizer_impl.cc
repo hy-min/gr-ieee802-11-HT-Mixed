@@ -8848,7 +8848,8 @@ int frame_equalizer_impl::general_work(int noutput_items,
                               "[HTSIG_VITERBI_DIAG] frame_sym=%d n_candidates=%d "
                               "found=%d best_metric=%d best_rot=%d best_inv_a=%d "
                               "best_inv_b=%d best_fail=%s avg_snr_lsig=%.2f "
-                              "avg_snr_htsig=%.2f is_ht_frame=%d\n",
+                              "avg_snr_htsig=%.2f is_ht_frame=%d "
+                              "cfo_sym=%.4f sfo_sc=%.6f\n",
                               d_internal_symbol_counter,
                               htsig_candidates_tried,
                               found ? 1 : 0,
@@ -8856,7 +8857,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                               htsig_best_rot, htsig_best_inv_a, htsig_best_inv_b,
                               htsig_best_fail,
                               avg_snr_lsig, avg_snr_htsig,
-                              d_is_ht_frame ? 1 : 0);
+                              d_is_ht_frame ? 1 : 0,
+                              d_cfo_phase_per_symbol,
+                              d_sfo_per_sc_est);
                 USRP_LOG("%s", vitdiag_buf);
             }
 
