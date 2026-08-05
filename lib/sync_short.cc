@@ -218,12 +218,16 @@ public:
         case SEARCH: {
             int i;
 
-            // Phase 89 T2: track in_cor for adaptive threshold via median
-            for (i = 0; i < ninput; i++) {
-                d_corr_window[d_corr_window_idx] = in_cor[i];
-                d_corr_window_idx = (d_corr_window_idx + 1) & 0xFFF;  // mod-4096
-                if (d_corr_window_filled < 4096) d_corr_window_filled++;
-            }
+            // Phase 160: the adaptive window is now TRAILING — it is filled
+            // AFTER the scan (below), only with samples that were actually
+            // scanned. Previously the whole current chunk was loaded BEFORE
+            // scanning (look-ahead), so a strong frame's own ~2000-sample
+            // correlation region (boxcar ~646, >10% of the 4096 window)
+            // pushed p90 to the frame's own level and the threshold
+            // (p90*1.5 ~ 969) killed the frame's detection — the ~28%
+            // realtime miss rate on frames with perfect L-STF strength
+            // (missed 646.1 == detected 646.4 offline evidence).
+            (void)i;
 
             // Recompute adaptive threshold (percentile_90 * 1.5) every call
             // Phase 92: switch from median*10 to percentile_90*1.5 to be robust
@@ -336,6 +340,18 @@ public:
                     }
                 } else {
                     d_plateau = 0;
+                }
+            }
+
+            // Phase 160: trailing-window fill — only the SCANNED prefix enters
+            // the adaptive window ([0, i2) here; if a detection fired, the
+            // frame body is copied, not scanned, so it never poisons p90).
+            {
+                const int scanned = (copy_start >= 0) ? copy_start : ninput;
+                for (int w = 0; w < scanned; w++) {
+                    d_corr_window[d_corr_window_idx] = in_cor[w];
+                    d_corr_window_idx = (d_corr_window_idx + 1) & 0xFFF;  // mod-4096
+                    if (d_corr_window_filled < 4096) d_corr_window_filled++;
                 }
             }
 
