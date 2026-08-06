@@ -241,6 +241,23 @@ following hierarchy applies:
   errors — needs decode_mac TX-reference wiring for bit-level
   localization) + ~10 detection edge cases (replay GT#212/#375).
   Verdict: `docs/superpowers/notes/2026-08-05-phase160-trailing-window-verdict.md`.
+- **Phase 161 residual-failure root cause (NEW 2026-08-05)**: systematic-
+  debugging of the residual ~1% (32/3000) localized the LDPC-terminal
+  failures (21/3000) to a **band-edge subcarrier fade tail**: failing frames
+  are our own (FAIL_PSDU dump: mac header intact), with min|H| p50=**13.7**
+  vs OK 28.7, argmin always at **SC -28/-27** (20MHz channel/filter rolloff
+  edge). Weak edge SC → ZF 1/H amplifies noise → bit errors → deinterleaver
+  spreads them → deep realizations exceed the hard-decision viterbi budget
+  (~40/1144) → FCS fail. NOT a decoder bug. **CPE tracker found to be a
+  permanent no-op** (`estimate_ht_data_cpe` looks up pilot SCs in the
+  data-only `kTxOrder52` → h_idx always -1 → cpe≡0); per-symbol phase drift
+  exists (p50 -4.5°/sym) but the **M-power CPE fix is REFUTED** (ABAB DS
+  −43.7, p=0.005 — noise-adding correction, same class as HDR_COMP_DISABLE).
+  The only principled path to 99.9% is soft-decision viterbi (|H|²-weighted
+  LLR) — has a Phase 129 REFUTED history (δ-on era), kept as a separate
+  future phase. New opt-in diagnostics: `IEEE80211_SYM52_DUMP`,
+  `IEEE80211_CPE_DEBUG`, `IEEE80211_FAIL_PSDU_DUMP`. Verdict:
+  `docs/superpowers/notes/2026-08-05-phase161-residual-failure-rootcause-verdict.md`.
 - **Phase 159b δ-correction REFUTED = ROOT CAUSE of L-SIG lottery — PROJECT
   GOAL ESSENTIALLY MET (NEW 2026-08-05)**: systematic-debugging on the
   post-margin ~49% chain failure localized it to `frame_equalizer_impl.cc:7466`:
