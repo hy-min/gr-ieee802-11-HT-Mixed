@@ -288,7 +288,11 @@ private:
         if (!ht_mode || mcs < 0 || mcs > 7) {
             return;
         }
-        if (frame.n_sym <= 0 || data_carriers < 52 || frame.n_encoded_bits < 52) {
+        // Phase 161: was `data_carriers < 52` — that gated OUT the HT-conv
+        // mcs=0 config used on the USRP testbed (data_carriers=48), so the
+        // TX reference bit files were never written and decode_mac's
+        // HARD-vs-TX-INTERLEAVED per-symbol mismatch diagnostic starved.
+        if (frame.n_sym <= 0 || data_carriers < 48 || frame.n_encoded_bits < 52) {
             return;
         }
 
@@ -563,7 +567,7 @@ private:
             split_symbols(interleaved_data, symbols, frame, d_ofdm);
         }
 
-        maybe_dump_ht_mcs0_debug(mcs,
+        maybe_dump_ht_mcs0_debug(effective_mcs,
                                  ht_mode,
                                  frame,
                                  data_carriers,
