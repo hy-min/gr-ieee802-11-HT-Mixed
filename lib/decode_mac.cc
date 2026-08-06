@@ -610,6 +610,30 @@ private:
         const int n_cbps = d_ht_n_cbps;
         const int n_dbps = ht_n_dbps_from_mcs(d_ht_mcs);
 
+        // Phase 161: full per-SC eq dump for selected data symbols (opt-in).
+        // Used to root-cause the last-symbol bit-corruption defect (reproduces
+        // on clean 20 MHz loopback: sym19-21 hard bits wrong while the 4
+        // sentinel SCs in [EQ_HTDATA] look clean — need all 52 to tell
+        // rotation vs mapping vs window). IEEE80211_SYM52_DUMP=last or =all.
+        {
+            static const char* env_sym52 = std::getenv("IEEE80211_SYM52_DUMP");
+            if (env_sym52 && env_sym52[0] != '\0') {
+                const bool all = (std::string(env_sym52) == "all");
+                for (int s = 0; s < n_sym; s++) {
+                    if (!all && s < n_sym - 2 && s != 5 && s != 7) continue;
+                    char sbuf[1400];
+                    int sn = snprintf(sbuf, sizeof(sbuf), "[SYM52] sym=%d eq=", s);
+                    for (int k = 0; k < n_cbps && sn < (int)sizeof(sbuf) - 24; k++) {
+                        sn += snprintf(sbuf + sn, sizeof(sbuf) - sn, "%.2f,%.2f,",
+                                       d_rx_eq[(size_t)s * n_cbps + k].real(),
+                                       d_rx_eq[(size_t)s * n_cbps + k].imag());
+                    }
+                    snprintf(sbuf + sn, sizeof(sbuf) - sn, "\n");
+                    USRP_LOG("%s", sbuf);
+                }
+            }
+        }
+
         d_rx_bits.assign((size_t)(n_sym * n_cbps), 0);
         d_deintl_bits.assign((size_t)(n_sym * n_cbps), 0);
 
@@ -1185,6 +1209,24 @@ private:
             message_port_pub(pmt::mp("out"), pmt::cons(d_meta, blob));
             USRP_LOG( "[DECODE_AND_PUBLISH] message published: len=%d bytes\n", d_ht_len);
             return;
+        }
+
+        // Phase 161: dump decoded PSDU head on Conv-FCS failure (opt-in).
+        // Discriminates the terminal-fail population: our frames show the
+        // mac header pattern (0x42 addr1 / 0x23 addr2 / 0xff addr3 + 'x'
+        // payload); foreign/garbage events show random bytes. This decides
+        // whether LDPC-terminal losses are decoder errors or non-our frames.
+        {
+            static const char* env_fail_dump = std::getenv("IEEE80211_FAIL_PSDU_DUMP");
+            if (env_fail_dump && env_fail_dump[0] == '1') {
+                char fbuf[256];
+                int fn = snprintf(fbuf, sizeof(fbuf), "[FAIL_PSDU] len=%d head=", d_ht_len);
+                for (int i = 0; i < d_ht_len && i < 66 && fn < (int)sizeof(fbuf) - 8; i++) {
+                    fn += snprintf(fbuf + fn, sizeof(fbuf) - fn, "%02x", ((const uint8_t*)psdu)[i]);
+                }
+                snprintf(fbuf + fn, sizeof(fbuf) - fn, "\n");
+                USRP_LOG("%s", fbuf);
+            }
         }
 
         USRP_LOG( "[DECODE_FAIL] Conv FCS error calc=0x%x rx=0x%x len=%d, trying LDPC fallback\n",

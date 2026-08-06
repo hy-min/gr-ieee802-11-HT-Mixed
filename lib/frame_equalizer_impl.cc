@@ -333,6 +333,14 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
 {
     gr_complex acc(0.0f, 0.0f);
 
+    // Phase 161 debug: |acc| was always 0 on USRP (cpe_deg==0.0 for every
+    // symbol of every frame). Dump the pilot-bin raw values + pilot H to
+    // decide whether pilots are zero in sym64 or pilot-H is null.
+    static const char* env_cpe_dbg = std::getenv("IEEE80211_CPE_DEBUG");
+    const bool cpe_dbg = env_cpe_dbg && env_cpe_dbg[0] == '1';
+    char cpe_buf[256];
+    int cpe_n = 0;
+
     for (int i = 0; i < 4; i++) {
         const int sc = kPilot4Sc[i];
         int h_idx = -1;
@@ -342,6 +350,16 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
                 break;
             }
         }
+        if (cpe_dbg && i == 0) {
+            cpe_n += snprintf(cpe_buf + cpe_n, sizeof(cpe_buf) - cpe_n,
+                              "[CPE_DBG] sym=%d ", data_sym_idx);
+        }
+        if (cpe_dbg) {
+            const gr_complex pv = sym64[kPilot4Bin[i]];
+            const float hv = (h_idx >= 0) ? std::abs(H52_tx_order[h_idx]) : -1.0f;
+            cpe_n += snprintf(cpe_buf + cpe_n, sizeof(cpe_buf) - cpe_n,
+                              "p%d=(%.2f,%.2f,|H|=%.2f) ", i, pv.real(), pv.imag(), hv);
+        }
         if (h_idx < 0 || std::abs(H52_tx_order[h_idx]) < 0.001f) {
             continue;
         }
@@ -350,7 +368,15 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
         acc += eq_pilot * std::conj(ht_expected_pilot(data_sym_idx, i));
     }
     if (std::abs(acc) < 1e-9f) {
+        if (cpe_dbg) {
+            snprintf(cpe_buf + cpe_n, sizeof(cpe_buf) - cpe_n, "acc=0\n");
+            USRP_LOG("%s", cpe_buf);
+        }
         return 0.0f;
+    }
+    if (cpe_dbg) {
+        snprintf(cpe_buf + cpe_n, sizeof(cpe_buf) - cpe_n, "acc=%.3f\n", std::abs(acc));
+        USRP_LOG("%s", cpe_buf);
     }
     return std::arg(acc);
 }
