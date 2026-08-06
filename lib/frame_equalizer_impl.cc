@@ -331,6 +331,30 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
                                                  int data_sym_idx,
                                                  const gr_complex* H52_tx_order)
 {
+    // Phase 161: M-power (squaring) CPE estimator over the 52 data SCs.
+    // Opt-in via IEEE80211_DATA_CPE_MPOWER=1 (default OFF).
+    // The pilot-based path below is a PERMANENT NO-OP on this codebase:
+    // kTxOrder52 holds data SCs only (pilots -21/-7/7/21 are excluded by
+    // design), so h_idx is always -1, every pilot is skipped, acc stays 0,
+    // and cpe == 0 for every symbol of every frame (measured on USRP).
+    // For BPSK data symbols, eq_k = a_k*|eq_k|*e^{j*phi} with a_k=±1, so
+    // eq_k^2 = |eq_k|^2 * e^{j*2*phi} and arg(sum_k eq_k^2)/2 recovers the
+    // common phase error — no pilots and no pilot-H needed (which is what
+    // made the pilot path fragile). |eq|^2 weighting favours strong SCs.
+    static const char* env_mpower = std::getenv("IEEE80211_DATA_CPE_MPOWER");
+    if (env_mpower && env_mpower[0] == '1') {
+        gr_complex acc2(0.0f, 0.0f);
+        for (int j = 0; j < 52; j++) {
+            const int bin = sc_to_fft_bin(kTxOrder52[j]);
+            const float h_mag = std::abs(H52_tx_order[j]);
+            if (h_mag < 0.001f) continue;
+            const gr_complex eq0 = sym64[bin] / H52_tx_order[j];
+            acc2 += eq0 * eq0;
+        }
+        if (std::abs(acc2) < 1e-9f) return 0.0f;
+        return std::arg(acc2) * 0.5f;
+    }
+
     gr_complex acc(0.0f, 0.0f);
 
     // Phase 161 debug: |acc| was always 0 on USRP (cpe_deg==0.0 for every
