@@ -469,6 +469,14 @@ private:
     float d_sigma2_htsig_a            = 0.0f;
     float d_sigma2_htsig_b            = 0.0f;
 
+    // Phase 162: emit per-SC |H|^2 reliability weights as a "soft_h2" stream
+    // tag at frame start (same offset as frame_bytes/mcs), consumed by
+    // decode_mac's data-path soft viterbi. Weights are |d_H52_tx_order[k]|^2,
+    // aligned elementwise with the out52 eq stream. Opt-in, default OFF.
+    // Enable via IEEE80211_DATA_SOFT_VITERBI=1 (must also be set for
+    // decode_mac to use them).
+    bool d_data_soft_viterbi          = false;
+
     // Phase 46 AR5: MMSE equalization for HT-SIG. When true, the HT-SIG0/1
     // bit-extraction path uses eq = conj(H)·rx / (|H|² + N0) instead of
     // safe_div(rx, H). Bypasses Phase 38's 50× noise amplification at

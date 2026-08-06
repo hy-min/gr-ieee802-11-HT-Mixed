@@ -147,6 +147,34 @@ static void ht_deinterleave(const uint8_t* in, uint8_t* out, int n_sym, int mcs)
     }
 }
 
+// Phase 162: float variant of ht_deinterleave for soft LLRs. Identical index
+// math; kept separate from the uint8_t version to avoid touching the hot
+// hard-decision path.
+static void ht_deinterleave_f32(const float* in, float* out, int n_sym, int mcs)
+{
+    const int n_bpsc = ht_n_bpsc_from_mcs(mcs);
+    const int n_cbps = ht_n_cbps_from_mcs(mcs);
+    const int s = std::max(n_bpsc / 2, 1);
+    const int n_col = 13;  // HT 20MHz: 13 columns
+    const int n_row = n_cbps / n_col;  // 4 * n_bpsc
+
+    if (n_row * n_col != n_cbps) {
+        std::memset(out, 0, sizeof(float) * (size_t)n_sym * (size_t)n_cbps);
+        return;
+    }
+
+    for (int sym = 0; sym < n_sym; sym++) {
+        const float* in_sym = in + sym * n_cbps;
+        float* out_sym = out + sym * n_cbps;
+
+        for (int j = 0; j < n_cbps; j++) {
+            const int i = s * (j / s) + ((j + (n_col * j) / n_cbps) % s);
+            const int k = n_col * i - (n_cbps - 1) * (i / n_row);
+            out_sym[k] = in_sym[j];
+        }
+    }
+}
+
 static std::string bits_to_string(const uint8_t* bits, int n)
 {
     std::string s;
@@ -347,6 +375,20 @@ public:
           d_frame(d_ofdm, 0)
     {
         message_port_register_out(pmt::mp("out"));
+
+        // Phase 162: data-path soft-decision viterbi (|H|^2-weighted LLR).
+        // Opt-in, default OFF. When ON, the Conv path uses per-bit soft LLRs
+        // (Re(eq) * |H_sc|^2 from the frame_equalizer "soft_h2" tag) with a
+        // float deinterleave + soft-metric viterbi, instead of hard bits.
+        // BPSK only (n_bpsc==1); other MCS fall back to the hard path.
+        {
+            const char* env_soft = std::getenv("IEEE80211_DATA_SOFT_VITERBI");
+            d_data_soft_viterbi = (env_soft && env_soft[0] == '1');
+            if (d_data_soft_viterbi) {
+                USRP_LOG( "[DECODE_SOFT] IEEE80211_DATA_SOFT_VITERBI=1 "
+                          "(|H|^2-weighted soft viterbi on data path)\n");
+            }
+        }
     }
 
     ~decode_mac_impl() override { log_incomplete("destructor"); }
@@ -464,6 +506,25 @@ public:
                     for (auto& tt : all_tags) {
                         if (pmt::eq(tt.key, pmt::mp("ldpc_block_length"))) {
                             d_ldpc_block_length = (int)pmt::to_long(tt.value);
+                        }
+                    }
+
+                    // Phase 162: per-SC |H|^2 reliability weights (soft_h2 tag,
+                    // emitted by frame_equalizer at the same offset as frame_bytes
+                    // when its IEEE80211_DATA_SOFT_VITERBI is also ON).
+                    d_soft_h2_valid = false;
+                    if (d_data_soft_viterbi) {
+                        for (auto& tt : tags) {
+                            if (pmt::eq(tt.key, pmt::mp("soft_h2")) &&
+                                pmt::is_f32vector(tt.value)) {
+                                const std::vector<float> w = pmt::f32vector_elements(tt.value);
+                                if (w.size() == 52) {
+                                    for (int k = 0; k < 52; k++) {
+                                        d_soft_h2[k] = w[k];
+                                    }
+                                    d_soft_h2_valid = true;
+                                }
+                            }
                         }
                     }
 
@@ -1126,7 +1187,34 @@ private:
         }
 
         // 4) Viterbi
-        uint8_t* decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deintl_bits.data());
+        // Phase 162: soft-decision path (opt-in). Requires the soft_h2 tag
+        // (per-SC |H|^2 weights from frame_equalizer) and BPSK (n_bpsc==1).
+        // LLR_i = Re(eq_i) * |H_i|^2 is proportional to the true LLR; the
+        // max-log viterbi is scale-invariant so no noise estimate is needed.
+        uint8_t* decoded = nullptr;
+        const bool soft_path =
+            d_data_soft_viterbi && d_soft_h2_valid && (n_bpsc == 1);
+        if (soft_path) {
+            const int total = n_sym * n_cbps;
+            d_rx_llr_soft.assign((size_t)total, 0.0f);
+            d_deintl_llr.assign((size_t)total, 0.0f);
+            for (int k = 0; k < total; k++) {
+                d_rx_llr_soft[(size_t)k] = d_rx_eq[(size_t)k].real() * d_soft_h2[k % 52];
+            }
+            ht_deinterleave_f32(d_rx_llr_soft.data(), d_deintl_llr.data(), n_sym, d_ht_mcs);
+            decoded = d_decoder.decode_soft(&d_ofdm, &d_frame, d_deintl_llr.data());
+        } else {
+            if (d_data_soft_viterbi && !d_soft_h2_valid) {
+                static bool warned_no_tag = false;
+                if (!warned_no_tag) {
+                    warned_no_tag = true;
+                    USRP_LOG( "[DECODE_SOFT] WARNING: IEEE80211_DATA_SOFT_VITERBI=1 but no "
+                              "soft_h2 tag on frame — falling back to hard viterbi "
+                              "(is frame_equalizer's env also ON?)\n");
+                }
+            }
+            decoded = d_decoder.decode(&d_ofdm, &d_frame, d_deintl_bits.data());
+        }
         if (!decoded) {
             USRP_LOG( "[DECODE_FAIL] Viterbi decoder returned null\n");
             return;
@@ -1361,6 +1449,13 @@ private:
     std::vector<uint8_t> d_rx_bits;
     std::vector<uint8_t> d_deintl_bits;
     std::vector<uint8_t> d_out_bytes;
+
+    // Phase 162: data-path soft viterbi state
+    bool d_data_soft_viterbi = false;   // env IEEE80211_DATA_SOFT_VITERBI
+    bool d_soft_h2_valid = false;       // soft_h2 tag seen for current frame
+    float d_soft_h2[52] = { 0.0f };     // per-SC |H|^2 weights (52-array order)
+    std::vector<float> d_rx_llr_soft;   // weighted LLRs, SC order
+    std::vector<float> d_deintl_llr;    // weighted LLRs, encoder order
 
     bool d_use_ldpc;
     ldpc_wifi_codec d_ldpc_codec;

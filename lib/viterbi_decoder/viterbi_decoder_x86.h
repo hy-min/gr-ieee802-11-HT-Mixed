@@ -33,11 +33,27 @@ class viterbi_decoder : public base
 public:
     virtual uint8_t* decode(ofdm_param* ofdm, frame_param* frame, uint8_t* in);
 
+    // Phase 162: soft-decision viterbi. Input is one float LLR per received
+    // coded bit (already deinterleaved, in encoder order), with the sign
+    // convention LLR > 0  <=>  bit more likely 1 (matches hard_bpsk_bit's
+    // re>=0 -> 1). Punctured positions must carry LLR = 0 (erasure).
+    // Uses the same 133/171 trellis and zero-state-terminated chainback as
+    // decode(); branch metric is the max-log correlation
+    //     bm(ex0, ex1) = (ex0 ? +l0 : -l0) + (ex1 ? +l1 : -l1)
+    // which is invariant to any positive global scale of the LLRs, so no
+    // noise-variance estimate is required.
+    virtual uint8_t* decode_soft(ofdm_param* ofdm, frame_param* frame, const float* llr_in);
+
 private:
     union branchtab27 {
         unsigned char c[32];
         __m128i v[2];
     } d_branchtab27_sse2[2];
+
+    // Phase 162: float depuncture scratch for decode_soft (erasure = 0.0f).
+    float d_depunctured_soft[MAX_ENCODED_BITS];
+
+    const float* depuncture_soft(const float* in);
 
     alignas(16) __m128i d_metric0[4];
     alignas(16) __m128i d_metric1[4];

@@ -5465,6 +5465,17 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         }
     }
 
+    // Phase 162: emit per-SC |H|^2 reliability weights ("soft_h2" tag) at
+    // frame start for decode_mac's data-path soft viterbi. Opt-in, default OFF.
+    {
+        const char* env_dsoft = std::getenv("IEEE80211_DATA_SOFT_VITERBI");
+        d_data_soft_viterbi = (env_dsoft && env_dsoft[0] == '1');
+        if (d_data_soft_viterbi) {
+            std::cout << "[FRAME_EQ] IEEE80211_DATA_SOFT_VITERBI=1 "
+                      << "(emit soft_h2 per-SC |H|^2 weights for decode_mac soft viterbi)\n";
+        }
+    }
+
     // Phase 102: parse null-SC positions from env var (CSV of HT-SIG data loop
     // positions 0..47). IMPORTANT: positions are HT-SIG data loop indices, NOT
     // kScIndex52[i] signed SC values. The HT-SIG LLR writer checks
@@ -9313,6 +9324,25 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     pmt::intern("mcs"),
                     pmt::from_uint64((uint64_t)d_frame_mcs),
                     pmt::intern(this->name()));
+
+                // Phase 162: per-SC |H|^2 reliability weights for decode_mac's
+                // soft viterbi. d_H52_tx_order[k] aligns elementwise with the
+                // out52 eq stream (extract_ht_data52_direct_tx_order). Only
+                // emitted when the direct-tx-order H52 is valid (HT frames).
+                if (d_data_soft_viterbi && d_H52_tx_order_valid) {
+                    float h2[52];
+                    for (int k = 0; k < 52; k++) {
+                        const float re = d_H52_tx_order[k].real();
+                        const float im = d_H52_tx_order[k].imag();
+                        h2[k] = re * re + im * im;
+                    }
+                    this->add_item_tag(
+                        0,
+                        out_off,
+                        pmt::intern("soft_h2"),
+                        pmt::init_f32vector(52, h2),
+                        pmt::intern(this->name()));
+                }
 
                 // Forward LDPC info so decode_mac can collect the right number of symbols
                 this->add_item_tag(

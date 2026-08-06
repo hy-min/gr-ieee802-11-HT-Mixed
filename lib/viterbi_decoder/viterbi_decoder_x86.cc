@@ -367,6 +367,122 @@ uint8_t* viterbi_decoder::decode(ofdm_param* ofdm, frame_param* frame, uint8_t* 
     return d_decoded;
 }
 
+// Phase 162: float depuncture for decode_soft. Mirrors base::depuncture
+// exactly; punctured positions become 0.0f (erasure: no information).
+const float* viterbi_decoder::depuncture_soft(const float* in)
+{
+    const int n_cbps = d_ofdm->n_cbps;
+
+    if (d_ntraceback == 5) {
+        // rate 1/2: no puncturing, pass through
+        return in;
+    }
+
+    float* depunctured = d_depunctured_soft;
+    int count = 0;
+    for (int i = 0; i < d_frame->n_sym; i++) {
+        for (int k = 0; k < n_cbps; k++) {
+            while (d_depuncture_pattern[count % (2 * d_k)] == 0) {
+                depunctured[count] = 0.0f;
+                count++;
+            }
+            depunctured[count] = in[i * n_cbps + k];
+            count++;
+            while (d_depuncture_pattern[count % (2 * d_k)] == 0) {
+                depunctured[count] = 0.0f;
+                count++;
+            }
+        }
+    }
+    return depunctured;
+}
+
+// Phase 162: soft-decision viterbi. Identical trellis/termination/chainback
+// to decode(); only the branch metric changes to a max-log correlation on
+// float LLRs. Sign convention: LLR > 0 <=> bit more likely 1 (same as
+// hard_bpsk_bit's re>=0 -> 1). Invariant to any positive global LLR scale.
+uint8_t* viterbi_decoder::decode_soft(ofdm_param* ofdm, frame_param* frame, const float* llr_in)
+{
+    d_ofdm = ofdm;
+    d_frame = frame;
+
+    reset();
+    const float* depunctured = depuncture_soft(llr_in);
+
+    const int n_data_bits = d_frame->n_data_bits;
+    const int n_states = 64;
+    const float neg_inf = -std::numeric_limits<float>::max() / 4.0f;
+
+    // depunctured mother code has exactly 2 coded bits per data bit
+    const int n_mother_bits = 2 * n_data_bits;
+
+    std::vector<float> metric_prev(n_states, neg_inf);
+    std::vector<float> metric_next(n_states, neg_inf);
+    std::vector<uint8_t> pred_state((size_t)n_data_bits * n_states, 0);
+    std::vector<uint8_t> pred_input((size_t)n_data_bits * n_states, 0);
+
+    // known initial state
+    metric_prev[0] = 0.0f;
+
+    for (int t = 0; t < n_data_bits; t++) {
+        const float l0 = (2 * t + 0 < n_mother_bits) ? depunctured[2 * t + 0] : 0.0f;
+        const float l1 = (2 * t + 1 < n_mother_bits) ? depunctured[2 * t + 1] : 0.0f;
+
+        std::fill(metric_next.begin(), metric_next.end(), neg_inf);
+
+        for (int prev_state = 0; prev_state < n_states; prev_state++) {
+            const float prev_metric = metric_prev[prev_state];
+            if (prev_metric == neg_inf) {
+                continue;
+            }
+
+            for (int input_bit = 0; input_bit <= 1; input_bit++) {
+                const uint8_t reg = uint8_t(((prev_state << 1) | input_bit) & 0x7f);
+                const int next_state = reg & 0x3f;
+
+                const uint8_t ex0 = parity_u8(uint8_t(reg & 0x5b));  // 0133 octal = IEEE 802.11 g0
+                const uint8_t ex1 = parity_u8(uint8_t(reg & 0x79));  // 0171 octal = IEEE 802.11 g1
+
+                // max-log correlation: reward agreement between expected bit
+                // and LLR sign, weighted by |LLR| (reliability).
+                const float bm = (ex0 ? l0 : -l0) + (ex1 ? l1 : -l1);
+                const float cand = prev_metric + bm;
+
+                if (cand > metric_next[next_state]) {
+                    metric_next[next_state] = cand;
+                    pred_state[(size_t)t * n_states + next_state] = (uint8_t)prev_state;
+                    pred_input[(size_t)t * n_states + next_state] = (uint8_t)input_bit;
+                }
+            }
+        }
+
+        metric_prev.swap(metric_next);
+    }
+
+    // 802.11 encoder is terminated to zero state by tail bits
+    int state = 0;
+
+    // safety fallback
+    if (metric_prev[state] == neg_inf) {
+        int best_state = 0;
+        float best_metric = metric_prev[0];
+        for (int s = 1; s < n_states; s++) {
+            if (metric_prev[s] > best_metric) {
+                best_metric = metric_prev[s];
+                best_state = s;
+            }
+        }
+        state = best_state;
+    }
+
+    for (int t = n_data_bits - 1; t >= 0; t--) {
+        d_decoded[t] = pred_input[(size_t)t * n_states + state];
+        state = pred_state[(size_t)t * n_states + state];
+    }
+
+    return d_decoded;
+}
+
 void viterbi_decoder::reset()
 {
     viterbi_chunks_init_sse2();
