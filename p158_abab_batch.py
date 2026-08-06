@@ -219,6 +219,8 @@ def main():
     b_ds = [arms[p]['B']['gt_ok'] for p in valid]
     a_ar = [arms[p]['A']['arrived'] for p in valid]
     b_ar = [arms[p]['B']['arrived'] for p in valid]
+    a_fa = [arms[p]['A']['gt_fail'] for p in valid]
+    b_fa = [arms[p]['B']['gt_fail'] for p in valid]
 
     lines = [
         f'experiment: {exp_name}={exp_value} vs unset',
@@ -227,6 +229,10 @@ def main():
     ]
     mean_ds, p_ds = paired_report(lines, 'DECODE_SUCCESS', a_ds, b_ds)
     mean_ar, p_ar = paired_report(lines, 'ARRIVAL(enc=0 len=72)', a_ar, b_ar)
+    # Terminal-failure report (primary endpoint for decoder-stage experiments
+    # like Phase 162 where the mechanism cannot change arrival; note the sign:
+    # for FAIL a NEGATIVE mean diff (B-A < 0) means fewer failures = better).
+    mean_fa, p_fa = paired_report(lines, 'DECODE_FAIL(LDPC terminal)', a_fa, b_fa)
 
     if mean_ds is None:
         verdict = 'INCONCLUSIVE (insufficient valid pairs)'
