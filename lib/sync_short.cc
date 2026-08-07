@@ -154,6 +154,34 @@ static float parse_trigger_margin() {
     return static_cast<float>(v);
 }
 
+// Phase 162b: absolute max_cor floor for wifi_start emission (opt-in,
+// default 0.0 = OFF). On-air DIAG (2026-08-07, 4x 300s runs, 13114 episodes):
+// noise detections have episode max_cor < 100; real frames >= 593. The
+// [100, 500] band is empty (9/13114). The relative gates (adaptive threshold
+// x margin) cannot reject strong noise bursts during storm runs (p90 inflates
+// and bursts still cross); an absolute floor at the plateau peak can.
+// Mechanism attacked: noise-detection storms (43..1548 per 300s, 36x swing)
+// feed sync_long false frame-starts, killing real frames mid-flight (arrival
+// anti-correlates with noise-detection count). NOTE: the absolute value is
+// config-dependent (rx-scale/rx-gain); 200 suits the standard testbed
+// (rx-scale 40, rx-gain 31.5, real-frame max_cor ~600).
+static float parse_min_cor_floor() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_MIN_COR_FLOOR");
+    if (!env || !*env) return 0.0f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v < 0.0) {
+        fprintf(stderr, "[SYNC-SHORT] invalid MIN_COR_FLOOR '%s', using 0.0\n", env);
+        return 0.0f;
+    }
+    float f = static_cast<float>(v);
+    if (f > 0.0f) {
+        fprintf(stderr, "[SYNC-SHORT] IEEE80211_SYNC_SHORT_MIN_COR_FLOOR=%.1f "
+                "(absolute max_cor floor for wifi_start emission)\n", f);
+    }
+    return f;
+}
+
 class sync_short_impl : public sync_short
 {
 
@@ -186,7 +214,8 @@ public:
           d_copy_redetect_factor(parse_copy_redetect_factor()),
           d_copy_redetect_ema_max(parse_copy_redetect_ema_max()),
           d_copy_redetect_diag(parse_copy_redetect_diag()),
-          d_trigger_margin(parse_trigger_margin())
+          d_trigger_margin(parse_trigger_margin()),
+          d_min_cor_floor(parse_min_cor_floor())
     {
         memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
@@ -312,10 +341,27 @@ public:
                 // the bare threshold (1.3-1.8x floor), real frames cross by
                 // ~2500x; margin in the empty band kills traps, keeps frames.
                 if (in_cor[i2] > effective_threshold * d_trigger_margin) {
+                    if (in_cor[i2] > d_plateau_max_cor) {
+                        d_plateau_max_cor = in_cor[i2];
+                    }
                     if (d_plateau < MIN_PLATEAU) {
                         d_plateau++;
 
                     } else {
+                        // Phase 162b: absolute max_cor floor — reject weak
+                        // detections (noise bursts) BEFORE they reach
+                        // sync_long. Real frames peak ~600, noise <~100.
+                        if (d_min_cor_floor > 0.0f &&
+                            d_plateau_max_cor < d_min_cor_floor) {
+                            if (d_debug) {
+                                fprintf(stderr, "[SYNC-SHORT] weak detection rejected: "
+                                        "plateau_max_cor=%.3f < floor=%.1f\n",
+                                        d_plateau_max_cor, d_min_cor_floor);
+                            }
+                            d_plateau = 0;
+                            d_plateau_max_cor = 0.0f;
+                            continue;  // keep scanning; do NOT emit a tag
+                        }
                         copy_start = i2;
                         d_state = COPY;
                         d_copied = 0;
@@ -324,6 +370,7 @@ public:
                         // range). frame_equalizer handles its own CFO/SFO via L-LTF.
                         d_freq_offset = 0;
                         d_plateau = 0;
+                        d_plateau_max_cor = 0.0f;
                         // Phase 158: arm re-detection for the new COPY episode.
                         d_redetect_plateau = 0;
                         d_redetect_cooldown = false;
@@ -340,6 +387,7 @@ public:
                     }
                 } else {
                     d_plateau = 0;
+                    d_plateau_max_cor = 0.0f;
                 }
             }
 
@@ -641,6 +689,9 @@ private:
     const float d_copy_redetect_ema_max;
     const bool d_copy_redetect_diag;
     const float d_trigger_margin;   // Phase 159: plateau gate = margin x threshold
+    // Phase 162b: absolute max_cor floor for wifi_start emission (0 = OFF)
+    const float d_min_cor_floor;
+    float d_plateau_max_cor = 0.0f; // peak in_cor over the current plateau run
     // Episode diagnostic accumulators (active when d_copy_redetect_diag).
     int d_episode_len = 0;          // samples copied this COPY episode
     float d_episode_max_cor = 0.0f; // max in_cor this episode
