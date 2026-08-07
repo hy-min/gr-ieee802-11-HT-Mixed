@@ -110,6 +110,35 @@ SC −28..−23 分级衰落 + CN(0,σ²) + ZF（弱 SC 噪声放大）。
   −62% ≈ 21→8 → **端到端 ≈ 99.3%**。距 99.9%（≤3/3000）的剩余：~8 LDPC
   残存 + ~11 检测/其他 + ~4 is_ht 误判。
 
+## 5b. 后续：harness 默认翻 ON + 300s×2 长验证（2026-08-07）
+
+ABAB CONFIRMED 后按项目惯例翻 harness 默认（`test_usrp_rxonly_instrumented.py`
+setdefault `IEEE80211_DATA_SOFT_VITERBI=1`，env 可覆盖，C++ 默认仍 OFF）。
+300s×2 长验证（软开，est 3000 帧/轮）：
+
+| 轮 | PDU FCS_OK | DS（真值） | **终败** | UF/OF |
+|---|---|---|---|---|
+| run 1 | 2938/3000 (97.9%) | 3128 | **3** | 0/0 |
+| run 2 | 2970/3000 (99.0%) | 3168 | **4** | 0/0 |
+
+对比 P160 硬判决基线（PDU 2968/3000，LDPC 终败 ~21/3000）：
+- **终败 21/3000 → 3.5/3000（−83%）**，与 ABAB（−62%）同向且更强 ——
+  LDPC 终端失败类别被决定性消灭；**解码级成功率现已 ~99.9%**。
+- PDU 端到端 97.9%/99.0% 与基线 98.9% 持平在到达率噪声内（±1–3% 轮间
+  摆动，P160 同协议曾见 2030/3000=67.7% 的坏到达轮）——**端到端率现在
+  是到达率轴主导，解码不再是限制项**。+0.6pp 的解码收益被到达摆动淹没，
+  但终败指标的 −83% 是确定性的。
+
+**运行事故记录（运维教训）**：run 2 首跑挂起 ~1h —— X310 管理事务超时
+（`usrp_source: Timed out getting recv buff for management transaction`，
+设备进入坏状态；与软 viterbi 无关，init 阶段即挂）。恢复 = 杀进程组 +
+`uhd_usrp_probe` nudge。两个 gotcha：① `usrp_realtime_validate.sh` **无
+hang 超时**（p158_abab_batch.py 的 240s killpg 超时是为此存在的；直接跑
+validate 需外加看门狗）；② `setsid cmd &` 后立即 `wait $!` 拿到的是
+setsid 的瞬时退出，不是真实任务——detached 任务要等其 PID 消失而非 wait
+wrapper。Probe 报 "No devices found" 在跑流期间是**设备被占用**的正常
+表现（ping 通 + 流在跑 = 活着），不是掉线。
+
 ## 6. 产物
 
 - 提交 `6e11f87`（实现 + TDD harness）

@@ -51,6 +51,13 @@ os.environ.setdefault('IEEE80211_SYNC_SHORT_MIN_PLATEAU_OVERRIDE', '24')
 # traps at 0.26-0.36 (1.3-1.8x) — the 0.4-10 band is empty, so 2.5 loses no
 # real frames. Env-overridable; C++ default unchanged (1.0).
 os.environ.setdefault('IEEE80211_SYNC_SHORT_TRIGGER_MARGIN', '2.5')
+# Phase 162 (2026-08-06): data-path soft-decision viterbi (|H|^2-weighted LLR)
+# CONFIRMED (N=8 interleaved ABAB: terminal failures 5.25 -> 2.0/45s, -62%,
+# paired t p=0.0047; arrival unchanged p=0.83). Attacks the Phase 161 band-edge
+# SC fade tail (min|H| 13.7 vs 28.7 at SC -28/-27 -> hard-viterbi budget
+# overflow). LLR = Re(eq)*|H|^2, scale-invariant (no sigma^2 estimate).
+# Env-overridable; C++ default unchanged (OFF).
+os.environ.setdefault('IEEE80211_DATA_SOFT_VITERBI', '1')
 
 from gnuradio import gr, blocks, uhd, fft
 from gnuradio.fft import window
