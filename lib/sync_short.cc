@@ -182,6 +182,39 @@ static float parse_min_cor_floor() {
     return f;
 }
 
+// Phase 163: buffered confirm gate (opt-in, default OFF). On-air paired
+// measurement (2026-08-07, 805 episodes): trigger-point correlation OVERLAPS
+// noise (real p5=27.4/p50=37.4 vs noise max 23.3; ramp ratio p50=17.6x), so
+// NO trigger-point gate can work (the 162b failure). Post-ramp (episode) peak
+// separates cleanly: real ~600 vs noise <=40, band [100,500] empty. This gate
+// buffers the first K samples of each episode and only forwards it (with its
+// wifi_start tag) if the post-ramp peak clears the floor; weak/noise episodes
+// are dropped before they reach sync_long (no false frame-start, no FAST_SYNC
+// churn on the compressed stream). The K delay is a pure feedforward delay
+// (tags move with the samples), so downstream relative timing is unchanged.
+static float parse_confirm_floor() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_CONFIRM_FLOOR");
+    if (!env || !*env) return 0.0f;
+    char* end = nullptr;
+    double v = std::strtod(env, &end);
+    if (end == env || v < 0.0) {
+        fprintf(stderr, "[SYNC-SHORT] invalid CONFIRM_FLOOR '%s', using 0.0\n", env);
+        return 0.0f;
+    }
+    return static_cast<float>(v);
+}
+
+static int parse_confirm_k() {
+    const char* env = getenv("IEEE80211_SYNC_SHORT_CONFIRM_K");
+    if (!env || !*env) return 48;
+    int v = atoi(env);
+    if (v < 16 || v > 64) {
+        fprintf(stderr, "[SYNC-SHORT] invalid CONFIRM_K '%s', using 48\n", env);
+        return 48;
+    }
+    return v;
+}
+
 class sync_short_impl : public sync_short
 {
 
@@ -215,7 +248,9 @@ public:
           d_copy_redetect_ema_max(parse_copy_redetect_ema_max()),
           d_copy_redetect_diag(parse_copy_redetect_diag()),
           d_trigger_margin(parse_trigger_margin()),
-          d_min_cor_floor(parse_min_cor_floor())
+          d_min_cor_floor(parse_min_cor_floor()),
+          d_confirm_floor(parse_confirm_floor()),
+          d_confirm_k(parse_confirm_k())
     {
         memset(d_corr_window, 0, sizeof(d_corr_window));
         set_tag_propagation_policy(block::TPP_DONT);
@@ -362,6 +397,36 @@ public:
                             d_plateau_max_cor = 0.0f;
                             continue;  // keep scanning; do NOT emit a tag
                         }
+                        if (d_confirm_floor > 0.0f) {
+                            // Phase 163: confirm gate — peek the post-ramp
+                            // correlation over the confirm window [i2, i2+K)
+                            // (lookahead within the current chunk, read-only).
+                            // Real frames ramp to ~600; noise stays <=40.
+                            //   peak < floor (full window seen) -> reject: no
+                            //     tag, no COPY; keep scanning (noise episode is
+                            //     consumed as SEARCH = dropped from the stream).
+                            //   window past chunk end -> default CONFIRM (rare;
+                            //     never drop a possibly-real frame on an edge).
+                            float peak = d_plateau_max_cor;
+                            const int avail = ninput - i2;
+                            const int win = std::min(d_confirm_k, avail);
+                            for (int w = 0; w < win; w++) {
+                                if (in_cor[i2 + w] > peak) peak = in_cor[i2 + w];
+                            }
+                            if (peak < d_confirm_floor && avail >= d_confirm_k) {
+                                if (d_copy_redetect_diag) {
+                                    fprintf(stderr, "[P163] episode REJECTED peak=%.1f < floor=%.1f\n",
+                                            peak, d_confirm_floor);
+                                }
+                                d_plateau = 0;
+                                d_plateau_max_cor = 0.0f;
+                                continue;  // keep scanning; no tag, no COPY
+                            }
+                            if (d_copy_redetect_diag) {
+                                fprintf(stderr, "[P163] episode CONFIRMED peak=%.1f (floor=%.1f)\n",
+                                        peak, d_confirm_floor);
+                            }
+                        }
                         copy_start = i2;
                         d_state = COPY;
                         d_copied = 0;
@@ -369,6 +434,16 @@ public:
                         // The ma_cc-based estimate is unreliable for CFO (random in [-π/16, π/16]
                         // range). frame_equalizer handles its own CFO/SFO via L-LTF.
                         d_freq_offset = 0;
+                        // Phase 163: paired trigger-vs-episode DIAG. The 162b
+                        // post-mortem showed the episode-max separation band
+                        // does NOT transfer to the trigger point (correlation
+                        // still ramping). Log the plateau-peak at emission so
+                        // the trigger-point distribution can be measured and
+                        // joined with episode_end max_cor via `start`.
+                        if (d_copy_redetect_diag) {
+                            fprintf(stderr, "[P158-DIAG] trigger start=%llu trigger_cor=%.4f\n",
+                                    (unsigned long long)(nitems_read(0) + i2), d_plateau_max_cor);
+                        }
                         d_plateau = 0;
                         d_plateau_max_cor = 0.0f;
                         // Phase 158: arm re-detection for the new COPY episode.
@@ -379,6 +454,7 @@ public:
                         d_episode_len = 0; d_episode_max_cor = 0.0f;
                         d_episode_max_plateau = 0; d_episode_cur_plateau = 0;
                         d_episode_start = nitems_read(0) + i2;
+                        d_state = COPY;
                         insert_tag(nitems_written(0), d_freq_offset, nitems_read(0) + i2);
                         dout << "SHORT Frame!" << std::endl;
                         USRP_LOG( "[SYNC-SHORT] Frame detected! i=%d corr=%.3f thresh=%.3f freq_offset=%.6f (will be applied as CFO rotation)\n",
@@ -692,6 +768,9 @@ private:
     // Phase 162b: absolute max_cor floor for wifi_start emission (0 = OFF)
     const float d_min_cor_floor;
     float d_plateau_max_cor = 0.0f; // peak in_cor over the current plateau run
+    // Phase 163: buffered confirm gate (opt-in). d_confirm_floor = 0 -> OFF.
+    const float d_confirm_floor;
+    const int d_confirm_k;
     // Episode diagnostic accumulators (active when d_copy_redetect_diag).
     int d_episode_len = 0;          // samples copied this COPY episode
     float d_episode_max_cor = 0.0f; // max in_cor this episode
