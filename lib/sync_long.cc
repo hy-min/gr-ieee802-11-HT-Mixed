@@ -251,6 +251,12 @@ public:
 
             // PROBE: Show tag processing details
             std::string first_key = pmt::symbol_to_string(d_tags.front().key);
+            if (first_key == "wifi_start") {
+                // Phase 163b forensics: track the last wifi_start tag offset on
+                // ALL paths (SYNC-ignore / FAST_SYNC / HT_MIXED) so frame-commit
+                // and search logs join to the TX lattice.
+                d_last_wifi_start_tag_offset = offset;
+            }
             fprintf(stderr, "[SYNC_LONG_TAG] ntags=%zu first_key=%s offset=%llu nread=%llu state=%d d_count=%d\n",
                     d_tags.size(), first_key.c_str(), (unsigned long long)offset,
                     (unsigned long long)nread, d_state, d_count);
@@ -283,7 +289,6 @@ public:
                 if (d_state == SYNC && tag_key == "wifi_start") {
                     d_freq_offset_short = pmt::to_double(d_tags.front().value);
                     d_freq_offset = static_cast<float>(d_freq_offset_short);
-                    d_last_wifi_start_tag_offset = offset;  // Phase 163b forensics
                     fprintf(stderr, "[SYNC_LONG_P135] wifi_start tag IGNORED during SYNC "
                             "(offset=%llu nread=%llu, gate validation deferred to "
                             "search_frame_start() at SYNC_LENGTH boundary)\n",
