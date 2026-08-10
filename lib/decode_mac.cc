@@ -1291,6 +1291,19 @@ private:
                      << std::dec << std::endl;
             }
             USRP_LOG( "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d\n", d_ht_len);
+            // Phase 163b: per-frame MAC sequence-number log (opt-in) for
+            // per-frame fate forensics — missing seqs = lost frames, joinable
+            // to the 100ms TX lattice to see exactly what the chain was doing
+            // when a frame was lost. seq_ctrl at PSDU bytes 22-23 (12-bit seq
+            // in bits 4-15; mac.cc: header.seq_nr = d_seq_nr << 4).
+            {
+                static const char* env_seq = std::getenv("IEEE80211_DECODE_SEQ");
+                if (env_seq && env_seq[0] == '1' && d_ht_len >= 24) {
+                    const uint16_t seq_ctrl =
+                        (uint16_t)psdu[22] | ((uint16_t)psdu[23] << 8);
+                    USRP_LOG( "[DECODE_SEQ] seq=%d\n", (seq_ctrl >> 4) & 0xFFF);
+                }
+            }
             pmt::pmt_t blob = pmt::make_blob(psdu, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
             d_meta = pmt::dict_add(d_meta, pmt::mp("crc"), pmt::from_long(1));
