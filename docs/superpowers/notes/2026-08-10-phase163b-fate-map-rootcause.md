@@ -62,5 +62,24 @@ L-SIG/HT-SIG 对齐。sync_long 的 search_frame_start 计算出 d_frame_start
   解码/纠错，收益边际递减。
 - 当前：静轮 ~99.5%，端到端清轮残余 0.47%（8 链 + 7 解码）。
 
+## 7. 二次取证：链损机制精确定位（2026-08-10，p163d_fate.err）
+
+加 sync_long 提交点位置仪表（commit 行带 computed_fs + tag_off）+
+sync_short trigger 行带 out_pos（压缩→实时映射）后逐帧 join（0 未映射）：
+
+- **全部 21 个丢失帧 = 无 commit（搜索未提交）**，不是"提交但错位"。
+- 搜索一旦运行几乎必提交（3228/3229）；P133 S&C 门默认关，无关。
+- OK 帧 commit 的 computed_fs 分布 p5=103/p50=213/p95=238（**测量值本身就
+  远离 174**，强制到 174 反而对——因为压缩流时序使测量值系统性偏移）。
+
+**机制**：满强度帧被检测、episode 被转发，但 sync_long 的 SYNC_LENGTH 窗口
+搜索没有在其 L-LTF 上提交——压缩流上每个 episode 到达时 sync_long 的积累
+相位不同，L-LTF 没落在期望窗口位置（ideal_lower_peak=171）→ 位置敏感的
+候选搜索失败。**这是 sync_long 搜索的窗口相位敏感性，真实缺陷，非环境。**
+
+**修复方向**：让搜索窗口对齐 wifi_start 标签位置（用标签的时序信息而非
+纯边界驱动），或让 L-LTF 搜索位置宽容。但 P135 当年为激活多特征门而刻意
+改为边界驱动，此处有设计张力——需充分理解 P135 动机后再动。
+
 **产物**：`IEEE80211_DECODE_SEQ` 仪表、`p163b_fate_analysis.py`、
 `/home/hy/captures/p163b_fate.err`（持久取证快照）。

@@ -450,8 +450,9 @@ public:
                         // the trigger-point distribution can be measured and
                         // joined with episode_end max_cor via `start`.
                         if (d_copy_redetect_diag) {
-                            fprintf(stderr, "[P158-DIAG] trigger start=%llu trigger_cor=%.4f\n",
-                                    (unsigned long long)(nitems_read(0) + i2), d_plateau_max_cor);
+                            fprintf(stderr, "[P158-DIAG] trigger start=%llu trigger_cor=%.4f out_pos=%llu\n",
+                                    (unsigned long long)(nitems_read(0) + i2), d_plateau_max_cor,
+                                    (unsigned long long)nitems_written(0));
                         }
                         d_plateau = 0;
                         d_plateau_max_cor = 0.0f;

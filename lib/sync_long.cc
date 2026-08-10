@@ -283,6 +283,7 @@ public:
                 if (d_state == SYNC && tag_key == "wifi_start") {
                     d_freq_offset_short = pmt::to_double(d_tags.front().value);
                     d_freq_offset = static_cast<float>(d_freq_offset_short);
+                    d_last_wifi_start_tag_offset = offset;  // Phase 163b forensics
                     fprintf(stderr, "[SYNC_LONG_P135] wifi_start tag IGNORED during SYNC "
                             "(offset=%llu nread=%llu, gate validation deferred to "
                             "search_frame_start() at SYNC_LENGTH boundary)\n",
@@ -839,6 +840,7 @@ public:
             // the SYNC window. With SPLITTER using tag_abs_pos+16, d_frame_start
             // must be constant for correct alignment.
             int fs_offset = get_frame_start_offset();
+            const int computed_fs = d_frame_start;  // pre-force value (Phase 163b forensics)
             if (d_frame_start != 174 || fs_offset != 0) {
                 int target = FRAME_START_BASE + fs_offset;
                 fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to %d (offset=%d)\n",
@@ -847,9 +849,10 @@ public:
             }
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
-            fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f\n",
+            fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f computed_fs=%d tag_off=%llu\n",
                     best_ht_i, get<1>(vec[best_ht_i]), best_ht_k, get<1>(vec[best_ht_k]),
-                    best_ht_diff, best_ht_lower_peak, d_frame_start, best_ht_score);
+                    best_ht_diff, best_ht_lower_peak, d_frame_start, best_ht_score,
+                    computed_fs, (unsigned long long)d_last_wifi_start_tag_offset);
             valid = true;
             return valid;
         }
@@ -979,6 +982,10 @@ private:
     bool d_wifi_start_added;  // Prevent duplicate wifi_start tags
     int d_tag_skip_count;      // Samples to skip when entering COPY via tag-jump
     int d_sync_samples;        // Actual samples consumed during SYNC state
+    // Phase 163b: last wifi_start tag's absolute stream offset (real-time
+    // position anchor), logged at frame-commit so each commit joins to its
+    // TX-lattice slot for per-frame alignment forensics.
+    uint64_t d_last_wifi_start_tag_offset = 0;
 
     gr_complex* d_correlation;
     list<pair<gr_complex, int>> d_cor;
