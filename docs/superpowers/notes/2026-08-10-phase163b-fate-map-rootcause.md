@@ -81,5 +81,26 @@ sync_short trigger 行带 out_pos（压缩→实时映射）后逐帧 join（0 �
 纯边界驱动），或让 L-LTF 搜索位置宽容。但 P135 当年为激活多特征门而刻意
 改为边界驱动，此处有设计张力——需充分理解 P135 动机后再动。
 
+## 8. 三次取证终定（2026-08-10，p163e_fate.err）：never-searched
+
+加搜索尝试点位置日志（Top-correlation 行带 tag_off）后逐帧三向 join
+（episode / search / commit / seq）：
+
+- **全部 19 个丢失帧 = 从未被搜索（never-searched）**——不是"搜索了但
+  位置不合拒绝"。搜索一旦运行 3232/3232 全提交。
+- 满强度帧被检测、episode 被转发，但 sync_long 的 SYNC_LENGTH 边界搜索
+  没有覆盖其 L-LTF。
+
+**机制终定**：P135 为激活 P133 多特征门把搜索从 tag 快路径改为**纯边界
+驱动**（积累满 SYNC_LENGTH 才搜）。压缩流（sync_short 丢 SEARCH 样本）上
+每个 episode 到达时 sync_long 的积累相位不同，~0.6% 帧的 L-LTF 错过搜索
+窗口相位 → 无提交 → 链损。**这是 sync_long 搜索的窗口相位敏感性，真实
+结构性缺陷，非环境。**
+
+**修复方向（有风险）**：用 wifi_start 标签位置对齐搜索积累窗口（不绕过
+P133 门，只改窗口相位）——但这是对最脆弱文件的时序改动，且 P135 边界
+驱动是承重的（当年为激活门控）。**预期收益 ~0.5%（清轮），小于环境轮间
+摆动（±1-2%）**——端到端改善会被摆动淹没。
+
 **产物**：`IEEE80211_DECODE_SEQ` 仪表、`p163b_fate_analysis.py`、
 `/home/hy/captures/p163b_fate.err`（持久取证快照）。

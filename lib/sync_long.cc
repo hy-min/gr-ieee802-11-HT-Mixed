@@ -737,7 +737,8 @@ public:
         // Solution: Find ALL candidate pairs with diff≈80 and select the
         // one with best amplitude balance and position score.
         double top_mag = abs(get<0>(vec[0]));
-        fprintf(stderr, "[SYNC_LONG] Top correlation magnitude: %.4f\n", top_mag);
+        fprintf(stderr, "[SYNC_LONG] Top correlation magnitude: %.4f tag_off=%llu\n", top_mag,
+                (unsigned long long)d_last_wifi_start_tag_offset);
 
         // ============================================================
         // HT-mode: Find ALL candidate pairs in diff range [70, 90]
