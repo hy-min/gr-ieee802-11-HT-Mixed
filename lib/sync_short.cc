@@ -182,16 +182,20 @@ static float parse_min_cor_floor() {
     return f;
 }
 
-// Phase 163: buffered confirm gate (opt-in, default OFF). On-air paired
-// measurement (2026-08-07, 805 episodes): trigger-point correlation OVERLAPS
-// noise (real p5=27.4/p50=37.4 vs noise max 23.3; ramp ratio p50=17.6x), so
-// NO trigger-point gate can work (the 162b failure). Post-ramp (episode) peak
-// separates cleanly: real ~600 vs noise <=40, band [100,500] empty. This gate
-// buffers the first K samples of each episode and only forwards it (with its
-// wifi_start tag) if the post-ramp peak clears the floor; weak/noise episodes
-// are dropped before they reach sync_long (no false frame-start, no FAST_SYNC
-// churn on the compressed stream). The K delay is a pure feedforward delay
-// (tags move with the samples), so downstream relative timing is unchanged.
+// Phase 163: confirm gate (opt-in, default OFF). On-air paired measurement
+// (2026-08-07, 805 episodes): trigger-point correlation OVERLAPS noise (real
+// p5=27.4/p50=37.4 vs noise max 23.3; ramp ratio p50=17.6x), so NO trigger-
+// point gate can work (the 162b failure). Post-ramp (episode) peak separates
+// cleanly: real ~600 vs noise <=40, band [100,500] empty. At the plateau
+// trigger, this gate peeks in_cor over [i2, i2+K) (read-only lookahead within
+// the current chunk); a full window with peak < floor is rejected (no tag, no
+// COPY — the noise episode is consumed as SEARCH, never reaching sync_long).
+// A window extending past the chunk end defaults to CONFIRM (never drop a
+// possibly-real frame on an edge). Confirmed frames forward byte-identically
+// to the OFF path (no buffer, no tag shift). NOTE (2026-08-10): NOT CONFIRMED
+// on USRP realtime — N=8 ABAB DS -3.4 (p=0.032), garbage L-SIG +12; the edge
+// default-confirm leaks sustained storm bursts straddling chunk boundaries.
+// Kept opt-in default OFF. See 2026-08-10-phase163 verdict.
 static float parse_confirm_floor() {
     const char* env = getenv("IEEE80211_SYNC_SHORT_CONFIRM_FLOOR");
     if (!env || !*env) return 0.0f;
@@ -201,7 +205,12 @@ static float parse_confirm_floor() {
         fprintf(stderr, "[SYNC-SHORT] invalid CONFIRM_FLOOR '%s', using 0.0\n", env);
         return 0.0f;
     }
-    return static_cast<float>(v);
+    float f = static_cast<float>(v);
+    if (f > 0.0f) {
+        fprintf(stderr, "[SYNC-SHORT] IEEE80211_SYNC_SHORT_CONFIRM_FLOOR=%.1f "
+                "(post-ramp confirm gate for wifi_start emission)\n", f);
+    }
+    return f;
 }
 
 static int parse_confirm_k() {
