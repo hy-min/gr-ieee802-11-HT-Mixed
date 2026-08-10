@@ -3627,6 +3627,7 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                                        const char** out_fail_reason = nullptr,
                                        bool use_soft_llr = false,
                                        bool use_soft_llr_v2 = false,    // Phase 129: 4·Im(eq)·|H|²/σ² LLR formula
+                                       bool use_soft_llr_h2 = false,    // Phase 164: σ²-free Im(eq)·|H|² LLR
                                        int  n0_percentile = 0,         // Phase 47: 0=disabled, 1-49=enabled
                                        bool apply_htsig_per_symbol_delta = false,  // Phase 79: δ tracking
                                        bool log_htsig_delta_dump = false,         // Phase 79: δ dump
@@ -3832,6 +3833,30 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 }
             }
             if (out_sigma2_a) *out_sigma2_a = sigma2_a;
+        }
+        // Phase 164: σ²-free |H|²-weighted LLR for HT-SIG0 (overrides P44/v2).
+        // llr = Im(eq)·|H|² / mean(|H|²). The relative |H|² weighting (the
+        // rescue mechanism) is preserved; dividing by the per-frame mean |H|²
+        // calibrates the magnitude to ~±1, which viterbi_decode_133_171_soft's
+        // SQUARED-ERROR metric requires (an uncalibrated llr ~±360000 makes
+        // every branch metric ~r² and the trellis can't distinguish paths).
+        if (use_soft_llr && use_soft_llr_h2) {
+            float mean_h2 = 0.0f;
+            for (int i = 0; i < 48; i++) {
+                mean_h2 += std::abs(H52_a[i]) * std::abs(H52_a[i]);
+            }
+            mean_h2 /= 48.0f;
+            if (mean_h2 < 1e-9f) mean_h2 = 1e-9f;
+            for (int i = 0; i < 48; i++) {
+                if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
+                    llr48_a[i] = 0.0f;
+                } else {
+                    const float hm2 = std::abs(H52_a[i]) * std::abs(H52_a[i]);
+                    const float eq_val = htsig_bpsk_fallback
+                        ? eq_stash_a[i].real() : eq_stash_a[i].imag();
+                    llr48_a[i] = eq_val * hm2 / mean_h2;
+                }
+            }
         }
     }
 
@@ -4082,6 +4107,25 @@ static bool decode_htsig_from_rotated(const gr_complex* rx52_a,
                 }
             }
             if (out_sigma2_b) *out_sigma2_b = sigma2_b;
+        }
+        // Phase 164: σ²-free |H|²-weighted LLR for HT-SIG1 (overrides P44/v2).
+        if (use_soft_llr && use_soft_llr_h2) {
+            float mean_h2 = 0.0f;
+            for (int i = 0; i < 48; i++) {
+                mean_h2 += std::abs(H52_b[i]) * std::abs(H52_b[i]);
+            }
+            mean_h2 /= 48.0f;
+            if (mean_h2 < 1e-9f) mean_h2 = 1e-9f;
+            for (int i = 0; i < 48; i++) {
+                if (htsig_null_sc_mask && htsig_null_sc_mask[i]) {
+                    llr48_b[i] = 0.0f;
+                } else {
+                    const float hm2 = std::abs(H52_b[i]) * std::abs(H52_b[i]);
+                    const float eq_val = htsig_bpsk_fallback
+                        ? eq_stash_b[i].real() : eq_stash_b[i].imag();
+                    llr48_b[i] = eq_val * hm2 / mean_h2;
+                }
+            }
         }
     }
 
@@ -5473,6 +5517,27 @@ frame_equalizer_impl::frame_equalizer_impl(Equalizer algo,
         if (d_data_soft_viterbi) {
             std::cout << "[FRAME_EQ] IEEE80211_DATA_SOFT_VITERBI=1 "
                       << "(emit soft_h2 per-SC |H|^2 weights for decode_mac soft viterbi)\n";
+        }
+    }
+
+    // Phase 164: P162-style σ²-free |H|²-weighted LLR for HT-SIG (opt-in).
+    // llr = Im(eq)·|H|². The soft viterbi is invariant to a per-frame global
+    // scale, so no σ² estimate is needed — this sidesteps the P129 v2
+    // σ²-from-nulls failure mode (REFUTED in the delta-on era). Validated on
+    // the delta-OFF baseline by the P162 data-path success. Requires
+    // IEEE80211_SOFT_LLR_VITERBI=1.
+    {
+        const char* env_h2 = std::getenv("IEEE80211_HTSIG_SOFT_LLR_H2");
+        d_use_soft_llr_h2 = (env_h2 && env_h2[0] == '1');
+        if (d_use_soft_llr_h2) {
+            if (!d_use_soft_llr_viterbi) {
+                std::cout << "[FRAME_EQ] WARNING: IEEE80211_HTSIG_SOFT_LLR_H2=1 requires "
+                          << "IEEE80211_SOFT_LLR_VITERBI=1; ignoring h2 setting.\n";
+                d_use_soft_llr_h2 = false;
+            } else {
+                std::cout << "[FRAME_EQ] IEEE80211_HTSIG_SOFT_LLR_H2=1 "
+                          << "(σ²-free LLR = Im(eq)·|H|² for HT-SIG soft viterbi)\n";
+            }
         }
     }
 
@@ -8801,6 +8866,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                                            &cand_fail,
                                                            d_use_soft_llr_viterbi,
                                                            d_use_soft_llr_v2,
+                                                           d_use_soft_llr_h2,
                                                            d_mmse_equalize ? d_mmse_n0_percentile : 0,
                                                            d_apply_htsig_per_symbol_delta,
                                                            d_log_htsig_delta_dump,
@@ -9111,6 +9177,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                             0, &cand_metric, &cand_fail,
                             d_use_soft_llr_viterbi,
                             d_use_soft_llr_v2,
+                                                           d_use_soft_llr_h2,
                             d_mmse_equalize ? d_mmse_n0_percentile : 0,
                             d_apply_htsig_per_symbol_delta,
                             false, nullptr, false, nullptr,
@@ -9485,6 +9552,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                                 0, &cand_metric, &cand_fail,
                                 d_use_soft_llr_viterbi,
                                 d_use_soft_llr_v2,
+                                                           d_use_soft_llr_h2,
                                 d_mmse_equalize ? d_mmse_n0_percentile : 0,
                                 d_apply_htsig_per_symbol_delta,
                                 false, nullptr, false, nullptr,

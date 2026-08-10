@@ -468,6 +468,10 @@ private:
     // Stashed so [HTSIG_SOFT_LLR_V2] log line can include both σ²_a and σ²_b.
     float d_sigma2_htsig_a            = 0.0f;
     float d_sigma2_htsig_b            = 0.0f;
+    // Phase 164: P162-style σ²-free |H|²-weighted LLR for HT-SIG soft viterbi.
+    // llr = Im(eq)·|H|² (no σ² estimate). Requires IEEE80211_SOFT_LLR_VITERBI=1.
+    // Enable via IEEE80211_HTSIG_SOFT_LLR_H2=1. Default OFF.
+    bool d_use_soft_llr_h2            = false;
 
     // Phase 162: emit per-SC |H|^2 reliability weights as a "soft_h2" stream
     // tag at frame start (same offset as frame_bytes/mcs), consumed by
