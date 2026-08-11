@@ -58,6 +58,15 @@ os.environ.setdefault('IEEE80211_SYNC_SHORT_TRIGGER_MARGIN', '2.5')
 # overflow). LLR = Re(eq)*|H|^2, scale-invariant (no sigma^2 estimate).
 # Env-overridable; C++ default unchanged (OFF).
 os.environ.setdefault('IEEE80211_DATA_SOFT_VITERBI', '1')
+# Phase 165c (2026-08-11): L-SIG 4-rot candidate search (90deg step, 2 inv).
+# systematic-debugging root cause: the L-SIG candidate loop defaulted to
+# n_rot=1 (rot=0 only), so frames whose L-SIG constellation was rotated ~90
+# degrees by instantaneous phase noise always failed hard-decision. 4-rot
+# rescues them. Cable -20dB 2x300s: PDU 2981/2980 -> 2990/2983 (99.35 ->
+# 99.55% stable). FINE_ROT (8x45deg) flat vs 4-rot (99.53%) — residual
+# rotations are 90-degree multiples, 4-rot covers fully. Env-overridable;
+# C++ default unchanged (n_rot=1).
+os.environ.setdefault('IEEE80211_LSIG_VITERBI_CANDIDATE', '1')
 
 from gnuradio import gr, blocks, uhd, fft
 from gnuradio.fft import window
