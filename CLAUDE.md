@@ -3,6 +3,16 @@
 > **📌 先读这个：** [项目阶段性反思总结（100+ phase 经验教训）](docs/superpowers/notes/2026-07-15-project-retrospective.md) —
 > 核心教训：解码器早已正确；真正的瓶颈是"帧到不了解码器"（调度 stall / 段错误 / 同步），不是均衡器。先根因后修复；每次卡住先定位"瓶颈在哪一层"。
 
+> **📌 当前状态（2026-08-11）：USRP realtime FCS_OK 已达成且稳健。**
+> **电缆最优配置 = 稳定 99.55%（PDU 2990/2983/2986 per 300s，无风暴轮）**：
+> ```bash
+> IEEE80211_LSIG_VITERBI_CANDIDATE=1 ./usrp_realtime_validate.sh --tx-scale 0.1
+> ```
+> 空口 = 99.5–99.8%±环境风暴轮（轮间 ±1–2%）。残余 0.4% = LO 相位噪声
+> 瞬时爆发帧（rot 候选/软判决均证伪）+ 数据衰落尾 + 链上瞬时损；软件杠杆
+> 已穷尽，**突破 99.9% 的唯一原理路径 = 外部 10 MHz 参考/GPSDO**（压 LO）。
+> 收官报告：`docs/superpowers/notes/2026-08-11-project-synthesis-report.md`。
+
 ## Project Goal: USRP Realtime FCS_OK (ABSOLUTE — DO NOT ACCEPT CLOSURE)
 
 **This is the user's explicit, binding goal: 实现 USRP realtime FCS_OK
@@ -34,24 +44,22 @@ following hierarchy applies:
    - Phrases like "the project has reached its limit", "we have done
      everything possible", "give up on USRP realtime", or any variant
 
-## Implications for Phase 111+
+## Implications for Phase 165+（2026-08-11 更新）
 
-- **Equalizer layer is NOT closed** despite 30+ REFUTED fixes. The user's
-  goal is USRP realtime FCS_OK, and equalizer attacks must continue.
-- Any verdict ending in BLOCKED must include a concrete Phase 111+
-  attack plan that operates **on or upstream of** the blocker (equalizer,
-  L-LTF0 path, splitter port, RF chain, new architecture, etc.) — not
-  just "leave the code as opt-in".
-- Accepting USRP HT-SIG as "not solvable" is NOT an acceptable project
-  outcome. The project's success criterion is USRP realtime FCS_OK.
-- Software loopback 3/3 PASS is preserved as a regression check, but
-  cannot substitute for USRP verification.
-- **Each new equalizer attack hypothesis must be tried with discipline**:
-  single-variable change, verifiable on synthetic first, then USRP.
-  REFUTED is a step toward the goal, not a reason to stop.
-- **New architecture proposals are welcome**: decision-directed equalizer,
-  Kalman-filter H tracking, alternative channel estimation algorithms,
-  per-frame phase tracking, etc. The user wants these explored.
+- **软件层已到物理墙**：检测 100%、帧提交 100%、解码 ~99.9%（P162 软
+  viterbi）、L-SIG 旋转帧已救（P165c 4-rot 候选）。残余 0.4% = LO 相位
+  噪声瞬时爆发 + 数据衰落尾 + 链上瞬时损，软件杠杆（软判决/Wiener/
+  cross-frame/CPE 族/门控族）全部证伪或用尽。
+- **突破 99.9% 的路径 = 硬件**：外部 10 MHz 参考/GPSDO（压 LO，唯一有
+  原理）；增益喇叭（救 SNR 相关成分，对 LO 无效，预期 99.5→99.6-99.7%）。
+- **新假设仍须纪律**：单变量、先合成后 USRP、实时配对 ABAB 金标准。
+  已证伪方向（避免重复）：HT-SIG 软判决（P164）、L-SIG FINE_ROT 45°
+  （P165d，4-rot 已最优）、sync_short 侧门控（P162b/P163）、Wiener/
+  cross-frame H 平均（P141/P140）、CPE 修正族（P161）。
+- Software loopback 3/3 PASS 保留为回归门，不能替代 USRP 验证。
+- 电缆模式（P165）：裸缆过驱动（+5dBm 超 UBX-160 线性区 20dB）→
+  `--tx-scale 0.1`（TX 软件衰减）修复；rx-gain 低会推 boxcar 贴地板
+  （勿降到 <20）。
 
 ## Project-Specific Conventions
 
@@ -60,7 +68,13 @@ following hierarchy applies:
   edit `wifi_phy_hier.py` directly.
 - **Thread-safe logging**: `USRP_LOG` is non-atomic. Multi-value dumps use
   `snprintf` + `USRP_LOG("%s", buf)` per commit `e90e3f5`.
-- **env vars default OFF**: all new env vars opt-in to preserve baseline.
+- **env vars default OFF**: all new env vars opt-in to preserve baseline
+  (EXCEPT harness-setdefault ones below: DATA_SOFT_VITERBI, LSIG_VITERBI_CANDIDATE
+  — C++ defaults unchanged).
+- **Harness env defaults (test_usrp_rxonly_instrumented.py setdefault, env-overridable)**:
+  `IEEE80211_LSIG_RATE_FORCE=0xD TIMING_OFFSET_APPLY=0 HDR_COMP_DISABLE=1
+  H52_2WAY_DEFAULT=0 SYNC_SHORT_FUSED_USE_BOXCAR=1 SYNC_SHORT_USE_ADAPTIVE_THRESH=1
+  MIN_PLATEAU=24 TRIGGER_MARGIN=2.5 DATA_SOFT_VITERBI=1 LSIG_VITERBI_CANDIDATE=1`
 - **Standard USRP test config** (preserved across all phases):
   `IEEE80211_LSIG_RATE_FORCE=0xD IEEE80211_TIMING_OFFSET_APPLY=0
   --freq 5890 --tx-gain 20`
