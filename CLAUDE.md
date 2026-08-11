@@ -3,14 +3,21 @@
 > **📌 先读这个：** [项目阶段性反思总结（100+ phase 经验教训）](docs/superpowers/notes/2026-07-15-project-retrospective.md) —
 > 核心教训：解码器早已正确；真正的瓶颈是"帧到不了解码器"（调度 stall / 段错误 / 同步），不是均衡器。先根因后修复；每次卡住先定位"瓶颈在哪一层"。
 
-> **📌 当前状态（2026-08-11）：USRP realtime FCS_OK 已达成且稳健。**
-> **电缆最优配置 = 稳定 99.55%（PDU 2990/2983/2986 per 300s，无风暴轮）**：
+> **📌 当前状态（2026-08-11）：USRP realtime FCS_OK 已达成且稳健。
+> Phase 166 系统验证完成：四条额外软件攻击线全部封闭。**
+> **电缆最优配置 = 稳定 99.55%**：
 > ```bash
 > IEEE80211_LSIG_VITERBI_CANDIDATE=1 ./usrp_realtime_validate.sh --tx-scale 0.1
 > ```
-> 空口 = 99.5–99.8%±环境风暴轮（轮间 ±1–2%）。残余 0.4% = LO 相位噪声
-> 瞬时爆发帧（rot 候选/软判决均证伪）+ 数据衰落尾 + 链上瞬时损；软件杠杆
-> 已穷尽，**突破 99.9% 的唯一原理路径 = 外部 10 MHz 参考/GPSDO**（压 LO）。
+> 残余 0.47%（~15/3198 帧/300s）= 链损 ~0.25%（sync_short 流压缩 →
+> sync_long L-LTF 到达时间抖动 → d_frame_start=174 强制导致 ISI）
+> + 解码终败 ~0.22%（频带边缘 SC H 估计质量，\|H\|² 软判决和 LDPC 均已
+> 证伪为不可进一步改善）。Phase 166 完整记录：
+> - 166a: 标签驱动 d_frame_start — ❌ 根本限制（标签始终在窗口位置 0）
+> - 166b: 频域时域偏移搜索 — ⚠️ 边际（只能修 CP 内移位，不能修 ISI）
+> - 166c: H-retest δ-OFF 基线 — ❌ Wiener/Freq-smooth/FINE_ROT 全部推翻
+> - 166d: LDPC 编码 ABAB — ❌ NOT CONFIRMED（限制在 H 质量，非码强度）
+> **突破 99.9% 的唯一原理路径 = 外部 10 MHz 参考/GPSDO**（压 LO 相位噪声）。
 > 收官报告：`docs/superpowers/notes/2026-08-11-project-synthesis-report.md`。
 
 ## Project Goal: USRP Realtime FCS_OK (ABSOLUTE — DO NOT ACCEPT CLOSURE)
@@ -44,17 +51,27 @@ following hierarchy applies:
    - Phrases like "the project has reached its limit", "we have done
      everything possible", "give up on USRP realtime", or any variant
 
-## Implications for Phase 165+（2026-08-11 更新）
+## Implications for Phase 166+（2026-08-11 更新）
 
-- **软件层已到物理墙**：检测 100%、帧提交 100%、解码 ~99.9%（P162 软
-  viterbi）、L-SIG 旋转帧已救（P165c 4-rot 候选）。残余 0.4% = LO 相位
-  噪声瞬时爆发 + 数据衰落尾 + 链上瞬时损，软件杠杆（软判决/Wiener/
-  cross-frame/CPE 族/门控族）全部证伪或用尽。
-- **突破 99.9% 的路径 = 硬件**：外部 10 MHz 参考/GPSDO（压 LO，唯一有
+- **软件层已穷尽（Phase 166 系统验证）**：检测 100%、帧提交 100%、
+  解码 ~99.9%（P162 软 viterbi）、L-SIG 旋转帧已救（P165c 4-rot 候选）。
+  四条额外软件攻击线在 Phase 166 全部封闭：
+  - 标签驱动 d_frame_start（P166a）：❌ 标签始终在 FAST_SYNC 到达（窗口位置 0）
+  - 频域时域偏移搜索（P166b）：⚠️ 只能修 CP 内移位，不能修 ISI
+  - H-retest δ-OFF（P166c）：❌ Wiener/Freq-smooth/FINE_ROT 全部推翻
+  - LDPC 编码 ABAB（P166d）：❌ NOT CONFIRMED（限制在 H 估计质量）
+- **残余 0.47%（~15/3198 帧/300s）= 链损 ~0.25% + 解码终败 ~0.22%**
+  - 链损根因：sync_short SEARCH 态流压缩 → sync_long L-LTF 到窗时间抖动 → d_frame_start=174 强制导致 ISI
+  - 解码终败根因：频带边缘 SC H 估计质量（min|H|~13.7），软判决和 LDPC 均无法补偿
+- **突破 99.9% 的唯一原理路径 = 硬件**：外部 10 MHz 参考/GPSDO（压 LO，唯一有
   原理）；增益喇叭（救 SNR 相关成分，对 LO 无效，预期 99.5→99.6-99.7%）。
 - **新假设仍须纪律**：单变量、先合成后 USRP、实时配对 ABAB 金标准。
-  已证伪方向（避免重复）：HT-SIG 软判决（P164）、L-SIG FINE_ROT 45°
-  （P165d，4-rot 已最优）、sync_short 侧门控（P162b/P163）、Wiener/
+  已证伪方向（避免重复）；Phase 166 新增：
+  Wiener H52 δ-OFF 重测（P166c）、Freq Lowpass H52 δ-OFF 重测（P166c）、
+  LSIG FINE_ROT δ-OFF 重测（P166c）、标签驱动 d_frame_start（P166a）、
+  LDPC 编码（P166d）。
+  历史已证伪：HT-SIG 软判决（P44/P129/P164）、L-SIG FINE_ROT 45°
+  （P165d/P166c，4-rot 已最优）、sync_short 侧门控（P162b/P163）、Wiener/
   cross-frame H 平均（P141/P140）、CPE 修正族（P161）。
 - Software loopback 3/3 PASS 保留为回归门，不能替代 USRP 验证。
 - 电缆模式（P165）：裸缆过驱动（+5dBm 超 UBX-160 线性区 20dB）→
@@ -468,6 +485,25 @@ following hierarchy applies:
   constant 30° as Phase 107 hypothesized. Fix DOES reduce |eq|^2 max outlier
   by ~100x (18827 → 175) but mean FCS_OK is unchanged (11 → 11 across 5 runs
   each). Preserved as opt-in for debugging. Phase 108 verdict 2026-07-06.
+
+- **IEEE80211_SYNC_LONG_TAG_ALIGNED=1** — Phase 166a tag-aligned d_frame_start
+  estimation (opt-in, default OFF). Uses wifi_start tag position to derive expected
+  L-LTF T1 position, replacing forced d_frame_start=174. **Fundamentally limited:**
+  tag always arrives during COPY→SYNC FAST_SYNC transition (window position 0),
+  provides no per-frame timing discrimination. Feature is a harmless no-op on USRP
+  (tag_rel=-1 → falls back to baseline forcing). Code in `lib/sync_long.cc`.
+- **IEEE80211_LSIG_TIME_OFFSET_SEARCH=1** — Phase 166b frequency-domain time-offset
+  search for L-SIG viterbi (opt-in, default OFF). Tries τ ∈ {-4,-2,0,+2,+4} FFT
+  window offsets via phase ramp `exp(-j·2π·k·τ/64)` on H52, picks best L-SIG decode.
+  Marginal: 18.7% frames choose non-zero τ (all negative) but no significant DS
+  improvement. Corrects CP cyclic shift but cannot fix ISI (chain loss root cause).
+  Code in `lib/frame_equalizer_impl.cc`.
+- **IEEE80211_USE_LDPC=1** (env) / **--ldpc** (CLI) — Phase 166d LDPC encoding
+  (opt-in, default OFF = BCC). Passes `use_ldpc=True` to wifi_phy_hier TX mapper.
+  RX chain auto-detects via `use_ldpc` stream tag. **NOT CONFIRMED: N=4 ABAB
+  DS -5.7% (p=0.30), FAIL +2.5 (p=0.23).** LDPC's stronger error correction
+  doesn't help because limit is H estimation quality (input LLR), not code strength.
+  Supported in `test_usrp_rxonly_instrumented.py` and `usrp_realtime_validate.sh`.
 
 ## Reference
 

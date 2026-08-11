@@ -9,6 +9,7 @@
 #   ./usrp_realtime_validate.sh [--threshold N] [--windows K] [--run SECS]
 # Exit 0 = PASS (FCS_OK ground-truth >= threshold), 1 = FAIL (path regressed).
 set -u
+LDPC_FLAG=""
 cd "$(dirname "$0")"
 
 THRESHOLD=15          # ground-truth DECODE_SUCCESS across all windows (PASS floor)
@@ -31,9 +32,15 @@ while [ $# -gt 0 ]; do
     --windows)   WINDOWS="$2"; shift 2;;
     --run)       RUN="$2"; shift 2;;
     --tx-scale)  TXSCALE="$2"; shift 2;;
+    --ldpc)      LDPC_FLAG="--ldpc"; shift;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
+
+# LDPC can also be enabled via env var (for ABAB framework)
+if [ "${IEEE80211_USE_LDPC:-0}" = "1" ]; then
+  LDPC_FLAG="--ldpc"
+fi
 
 SCALES=$(python3 -c "print(','.join(['$RXSCALE']*$WINDOWS))")
 EST_SENT=$(( WINDOWS * RUN * 1000 / INTERVAL ))
@@ -57,6 +64,7 @@ unset LD_LIBRARY_PATH
 LD_PRELOAD=./wrap_rpc2.so PYTHONPATH=build/python/bindings:python:examples \
   /home/hy/conda/envs/gnuradio/bin/python test_usrp_rxonly_instrumented.py \
     --freq "$FREQ" --tx-gain "$TXGAIN" --tx-scale "$TXSCALE" --rx-gain "$RXGAIN" --rx-scale "$RXSCALE" \
+    $LDPC_FLAG \
     --interval "$INTERVAL" --warmup 20 --run "$RUN" --scales "$SCALES" \
     >"$OUT" 2>"$ERR"
 rc=$?

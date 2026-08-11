@@ -168,7 +168,11 @@ public:
           d_sum_sc_r(0.0f),
           SYNC_LENGTH(sync_length),
           d_chunk_invariant(false),
-          d_stash_len(0)
+          d_stash_len(0),
+          d_tag_align_enabled(false),
+          d_window_start_abs(0),
+          d_tag_rel_in_window(-1),
+          d_tag_align_threshold(30)
     {
 
         set_tag_propagation_policy(block::TPP_DONT);
@@ -180,6 +184,16 @@ public:
         d_chunk_invariant = (getenv("IEEE80211_SYNC_LONG_CHUNK_INVARIANT") != nullptr);
         if (d_chunk_invariant) {
             fprintf(stderr, "[SYNC_LONG_P151] chunk-invariant accumulation ENABLED\n");
+        }
+
+        // Phase 166: tag-aligned d_frame_start estimation (opt-in, default OFF).
+        // When enabled, sync_short's wifi_start tag position is used to derive
+        // the expected L-LTF T1 position within the SYNC window, replacing the
+        // forced d_frame_start=174 heuristic that causes ~0.25% chain loss.
+        d_tag_align_enabled = (getenv("IEEE80211_SYNC_LONG_TAG_ALIGNED") != nullptr);
+        if (d_tag_align_enabled) {
+            fprintf(stderr, "[SYNC_LONG_P166] tag-aligned d_frame_start ENABLED "
+                    "(threshold=%d)\n", d_tag_align_threshold);
         }
 
         // Phase 133 T3: Initialize Schmidl-Cox ring buffers
@@ -256,6 +270,21 @@ public:
                 // ALL paths (SYNC-ignore / FAST_SYNC / HT_MIXED) so frame-commit
                 // and search logs join to the TX lattice.
                 d_last_wifi_start_tag_offset = offset;
+
+                // Phase 166: tag-aligned d_frame_start — compute the tag's
+                // position within the current SYNC window. Uses absolute
+                // stream offsets: tag_abs - window_start_abs = position of
+                // L-STF END within the 320-sample window. L-LTF T1 data
+                // starts at tag_rel + 32 (L-LTF GI) later.
+                if (d_tag_align_enabled && d_state == SYNC &&
+                    d_window_start_abs > 0) {
+                    int64_t rel = (int64_t)offset - (int64_t)d_window_start_abs;
+                    if (rel >= 0 && rel < SYNC_LENGTH) {
+                        d_tag_rel_in_window = (int)rel;
+                    } else {
+                        d_tag_rel_in_window = -1; // tag outside window
+                    }
+                }
             }
             fprintf(stderr, "[SYNC_LONG_TAG] ntags=%zu first_key=%s offset=%llu nread=%llu state=%d d_count=%d\n",
                     d_tags.size(), first_key.c_str(), (unsigned long long)offset,
@@ -329,6 +358,7 @@ public:
                             int saved_count = d_count;
                             d_state = SYNC;
                             d_offset = 0;
+                            d_window_start_abs = nitems_read(0); // Phase 166 (approx, no loop var)
                             d_wifi_start_added = false;
                             d_cor.clear();
                             d_count = 0;
@@ -401,8 +431,10 @@ public:
 
                         if (d_offset == SYNC_LENGTH) {
                             bool detected = search_frame_start();
+                            d_tag_rel_in_window = -1; // Phase 166: consumed
                             mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                             d_offset = 0;
+                            d_window_start_abs = nitems_read(0); // Phase 166
                             d_count = 0;
                             if (detected) {
                                 d_state = COPY;
@@ -624,6 +656,7 @@ public:
             while (o < noutput && i < ninput) {
                 if (o > 0 && ((d_count + o) % 64) == 0) {
                     d_offset = 0;
+                    d_window_start_abs = nitems_read(0) + o; // Phase 166
                     d_wifi_start_added = false;
                     d_sync_samples = 0;  // Reset for new SYNC phase
                     d_state = SYNC;
@@ -838,27 +871,78 @@ public:
             int offset_compensation = 13;
             d_frame_start = best_ht_lower_peak + 1 - offset_compensation;
             if (d_frame_start < 0) d_frame_start = 0;
-            // CRITICAL FIX: Force d_frame_start=174 for all frames. Frame 1 works
-            // perfectly with d_frame_start=174 (LTF_CORR=0.9990). Frame 2+ have
-            // correlation peaks shifted by L-STF interference (lower_peak=199-201
-            // instead of 172). The preamble structure is identical for all frames;
-            // L-LTF0 DATA should always start at the same relative offset within
-            // the SYNC window. With SPLITTER using tag_abs_pos+16, d_frame_start
-            // must be constant for correct alignment.
+
+            // Phase 166: tag-aligned d_frame_start estimation.
+            // Phase 163b root cause: sync_short's stream compression causes
+            // L-LTF to land at variable positions within sync_long's SYNC window.
+            // The forced d_frame_start=174 is correct for frames whose true
+            // L-LTF is at or after 174, but causes ISI for frames whose L-LTF
+            // is before 174 (~0.25%). The wifi_start tag (L-STF end) gives us
+            // the true preamble timing; L-LTF T1 = tag + 32 (GI) samples later.
             int fs_offset = get_frame_start_offset();
             const int computed_fs = d_frame_start;  // pre-force value (Phase 163b forensics)
-            if (d_frame_start != 174 || fs_offset != 0) {
-                int target = FRAME_START_BASE + fs_offset;
-                fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to %d (offset=%d)\n",
-                        d_frame_start, target, fs_offset);
-                d_frame_start = target;
+            const int forced_target = FRAME_START_BASE + fs_offset;
+
+            if (d_tag_align_enabled && d_tag_rel_in_window >= 0) {
+                // tag_rel_in_window = tag position within the SYNC window
+                // L-LTF T1 starts at: tag_rel + L_STF_END_TO_L_LTF_T1
+                int tag_expected = d_tag_rel_in_window + L_STF_END_TO_L_LTF_T1;
+
+                // Sanity check: tag_expected must be physically near the
+                // known-good forced_target (174). On 10 MHz loopback the tag
+                // timing differs (8-sample L-STF period vs 16-sample at 20 MHz),
+                // so tag_rel_in_window can be 0 and tag_expected=32 which is
+                // wrong. Only trust the tag when it produces a reasonable
+                // d_frame_start (within ±64 of forced_target).
+                bool tag_reasonable =
+                    (std::abs(tag_expected - forced_target) < 64);
+
+                // When computed_fs is far from the forced target (174), the
+                // correlation search is unreliable and the force would cause ISI.
+                // Use the tag-derived estimate instead — but only if it's
+                // physically reasonable.
+                int deviation = std::abs(computed_fs - forced_target);
+                if (deviation > d_tag_align_threshold && tag_reasonable) {
+                    int prev = d_frame_start;
+                    d_frame_start = tag_expected;
+                    if (d_frame_start < 0) d_frame_start = 0;
+                    if (d_frame_start >= SYNC_LENGTH) d_frame_start = SYNC_LENGTH - 1;
+                    fprintf(stderr, "[SYNC_LONG_P166] tag-aligned: "
+                            "computed_fs=%d forced_target=%d deviation=%d "
+                            "tag_rel=%d tag_expected=%d d_frame_start=%d->%d "
+                            "score=%.2f\n",
+                            computed_fs, forced_target, deviation,
+                            d_tag_rel_in_window, tag_expected,
+                            prev, d_frame_start, best_ht_score);
+                } else {
+                    // computed_fs is close to 174 OR tag is unreasonable —
+                    // keep existing forced-target behavior
+                    d_frame_start = forced_target;
+                    const char* reason = (!tag_reasonable)
+                        ? "tag_unreasonable" : "deviation<=threshold";
+                    fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to %d "
+                            "(offset=%d) [tag_aligned, %s deviation=%d tag_expected=%d]\n",
+                            computed_fs, d_frame_start, fs_offset, reason,
+                            deviation, tag_expected);
+                }
+            } else {
+                // Baseline: force to FRAME_START_BASE (174)
+                if (d_frame_start != 174 || fs_offset != 0) {
+                    int target = forced_target;
+                    fprintf(stderr, "[SYNC_LONG] d_frame_start=%d -> forcing to %d "
+                            "(offset=%d)\n",
+                            d_frame_start, target, fs_offset);
+                    d_frame_start = target;
+                }
             }
             mode = "HT-mode-plateau";
             d_freq_offset = d_freq_offset_short;
-            fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f computed_fs=%d tag_off=%llu\n",
+            fprintf(stderr, "[SYNC_LONG] HT-mode-plateau SELECTED: best_i=%d(idx=%d) best_k=%d(idx=%d) best_diff=%d best_lower_peak=%d d_frame_start=%d score=%.2f computed_fs=%d tag_off=%llu tag_rel=%d win_start=%llu\n",
                     best_ht_i, get<1>(vec[best_ht_i]), best_ht_k, get<1>(vec[best_ht_k]),
                     best_ht_diff, best_ht_lower_peak, d_frame_start, best_ht_score,
-                    computed_fs, (unsigned long long)d_last_wifi_start_tag_offset);
+                    computed_fs, (unsigned long long)d_last_wifi_start_tag_offset,
+                    d_tag_align_enabled ? d_tag_rel_in_window : -1,
+                    d_tag_align_enabled ? (unsigned long long)d_window_start_abs : 0ULL);
             valid = true;
             return valid;
         }
@@ -992,6 +1076,20 @@ private:
     // position anchor), logged at frame-commit so each commit joins to its
     // TX-lattice slot for per-frame alignment forensics.
     uint64_t d_last_wifi_start_tag_offset = 0;
+
+    // Phase 166: tag-aligned d_frame_start estimation. When enabled, the
+    // wifi_start tag's position within the SYNC window is used to derive an
+    // expected L-LTF position, replacing the forced d_frame_start=174
+    // heuristic. This eliminates chain losses (~0.25%) caused by the forced
+    // constant being wrong for frames whose L-LTF lands at a different
+    // position due to stream-compression jitter. Opt-in via env var
+    // IEEE80211_SYNC_LONG_TAG_ALIGNED=1 (default OFF).
+    bool d_tag_align_enabled;
+    uint64_t d_window_start_abs;  // absolute stream offset when SYNC window started
+    int  d_tag_rel_in_window;     // tag position relative to window start (computed
+                                  // as tag_abs - window_start_abs, or -1 if N/A)
+    int  d_tag_align_threshold;   // |computed - 174| > this → use tag estimate
+    static constexpr int L_STF_END_TO_L_LTF_T1 = 32; // L-LTF GI duration (samples)
 
     gr_complex* d_correlation;
     list<pair<gr_complex, int>> d_cor;

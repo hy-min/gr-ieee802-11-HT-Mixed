@@ -8126,6 +8126,24 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 n_rot = 4;
                 // rot_step_div stays 2 (PI/2, 90° step)
             }
+
+            // Phase 166: time-offset search for L-SIG viterbi.
+            // FFT window misalignment by τ samples (within CP) causes a linear
+            // phase ramp across subcarriers: H_corrected[k] = H[k] * exp(-j·2π·k·τ/64).
+            // Try τ ∈ {-4,-2,0,+2,+4} and pick the one with best L-SIG decode.
+            // This corrects for the residual d_frame_start variation (~0.25%)
+            // caused by stream-compression jitter. Architecturally identical
+            // to the rotation candidate search (corrects in frequency domain).
+            // Opt-in via IEEE80211_LSIG_TIME_OFFSET_SEARCH=1 (default OFF).
+            const bool time_offset_env =
+                getenv("IEEE80211_LSIG_TIME_OFFSET_SEARCH") &&
+                getenv("IEEE80211_LSIG_TIME_OFFSET_SEARCH")[0] != '\0';
+            const int n_tau = time_offset_env ? 5 : 1;  // τ ∈ {-4,-2,0,+2,+4}
+            static const int TAU_VALUES[5] = {-4, -2, 0, +2, +4};
+            int lsig_best_tau = 0;
+            // When time-offset search is active, force candidate mode even
+            // without rotation search (n_rot=1, n_tau>1 → 5 candidates).
+            const bool multi_candidate = (n_rot > 1) || (n_tau > 1);
             int lsig_best_metric = INT_MAX;
             int lsig_best_rot = -1;
             int lsig_best_inv = -1;
@@ -8345,11 +8363,45 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
 
+            // Phase 166: outer loop over time-offset candidates τ.
+            // For each τ, apply phase ramp to H52, then run rot/inv search.
+            // Variables declared outside loop so goto lsig_body_entry
+            // (candidate promotion) doesn't cross their initialization.
+            int tau_idx;
+            int tau;
+            int tau_best_metric;
+            int tau_best_rot;
+            int tau_best_inv;
+            gr_complex H52_tau[52];
+            const gr_complex* H_for_search;
+            for (tau_idx = 0; tau_idx < n_tau && !found; tau_idx++) {
+              tau = time_offset_env ? TAU_VALUES[tau_idx] : 0;
+              H_for_search = Hhdr52_for_lsig;
+
+              if (tau != 0) {
+                  // Apply frequency-domain phase ramp:
+                  //   H_corrected[k] = H[k] * exp(-j * 2π * kScIndex[i] * τ / 64)
+                  for (int i = 0; i < 52; i++) {
+                      float phase = -2.0f * (float)M_PI *
+                                    (float)kScIndex52[i] * (float)tau / 64.0f;
+                      H52_tau[i] = Hhdr52_for_lsig[i] *
+                                   std::exp(gr_complex(0.0f, phase));
+                  }
+                  H_for_search = H52_tau;
+              }
+
+              // Per-τ best tracking (reset for each τ)
+              // Declared outside inner loops so goto lsig_body_entry
+              // doesn't cross initialization.
+              tau_best_metric = INT_MAX;
+              tau_best_rot = -1;
+              tau_best_inv = -1;
+
             for (rot_lsig = 0; rot_lsig < n_rot && !found; rot_lsig++) {
               for (inv_lsig = 0; inv_lsig <= 1 && !found; inv_lsig++) {
 
                 lsig_ok = decode_lsig_direct_from_header52(d_early_eqsym[kLSigRel],
-                                                                 Hhdr52_for_lsig,
+                                                                 H_for_search,
                                                                  inv_lsig != 0,
                                                                  lsig_enc,
                                                                  lsig_len,
@@ -8366,9 +8418,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     lsig_last_rate      = lsig_rate_field;
                     lsig_last_len       = lsig_len;
                     lsig_last_parity_ok = lsig_parity_ok_int;
-                    // Phase 70: in candidate-search mode, only accept the
-                    // best (lowest-metric) candidate across all rot×inv combos.
-                    if (n_rot > 1) {
+                    // Phase 70/166: in candidate-search mode, only accept the
+                    // best (lowest-metric) candidate across all τ×rot×inv combos.
+                    if (multi_candidate) {
                         // Estimate metric from decoded bits: structural validity cost
                         // (rate must be 0xD, length > 0, parity must match, tail must be 0).
                         // The viterbi's actual branch metric isn't exposed, so we use
@@ -8377,8 +8429,14 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         if (lsig_rate_field != 0xD) approx_metric += 8;
                         if (lsig_len <= 0 || lsig_len > 4096) approx_metric += 4;
                         if (lsig_parity_ok_int != 1) approx_metric += 4;
+                        if (approx_metric < tau_best_metric) {
+                            tau_best_metric = approx_metric;
+                            tau_best_rot = rot_lsig;
+                            tau_best_inv = inv_lsig;
+                        }
                         if (approx_metric < lsig_best_metric) {
                             lsig_best_metric = approx_metric;
+                            lsig_best_tau = tau;
                             lsig_best_rot = rot_lsig;
                             lsig_best_inv = inv_lsig;
                             lsig_best_enc = lsig_enc;
@@ -8400,12 +8458,12 @@ int frame_equalizer_impl::general_work(int noutput_items,
                     continue;
                 }
 
-                // Phase 70: in candidate-search mode, don't run the HT-SIG
+                // Phase 70/166: in candidate-search mode, don't run the HT-SIG
                 // body on the current candidate. We have not yet tried all
-                // (rot, inv) pairs, so we cannot pick the best L-SIG candidate
+                // (τ, rot, inv) pairs, so we cannot pick the best L-SIG candidate
                 // yet. The body is replayed once with the winning candidate
-                // after the outer rot_lsig loop closes (see goto below).
-                if (n_rot > 1) {
+                // after the outer loops close (see goto below).
+                if (multi_candidate) {
                     continue;
                 }
 
@@ -8918,13 +8976,15 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
             }  // close outer rot_lsig loop (Phase 70 4-rot candidate search)
+            }  // close tau_idx loop (Phase 166 time-offset search)
 
             // When n_rot==1 (default), the inner inv_lsig loop above ran twice
             // (rot_lsig fixed at 0). When n_rot==4 (env var ON), it ran 8
-            // times across all (rot, inv) pairs. The HT-SIG body was skipped
+            // times across all (rot, inv) pairs. When n_tau>1 (Phase 166 ON),
+            // it ran n_tau×n_rot×2 candidates. The HT-SIG body was skipped
             // for every candidate in candidate mode (continue above), so we
             // promote the best candidate here and replay the body once.
-            if (n_rot > 1 && lsig_best_metric < INT_MAX && !lsig_promoted) {
+            if (multi_candidate && lsig_best_metric < INT_MAX && !lsig_promoted) {
                 // Promote the best candidate to the local variables
                 // used by the rest of the function.
                 lsig_enc = lsig_best_enc;
@@ -8935,9 +8995,9 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Log the candidate-search winner (thread-safe snprintf+USRP_LOG).
                 char candbuf[256];
                 snprintf(candbuf, sizeof(candbuf),
-                    "[LSIG_CANDIDATE_WIN] rot=%d inv=%d approx_metric=%d "
+                    "[LSIG_CANDIDATE_WIN] tau=%d rot=%d inv=%d approx_metric=%d "
                     "enc=%d len=%d rate_field=0x%X parity_ok=%d\n",
-                    lsig_best_rot, lsig_best_inv, lsig_best_metric,
+                    lsig_best_tau, lsig_best_rot, lsig_best_inv, lsig_best_metric,
                     lsig_best_enc, lsig_best_len, lsig_best_rate_field,
                     lsig_best_parity_ok);
                 USRP_LOG("%s", candbuf);

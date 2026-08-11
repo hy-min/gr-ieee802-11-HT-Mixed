@@ -127,7 +127,8 @@ class InstrumentedRxOnly(gr.top_block):
         self.enc_strip = EncodingStripper()
         self.wifi_phy_tx = wifi_phy_hier(
             bandwidth=10e6, chan_est=ieee802_11.LS,
-            encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.01)
+            encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.01,
+            use_ldpc=a.ldpc)
         self.null_src = blocks.null_source(gr.sizeof_gr_complex)
         self.uhd_sink = uhd.usrp_sink(
             "addr=192.168.10.2,send_buff_size=1048576",
@@ -253,6 +254,7 @@ def main():
     p.add_argument('--run', type=float, default=10)
     p.add_argument('--capture', type=str, default='')
     p.add_argument('--scales', type=str, default='40', help='comma list of rx_scale to sweep')
+    p.add_argument('--ldpc', action='store_true', help='Enable LDPC encoding (default: BCC)')
     args = p.parse_args()
     scales = [float(x) for x in args.scales.split(',')]
     print(f"[P147-T6] scales={scales} capture={'ON:'+args.capture if args.capture else 'off'} "
