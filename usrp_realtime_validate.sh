@@ -16,6 +16,11 @@ WINDOWS=3             # measurement windows
 RUN=15                # seconds per window (3x15 = 45s total, matches Phase 147 baseline)
 FREQ=5250             # antenna (air path), quietest 5 GHz band
 TXGAIN=0              # Phase 147 config (rx_gain 31.5 gives ~26% ADC, no clipping)
+TXSCALE=1.0           # Phase 165: TX digital attenuation (1.0=none; 0.1=-20dB).
+                      # Cable-direct at tx-gain 0 sends ~+5dBm into RX2 (20dB
+                      # over the UBX-160 -15dBm linearity limit) -> overdrive;
+                      # 0.1 puts it in the linear region: cable PDU 98.1% ->
+                      # 99.35% stable (2x300s: 2981/2980), terminal fails 20->5.
 RXGAIN=31.5
 RXSCALE=40
 INTERVAL=100          # 100 ms -> ~10 frames/s strobe
@@ -25,6 +30,7 @@ while [ $# -gt 0 ]; do
     --threshold) THRESHOLD="$2"; shift 2;;
     --windows)   WINDOWS="$2"; shift 2;;
     --run)       RUN="$2"; shift 2;;
+    --tx-scale)  TXSCALE="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -50,7 +56,7 @@ echo "==================================================================="
 unset LD_LIBRARY_PATH
 LD_PRELOAD=./wrap_rpc2.so PYTHONPATH=build/python/bindings:python:examples \
   /home/hy/conda/envs/gnuradio/bin/python test_usrp_rxonly_instrumented.py \
-    --freq "$FREQ" --tx-gain "$TXGAIN" --rx-gain "$RXGAIN" --rx-scale "$RXSCALE" \
+    --freq "$FREQ" --tx-gain "$TXGAIN" --tx-scale "$TXSCALE" --rx-gain "$RXGAIN" --rx-scale "$RXSCALE" \
     --interval "$INTERVAL" --warmup 20 --run "$RUN" --scales "$SCALES" \
     >"$OUT" 2>"$ERR"
 rc=$?

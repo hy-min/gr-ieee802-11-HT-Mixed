@@ -135,7 +135,16 @@ class InstrumentedRxOnly(gr.top_block):
         self.msg_connect((self.mac, 'phy out'), (self.enc_strip, 'pdu'))
         self.msg_connect((self.enc_strip, 'pdu'), (self.wifi_phy_tx, 'mac_in'))
         self.connect((self.null_src, 0), (self.wifi_phy_tx, 0))
-        self.connect((self.wifi_phy_tx, 0), (self.uhd_sink, 0))
+        # Phase 165: TX software attenuation (equivalent of an external pad).
+        # Bare-cable direct connect at tx-gain 0 sends ~+5 dBm into RX2, 20 dB
+        # above the UBX-160 -15 dBm linearity limit -> overdrive distortion.
+        # A digital tx-scale < 1 reduces the DAC output amplitude, so the RX
+        # front-end stays in its linear region. rx-gain/scale calibration is
+        # untouched. Default 1.0 (no change); env/arg override e.g. 0.1 (-20dB).
+        self.tx_scale = getattr(a, 'tx_scale', 1.0)
+        self.tx_att = blocks.multiply_const_cc(self.tx_scale)
+        self.connect((self.wifi_phy_tx, 0), (self.tx_att, 0))
+        self.connect((self.tx_att, 0), (self.uhd_sink, 0))
 
         # ---- RX source ----
         self.uhd_src = uhd.usrp_source(
@@ -225,6 +234,7 @@ def main():
     p.add_argument('--freq', type=float, default=5250)
     p.add_argument('--rate', type=float, default=20)
     p.add_argument('--tx-gain', type=float, default=0)
+    p.add_argument('--tx-scale', type=float, default=1.0, help='TX digital attenuation (1.0 = none; 0.1 = -20dB)')
     p.add_argument('--rx-gain', type=float, default=31.5)
     p.add_argument('--rx-subdev', default='A:0')
     p.add_argument('--rx-scale', type=float, default=40.0, help='initial digital scale (sweep overrides via set_k)')
