@@ -425,6 +425,13 @@ private:
     bool  d_log_timing_offset_dump   = false;
     bool  d_apply_timing_offset      = false;
 
+    // Phase 167: extended time-offset search for L-SIG viterbi.
+    // When sync_long pre-outputs G_PRE samples before d_frame_start (via
+    // IEEE80211_SYNC_LONG_PRE_OUTPUT), extend the Phase 166b frequency-domain
+    // search range from τ ∈ {-4..+4} to τ ∈ {-32..0} to cover the full
+    // pre-output window. Opt-in via IEEE80211_LSIG_TIME_OFFSET_EXT=1.
+    bool  d_time_offset_ext          = false;
+
     // Phase 38 Step 2: per-symbol δ drift diagnostic. After Phase 34 δ
     // correction is applied retroactively to L-SIG (counter=2), HT-SIG0 (3),
     // HT-SIG1 (4), estimate δ independently from each symbol's 4 pilots

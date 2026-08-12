@@ -8135,14 +8135,30 @@ int frame_equalizer_impl::general_work(int noutput_items,
             // caused by stream-compression jitter. Architecturally identical
             // to the rotation candidate search (corrects in frequency domain).
             // Opt-in via IEEE80211_LSIG_TIME_OFFSET_SEARCH=1 (default OFF).
+            // Phase 166b: frequency-domain time-offset search for L-SIG viterbi.
+            // FFT window misalignment by τ samples (within CP) causes a linear
+            // phase ramp across subcarriers: H_corrected[k] = H[k] * exp(-j·2π·k·τ/64).
+            // Phase 166b: τ ∈ {-4,-2,0,+2,+4} (default, CP-cyclic shift).
+            // Phase 167: extended τ ∈ {-32..0} when sync_long pre-output is on
+            // (IEEE80211_SYNC_LONG_PRE_OUTPUT>0), covering the full pre-output window.
+            // Opt-in via IEEE80211_LSIG_TIME_OFFSET_SEARCH=1 (default OFF).
             const bool time_offset_env =
                 getenv("IEEE80211_LSIG_TIME_OFFSET_SEARCH") &&
                 getenv("IEEE80211_LSIG_TIME_OFFSET_SEARCH")[0] != '\0';
-            const int n_tau = time_offset_env ? 5 : 1;  // τ ∈ {-4,-2,0,+2,+4}
-            static const int TAU_VALUES[5] = {-4, -2, 0, +2, +4};
+
+            // Phase 167: extended range when pre-output is on
+            const bool pre_output_on =
+                getenv("IEEE80211_SYNC_LONG_PRE_OUTPUT") &&
+                getenv("IEEE80211_SYNC_LONG_PRE_OUTPUT")[0] != '\0' &&
+                std::atoi(getenv("IEEE80211_SYNC_LONG_PRE_OUTPUT")) > 0;
+            const int n_tau = time_offset_env ? (pre_output_on ? 17 : 5) : 1;
+            // τ values: {-4,-2,0,+2,+4} baseline; {-32..0} extended when pre-output on
+            static const int TAU_VALUES_STD[5] = {-4, -2, 0, +2, +4};
+            static const int TAU_VALUES_EXT[17] = {-32,-30,-28,-26,-24,-22,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0};
+            const int* TAU_VALUES = pre_output_on ? TAU_VALUES_EXT : TAU_VALUES_STD;
             int lsig_best_tau = 0;
             // When time-offset search is active, force candidate mode even
-            // without rotation search (n_rot=1, n_tau>1 → 5 candidates).
+            // without rotation search (n_rot=1, n_tau>1 → 5 or 17 candidates).
             const bool multi_candidate = (n_rot > 1) || (n_tau > 1);
             int lsig_best_metric = INT_MAX;
             int lsig_best_rot = -1;
