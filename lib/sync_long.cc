@@ -172,7 +172,8 @@ public:
           d_tag_align_enabled(false),
           d_window_start_abs(0),
           d_tag_rel_in_window(-1),
-          d_tag_align_threshold(30)
+          d_tag_align_threshold(30),
+          d_pre_output_samples(0)
     {
 
         set_tag_propagation_policy(block::TPP_DONT);
@@ -194,6 +195,22 @@ public:
         if (d_tag_align_enabled) {
             fprintf(stderr, "[SYNC_LONG_P166] tag-aligned d_frame_start ENABLED "
                     "(threshold=%d)\n", d_tag_align_threshold);
+        }
+
+        // Phase 167: pre-output extra samples before d_frame_start in COPY state.
+        // sync_short's stream compression causes L-LTF arrival jitter; the forced
+        // d_frame_start=174 is wrong for ~0.25% of frames (true L-LTF < 174).
+        // By outputting G_PRE samples BEFORE d_frame_start, downstream gets
+        // extra context to search for the optimal FFT window. The wifi_start
+        // tag stays at d_frame_start (unchanged). Opt-in via env var
+        // IEEE80211_SYNC_LONG_PRE_OUTPUT (default 0 = baseline).
+        const char* env_pre = std::getenv("IEEE80211_SYNC_LONG_PRE_OUTPUT");
+        if (env_pre && env_pre[0] != '\0') {
+            d_pre_output_samples = std::atoi(env_pre);
+            if (d_pre_output_samples < 0) d_pre_output_samples = 0;
+            if (d_pre_output_samples > 32) d_pre_output_samples = 32;
+            fprintf(stderr, "[SYNC_LONG_P167] pre-output G_PRE=%d samples before d_frame_start\n",
+                    d_pre_output_samples);
         }
 
         // Phase 133 T3: Initialize Schmidl-Cox ring buffers
@@ -612,6 +629,12 @@ public:
                 
                 int rel = d_offset - d_frame_start;
 
+                // Phase 167: log pre-output samples on first occurrence
+                if (d_pre_output_samples > 0 && rel >= -d_pre_output_samples && rel < 0) {
+                    fprintf(stderr, "[SYNC_LONG_P167] pre-output sample rel=%d (G_PRE=%d)\n",
+                            rel, d_pre_output_samples);
+                }
+
                 // Add wifi_start tag at L-LTF0 DATA start (rel=0)
                 // Only add if we haven't already added one for this detection
                 if (rel == 0 && !d_wifi_start_added) {
@@ -627,7 +650,11 @@ public:
 
                 // Output all samples from d_frame_start onwards (1:1 mapping)
                 // CP removal is handled by ht_symbol_splitter downstream
-                if (rel >= 0) {
+                // Phase 167: output extra G_PRE samples before d_frame_start.
+                // The wifi_start tag stays at rel=0 (d_frame_start position).
+                // Samples rel<0 are L-STF tail + L-LTF GI that may contain
+                // useful preamble context for the downstream time-offset search.
+                if (rel >= -d_pre_output_samples) {
                     // CFO correction: compensate phase accumulated during SYNC period
                     // d_sync_samples tracks actual SYNC consumption (or SYNC_LENGTH for tag-jump)
                     // CFO compensation disabled: frame_equalizer handles CPE
@@ -1089,6 +1116,7 @@ private:
     int  d_tag_rel_in_window;     // tag position relative to window start (computed
                                   // as tag_abs - window_start_abs, or -1 if N/A)
     int  d_tag_align_threshold;   // |computed - 174| > this → use tag estimate
+    int  d_pre_output_samples;    // Phase 167: G_PRE extra samples before d_frame_start
     static constexpr int L_STF_END_TO_L_LTF_T1 = 32; // L-LTF GI duration (samples)
 
     gr_complex* d_correlation;
