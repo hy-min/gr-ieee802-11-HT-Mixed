@@ -8157,9 +8157,26 @@ int frame_equalizer_impl::general_work(int noutput_items,
             static const int TAU_VALUES_EXT[17] = {-32,-30,-28,-26,-24,-22,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0};
             const int* TAU_VALUES = pre_output_on ? TAU_VALUES_EXT : TAU_VALUES_STD;
             int lsig_best_tau = 0;
-            // When time-offset search is active, force candidate mode even
-            // without rotation search (n_rot=1, n_tau>1 → 5 or 17 candidates).
-            const bool multi_candidate = (n_rot > 1) || (n_tau > 1);
+
+            // Phase 168: H-source diversity candidate search.
+            // L-LTF0 and L-LTF1 have INDEPENDENT phase-noise realizations
+            // (Phase 139 measured this directly). Decoding L-SIG with each
+            // H source (baseline 2-way / L-LTF0-only / L-LTF1-only) gives
+            // independent looks at the answer under different noise draws;
+            // structural validity (rate/len/parity) picks the winner.
+            // Targets the residual chain-loss frames whose L-SIG decodes to a
+            // deterministically-wrong valid codeword (e.g. len=946) because
+            // the shared H's noise realization flipped key bits — a different
+            // H source has an independent noise draw and may decode right.
+            // Opt-in via IEEE80211_LSIG_HSRC_CANDIDATE=1 (default OFF).
+            const bool hsrc_env =
+                getenv("IEEE80211_LSIG_HSRC_CANDIDATE") &&
+                getenv("IEEE80211_LSIG_HSRC_CANDIDATE")[0] != '\0';
+            const int n_hsrc = hsrc_env ? 3 : 1;
+            int lsig_best_hsrc = 0;
+
+            // When any candidate search is active, force candidate mode.
+            const bool multi_candidate = (n_rot > 1) || (n_tau > 1) || (n_hsrc > 1);
             int lsig_best_metric = INT_MAX;
             int lsig_best_rot = -1;
             int lsig_best_inv = -1;
@@ -8379,10 +8396,36 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 }
             }
 
+            // Phase 168: compute L-LTF1-only H source for diversity search.
+            // Mirrors the 2-way block's H_LTS1 computation but kept separate so
+            // it works regardless of whether 2-way averaging is enabled.
+            gr_complex H_lts1_only[52];
+            bool h_lts1_valid = false;
+            const gr_complex* H_SOURCES[3];
+            H_SOURCES[0] = Hhdr52_for_lsig;  // baseline (2-way if enabled, else L-LTF0)
+            H_SOURCES[1] = Hhdr52;           // L-LTF0 only
+            H_SOURCES[2] = Hhdr52;           // fallback until L-LTF1 computed
+            if (hsrc_env) {
+                const gr_complex* lltf1_hsrc = nullptr;
+                if (d_ltf_compensated_valid[1]) {
+                    lltf1_hsrc = d_ltf_compensated[1];
+                } else if (d_early_eqsym_valid[kLltf1Rel]) {
+                    lltf1_hsrc = d_early_eqsym[kLltf1Rel];
+                }
+                if (lltf1_hsrc != nullptr) {
+                    // Same pointer twice → single-source H (no averaging)
+                    estimate_header_channel_from_lltf52(lltf1_hsrc, lltf1_hsrc,
+                                                        H_lts1_only);
+                    h_lts1_valid = true;
+                    H_SOURCES[2] = H_lts1_only;  // L-LTF1 only
+                }
+            }
+
             // Phase 166: outer loop over time-offset candidates τ.
             // For each τ, apply phase ramp to H52, then run rot/inv search.
             // Variables declared outside loop so goto lsig_body_entry
             // (candidate promotion) doesn't cross their initialization.
+            int hsrc;
             int tau_idx;
             int tau;
             int tau_best_metric;
@@ -8390,9 +8433,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
             int tau_best_inv;
             gr_complex H52_tau[52];
             const gr_complex* H_for_search;
+            for (hsrc = 0; hsrc < n_hsrc && !found; hsrc++) {
             for (tau_idx = 0; tau_idx < n_tau && !found; tau_idx++) {
               tau = time_offset_env ? TAU_VALUES[tau_idx] : 0;
-              H_for_search = Hhdr52_for_lsig;
+              H_for_search = H_SOURCES[hsrc];
 
               if (tau != 0) {
                   // Apply frequency-domain phase ramp:
@@ -8452,6 +8496,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                         }
                         if (approx_metric < lsig_best_metric) {
                             lsig_best_metric = approx_metric;
+                            lsig_best_hsrc = hsrc;
                             lsig_best_tau = tau;
                             lsig_best_rot = rot_lsig;
                             lsig_best_inv = inv_lsig;
@@ -8993,11 +9038,13 @@ int frame_equalizer_impl::general_work(int noutput_items,
             }
             }  // close outer rot_lsig loop (Phase 70 4-rot candidate search)
             }  // close tau_idx loop (Phase 166 time-offset search)
+            }  // close hsrc loop (Phase 168 H-source diversity search)
 
             // When n_rot==1 (default), the inner inv_lsig loop above ran twice
             // (rot_lsig fixed at 0). When n_rot==4 (env var ON), it ran 8
             // times across all (rot, inv) pairs. When n_tau>1 (Phase 166 ON),
-            // it ran n_tau×n_rot×2 candidates. The HT-SIG body was skipped
+            // it ran n_tau×n_rot×2 candidates. When n_hsrc>1 (Phase 168 ON),
+            // it ran n_hsrc×n_tau×n_rot×2 candidates. The HT-SIG body was skipped
             // for every candidate in candidate mode (continue above), so we
             // promote the best candidate here and replay the body once.
             if (multi_candidate && lsig_best_metric < INT_MAX && !lsig_promoted) {
@@ -9011,9 +9058,10 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Log the candidate-search winner (thread-safe snprintf+USRP_LOG).
                 char candbuf[256];
                 snprintf(candbuf, sizeof(candbuf),
-                    "[LSIG_CANDIDATE_WIN] tau=%d rot=%d inv=%d approx_metric=%d "
+                    "[LSIG_CANDIDATE_WIN] hsrc=%d tau=%d rot=%d inv=%d approx_metric=%d "
                     "enc=%d len=%d rate_field=0x%X parity_ok=%d\n",
-                    lsig_best_tau, lsig_best_rot, lsig_best_inv, lsig_best_metric,
+                    lsig_best_hsrc, lsig_best_tau, lsig_best_rot, lsig_best_inv,
+                    lsig_best_metric,
                     lsig_best_enc, lsig_best_len, lsig_best_rate_field,
                     lsig_best_parity_ok);
                 USRP_LOG("%s", candbuf);
