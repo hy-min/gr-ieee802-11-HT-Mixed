@@ -153,6 +153,31 @@ class wifi_phy_hier(gr.hier_block2):
         # Must be placed between carrier allocator and OFDM CP so the CP sees
         # the updated packet_len tag (insert_ht_training adds N_TRAIN=2).
         self.insert_ht_training_0 = ieee802_11.insert_ht_training("packet_len")
+
+        # Phase 169: TX band-edge pre-emphasis (opt-in, default OFF).
+        # Phase 161 root-caused terminal decode failures to band-edge subcarrier
+        # fade: failing frames have min|H|=13.7 vs 28.7, argmin always at
+        # SC -28/-27 (20 MHz filter rolloff edge). ZF equalization 1/H amplifies
+        # thermal noise at those SCs -> bit errors. All 165 prior phases attacked
+        # the RX side; the TX is ours and has ~20 dB headroom (--tx-scale 0.1),
+        # so boost the edge SCs at TX to raise their received |H| directly.
+        # The RX H estimate absorbs the boost automatically (H just gets bigger).
+        # Gain map (64-point FFT bins; SC k -> bin k if k>=0 else 64+k):
+        #   SC +26/+27/+28 -> bins 26,27,28; SC -26/-27/-28 -> bins 38,37,36
+        # Enable: IEEE80211_TX_PREEMPHASIS=1; gain: IEEE80211_TX_PREEMPHASIS_GAIN
+        # (default 2.0). Inserted between insert_ht_training and the IFFT so
+        # preamble, header, training, and data symbols all get the same map.
+        self.tx_preemphasis_enabled = os.environ.get('IEEE80211_TX_PREEMPHASIS', '') == '1'
+        if self.tx_preemphasis_enabled:
+            pe_gain = float(os.environ.get('IEEE80211_TX_PREEMPHASIS_GAIN', '2.0'))
+            pe_gains = [1.0] * 64
+            for b in (26, 27, 28, 36, 37, 38):
+                pe_gains[b] = pe_gain
+            self.blocks_multiply_const_vxx_pe = blocks.multiply_const_vcc(
+                [complex(g, 0) for g in pe_gains])
+            sys.stderr.write(
+                "[PHY_P169] TX band-edge pre-emphasis ENABLED: gain=%.1f on "
+                "bins 26-28/36-38 (SC ±26..±28)\n" % pe_gain)
         # Header path: BPSK for L-SIG/HT-SIG
         self.digital_chunks_to_symbols_xx_0 = digital.chunks_to_symbols_bc([-1, 1], 1)
         self.digital_chunks_to_symbols_xx_0.set_min_output_buffer((max_symbols * 48 * 8 * 2))
@@ -194,8 +219,15 @@ class wifi_phy_hier(gr.hier_block2):
         # Insert HT-STF + HT-LTF between carrier allocator and OFDM CP (via IFFT)
         self.connect((self.mixed_mode_carrier_allocator_0, 0),
                      (self.insert_ht_training_0, 0))
-        self.connect((self.insert_ht_training_0, 0),
-                     (self.fft_vxx_0_0, 0))
+        # Phase 169: route through pre-emphasis multiplier when enabled
+        if self.tx_preemphasis_enabled:
+            self.connect((self.insert_ht_training_0, 0),
+                         (self.blocks_multiply_const_vxx_pe, 0))
+            self.connect((self.blocks_multiply_const_vxx_pe, 0),
+                         (self.fft_vxx_0_0, 0))
+        else:
+            self.connect((self.insert_ht_training_0, 0),
+                         (self.fft_vxx_0_0, 0))
         self.connect((self.fft_vxx_0_0, 0), (self.digital_ofdm_cyclic_prefixer_0_0, 0))
         self.connect((self.digital_ofdm_cyclic_prefixer_0_0, 0), (self, 0))
         self.connect((self.fft_vxx_0_1, 0), (self.ieee802_11_frame_equalizer_0, 0))
