@@ -185,19 +185,25 @@ class InstrumentedRxOnly(gr.top_block):
         # Opt-in via IEEE80211_TX_BURST_TSB=1 for A/B.
         import os as _os
         _tsb = "packet_len" if _os.environ.get('IEEE80211_TX_BURST_TSB') == '1' else ""
-        self.uhd_sink = uhd.usrp_sink(
-            "addr=192.168.10.2,send_buff_size=1048576",
-            uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
-            _tsb)
-        if _tsb:
-            sys.stderr.write("[P170] UHD burst mode ENABLED (tsb_tag_name=packet_len)\n")
-        self.uhd_sink.set_samp_rate(a.rate * 1e6)
-        self.uhd_sink.set_center_freq(a.freq * 1e6, 0)
-        self.uhd_sink.set_gain(a.tx_gain, 0)
-        self.uhd_sink.set_subdev_spec("A:0", 0)
-        self.uhd_sink.set_antenna("TX/RX", 0)
-        self.uhd_sink.set_clock_source("internal")
-        self.uhd_sink.set_time_source("internal")
+        self.rx_file_preplay = getattr(a, 'rx_file', '')
+        if self.rx_file_preplay:
+            # Pure offline RX replay: no USRP at all. Route live TX hier to null.
+            self.uhd_sink = None
+            self.tx_null_sink0 = blocks.null_sink(gr.sizeof_gr_complex)
+        else:
+            self.uhd_sink = uhd.usrp_sink(
+                "addr=192.168.10.2,send_buff_size=1048576",
+                uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
+                _tsb)
+            if _tsb:
+                sys.stderr.write("[P170] UHD burst mode ENABLED (tsb_tag_name=packet_len)\n")
+            self.uhd_sink.set_samp_rate(a.rate * 1e6)
+            self.uhd_sink.set_center_freq(a.freq * 1e6, 0)
+            self.uhd_sink.set_gain(a.tx_gain, 0)
+            self.uhd_sink.set_subdev_spec("A:0", 0)
+            self.uhd_sink.set_antenna("TX/RX", 0)
+            self.uhd_sink.set_clock_source("internal")
+            self.uhd_sink.set_time_source("internal")
 
         self.msg_connect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
         self.msg_connect((self.mac, 'phy out'), (self.enc_strip, 'pdu'))
@@ -221,17 +227,21 @@ class InstrumentedRxOnly(gr.top_block):
         # The waveform file already has tx_scale baked in, so connect directly
         # to uhd_sink (skip tx_att).
         self.tx_file = getattr(a, 'tx_file', '')
-        if self.tx_file:
+        # Route the live hier through tx_att always (keeps ports satisfied);
+        # where tx_att's output goes depends on mode.
+        self.connect((self.wifi_phy_tx, 0), (self.tx_att, 0))
+        if self.rx_file_preplay:
+            # offline replay: no USRP. TX chain output -> null sink.
+            self.connect((self.tx_att, 0), (self.tx_null_sink0, 0))
+        elif self.tx_file:
             self.tx_file_source = blocks.file_source(gr.sizeof_gr_complex, self.tx_file, True)
             self.connect((self.tx_file_source, 0), (self.uhd_sink, 0))
-            # live TX hier output must still be connected (GR port requirement);
-            # route it to a null sink so it doesn't reach the USRP.
+            # live TX hier output (via tx_att) -> null sink (doesn't reach USRP)
             self.tx_null_sink = blocks.null_sink(gr.sizeof_gr_complex)
-            self.connect((self.wifi_phy_tx, 0), (self.tx_null_sink, 0))
+            self.connect((self.tx_att, 0), (self.tx_null_sink, 0))
             sys.stderr.write("[P170] file-based TX ENABLED: %s (steady-rate, live chain -> null_sink)\n"
                              % self.tx_file)
         else:
-            self.connect((self.wifi_phy_tx, 0), (self.tx_att, 0))
             self.connect((self.tx_att, 0), (self.uhd_sink, 0))
 
         # Phase 170: optional TX-chain capture to localize mid-preamble stalls.
@@ -242,19 +252,31 @@ class InstrumentedRxOnly(gr.top_block):
             self.connect((self.tx_att, 0), (self.tx_file_sink, 0))
 
         # ---- RX source ----
-        self.uhd_src = uhd.usrp_source(
-            "addr=192.168.10.2",
-            uhd.stream_args(cpu_format="fc32", otw_format="sc16",
-                            args=uhd.device_addr("recv_buff_size=16777216,num_recv_frames=256"),
-                            channels=[0]))
-        self.uhd_src.set_subdev_spec(a.rx_subdev, 0)
-        self.uhd_src.set_antenna("RX2", 0)
-        self.uhd_src.set_gain(a.rx_gain, 0)
-        self.uhd_src.set_center_freq(a.freq * 1e6, 0)
-        self.uhd_src.set_bandwidth(a.rate * 1e6, 0)
-        self.uhd_src.set_samp_rate(a.rate * 1e6)
-        self.uhd_src.set_clock_source("internal")
-        self.uhd_src.set_time_source("internal")
+        # Phase 170: optional file-based RX replay (--rx-file) routes a captured
+        # IQ file through the EXACT realtime RX chain (sync_short_fused -> sync_short
+        # -> sync_long -> splitter -> FFT -> equalizer -> decode_mac), offline.
+        # This replays a capture through the realtime decode path without the USRP,
+        # isolating signal-quality issues from realtime-scheduling issues.
+        self.rx_file = getattr(a, 'rx_file', '')
+        if self.rx_file:
+            self.rx_file_source = blocks.file_source(gr.sizeof_gr_complex, self.rx_file, False)
+            sys.stderr.write("[P170] RX file replay: %s\n" % self.rx_file)
+            rx_source_out = self.rx_file_source
+        else:
+            self.uhd_src = uhd.usrp_source(
+                "addr=192.168.10.2",
+                uhd.stream_args(cpu_format="fc32", otw_format="sc16",
+                                args=uhd.device_addr("recv_buff_size=16777216,num_recv_frames=256"),
+                                channels=[0]))
+            self.uhd_src.set_subdev_spec(a.rx_subdev, 0)
+            self.uhd_src.set_antenna("RX2", 0)
+            self.uhd_src.set_gain(a.rx_gain, 0)
+            self.uhd_src.set_center_freq(a.freq * 1e6, 0)
+            self.uhd_src.set_bandwidth(a.rate * 1e6, 0)
+            self.uhd_src.set_samp_rate(a.rate * 1e6)
+            self.uhd_src.set_clock_source("internal")
+            self.uhd_src.set_time_source("internal")
+            rx_source_out = self.uhd_src
 
         # FIXED digital scale (no AGC; sweep externally)
         self.gain = blocks.multiply_const_cc(a.rx_scale)
@@ -288,7 +310,7 @@ class InstrumentedRxOnly(gr.top_block):
         self.msg_debug_rx = blocks.message_debug()
         self.fcs = FcsLogger()
 
-        self.connect((self.uhd_src, 0), (self.gain, 0))
+        self.connect((rx_source_out, 0), (self.gain, 0))
         self.connect((self.gain, 0), (self.sync_short_fused, 0))
         self.connect((self.sync_short_fused, 0), (self.sync_short, 0))
         self.connect((self.sync_short_fused, 1), (self.sync_short, 1))
@@ -340,6 +362,7 @@ def main():
     p.add_argument('--capture', type=str, default='')
     p.add_argument('--tx-capture', type=str, default='', help='capture TX chain output to file (localize TX stalls)')
     p.add_argument('--tx-file', type=str, default='', help='file-based TX waveform (steady-rate, eliminates underflow stalls)')
+    p.add_argument('--rx-file', type=str, default='', help='RX replay from IQ file through realtime decode chain (offline)')
     p.add_argument('--scales', type=str, default='40', help='comma list of rx_scale to sweep')
     p.add_argument('--ldpc', action='store_true', help='Enable LDPC encoding (default: BCC)')
     args = p.parse_args()
