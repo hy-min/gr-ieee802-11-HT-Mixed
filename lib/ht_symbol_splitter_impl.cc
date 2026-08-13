@@ -38,6 +38,17 @@ static bool g_htsig_timing_inited = false;
 static int g_lltf_offset_correct = 0;
 static bool g_lltf_offset_correct_inited = false;
 
+// Phase 171: L-SIG-and-later window boundary offset (env-var gated, default 0).
+// Phase 171 diagnosis (2026-08-13): file-mode frames have L-LTF->L-SIG spacing
+// stretched by 16 samples (ltf_off=-8, lsig_off=+8 consistently across 15/15
+// frames). The splitter's fixed grid (L-SIG rel 223, spacing 160) then windows
+// L-SIG 8 samples late -> ISI -> deterministic wrong decode. This offset shifts
+// ONLY the L-SIG/HT-SIG/HT-STF/HT-LTF/data boundaries by K (rel 223+K, 303+K,
+// ...), leaving L-LTF0/L-LTF1 (rel 63/143) untouched. Default 0 = baseline.
+// Usage: IEEE80211_SPLITTER_LSIG_OFFSET=K (K integer, clamped to [-32,+32]).
+static int g_lsig_offset = 0;
+static bool g_lsig_offset_inited = false;
+
 ht_symbol_splitter::sptr
 ht_symbol_splitter::make(int fft_size, int symbol_size, int cp_size)
 {
@@ -109,12 +120,26 @@ ht_symbol_splitter_impl::ht_symbol_splitter_impl(int fft_size, int symbol_size, 
     if (!g_lltf_offset_correct_inited) {
         if (getenv("IEEE80211_LLTF_OFFSET_CORRECT") && getenv("IEEE80211_LLTF_OFFSET_CORRECT")[0] != '\0') {
             int K = atoi(getenv("IEEE80211_LLTF_OFFSET_CORRECT"));
-            if (K < -4) K = -4;
-            if (K >  4) K =  4;
+            if (K < -32) K = -32;
+            if (K >  32) K =  32;
             g_lltf_offset_correct = K;
             fprintf(stderr, "[SPLITTER] IEEE80211_LLTF_OFFSET_CORRECT=%d (L-LTF0 offset shifted by %d samples)\n", K, K);
         }
         g_lltf_offset_correct_inited = true;
+    }
+
+    // Phase 171: L-SIG-and-later window boundary offset (env-var gated, default 0).
+    // Shifts ONLY the L-SIG/HT-SIG/HT-STF/HT-LTF/data boundaries by K samples
+    // (compensates intra-frame spacing stretch; L-LTF0/L-LTF1 untouched).
+    if (!g_lsig_offset_inited) {
+        if (getenv("IEEE80211_SPLITTER_LSIG_OFFSET") && getenv("IEEE80211_SPLITTER_LSIG_OFFSET")[0] != '\0') {
+            int K = atoi(getenv("IEEE80211_SPLITTER_LSIG_OFFSET"));
+            if (K < -32) K = -32;
+            if (K >  32) K =  32;
+            g_lsig_offset = K;
+            fprintf(stderr, "[SPLITTER] IEEE80211_SPLITTER_LSIG_OFFSET=%d (L-SIG+ windows shifted by %d samples)\n", K, K);
+        }
+        g_lsig_offset_inited = true;
     }
 
     // We output in multiples of fft_size
@@ -356,12 +381,14 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
         // Check if last_rel_idx was at a boundary position
         if (last_rel_idx == (uint64_t)(63 + g_lltf_offset_correct) ||
             last_rel_idx == (uint64_t)(143 + g_lltf_offset_correct) ||
-            last_rel_idx == 223 ||
-            last_rel_idx == 303 || last_rel_idx == 383 || last_rel_idx == 463 ||
-            last_rel_idx == 543) {
+            last_rel_idx == (uint64_t)(223 + g_lsig_offset) ||
+            last_rel_idx == (uint64_t)(303 + g_lsig_offset) ||
+            last_rel_idx == (uint64_t)(383 + g_lsig_offset) ||
+            last_rel_idx == (uint64_t)(463 + g_lsig_offset) ||
+            last_rel_idx == (uint64_t)(543 + g_lsig_offset)) {
             at_boundary = true;
-        } else if (last_rel_idx >= 544) {
-            uint64_t sym_offset = (last_rel_idx - 544) % 80;
+        } else if (last_rel_idx >= (uint64_t)(544 + g_lsig_offset)) {
+            uint64_t sym_offset = (last_rel_idx - (544 + g_lsig_offset)) % 80;
             at_boundary = (sym_offset == 0);
         }
         // Phase 40: log which boundary we're emitting at, with the absolute
@@ -372,11 +399,11 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
             int expected_rel = -1;
             if (last_rel_idx == 63 + g_lltf_offset_correct) { label = "L-LTF0"; expected_rel = 63; }
             else if (last_rel_idx == 143 + g_lltf_offset_correct) { label = "L-LTF1"; expected_rel = 143; }
-            else if (last_rel_idx == 223) { label = "L-SIG"; expected_rel = 223; }
-            else if (last_rel_idx == 303) { label = "HT-SIG0"; expected_rel = 303; }
-            else if (last_rel_idx == 383) { label = "HT-SIG1"; expected_rel = 383; }
-            else if (last_rel_idx == 463) { label = "HT-STF"; expected_rel = 463; }
-            else if (last_rel_idx == 543) { label = "HT-LTF"; expected_rel = 543; }
+            else if (last_rel_idx == 223 + g_lsig_offset) { label = "L-SIG"; expected_rel = 223 + g_lsig_offset; }
+            else if (last_rel_idx == 303 + g_lsig_offset) { label = "HT-SIG0"; expected_rel = 303 + g_lsig_offset; }
+            else if (last_rel_idx == 383 + g_lsig_offset) { label = "HT-SIG1"; expected_rel = 383 + g_lsig_offset; }
+            else if (last_rel_idx == 463 + g_lsig_offset) { label = "HT-STF"; expected_rel = 463 + g_lsig_offset; }
+            else if (last_rel_idx == 543 + g_lsig_offset) { label = "HT-LTF"; expected_rel = 543 + g_lsig_offset; }
             fprintf(stderr,
                     "[HTSIG_TIMING] %s emitted rel_idx=%llu expected=%d K=%d delta=%lld\n",
                     label, (unsigned long long)last_rel_idx, expected_rel,

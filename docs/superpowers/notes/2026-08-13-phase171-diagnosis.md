@@ -43,3 +43,17 @@ splitter 增加 L-SIG（及后续符号）窗边界偏移参数：`rel 223 → 2
 K 默认 0（基线不变），file 模式实测需要 K=+8。这是**只调 L-SIG 之后窗**、
 不调 L-LTF 窗的定向修复（对应"帧内拉伸"机制）。opt-in env var，
 ABAB 验证后决定是否翻默认。
+
+## 2026-08-13 更新：根因修正（模板匹配 + 偏移扫描）
+
+- 模板匹配（L-LTF 已知序列，相关 0.79-0.90）：splitter L-LTF0 窗比真实
+  晚 8-18 样本（file 模式）。
+- 新鲜捕获 FRAME_START_OFFSET 扫描（此前损坏文件上的全扫 0 结论作废）：
+  OFF=-10..-18 平台期 DS ~180/8s（OFF=0 仅 2），最优 ≈ -12。
+- 但 live 模式 OFF=-12 → DS 618（基线 788，-22%）——**两种模式需要
+  不同工作点**，不能改默认。
+- 修正机制表述：不是"帧内间距拉伸"，而是 **sync_short 检测位置依赖
+  帧间内容**（欠载噪声 vs 干净静音）→ sync_long SYNC 窗口相位不同 →
+  强制 d_frame_start=174 相对真实 L-LTF 的偏差在两模式不同。
+- Task 4（sync_short 检测去耦）是根源修复；splitter LSIG_OFFSET
+  （IEEE80211_SPLITTER_LSIG_OFFSET）保留为诊断工具。
