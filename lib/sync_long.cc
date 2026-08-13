@@ -173,7 +173,8 @@ public:
           d_window_start_abs(0),
           d_tag_rel_in_window(-1),
           d_tag_align_threshold(30),
-          d_pre_output_samples(0)
+          d_pre_output_samples(0),
+          d_computed_fs_last(174)
     {
 
         set_tag_propagation_policy(block::TPP_DONT);
@@ -333,8 +334,10 @@ public:
                 // Performance: Phase 14 set_output_multiple=80 already mitigates the
                 // scheduler-deadlock risk that originally motivated the fast-path.
                 if (d_state == SYNC && tag_key == "wifi_start") {
-                    d_freq_offset_short = pmt::to_double(d_tags.front().value);
-                    d_freq_offset = static_cast<float>(d_freq_offset_short);
+                    if (pmt::is_number(d_tags.front().value)) {
+                        d_freq_offset_short = pmt::to_double(d_tags.front().value);
+                        d_freq_offset = static_cast<float>(d_freq_offset_short);
+                    }
                     fprintf(stderr, "[SYNC_LONG_P135] wifi_start tag IGNORED during SYNC "
                             "(offset=%llu nread=%llu, gate validation deferred to "
                             "search_frame_start() at SYNC_LENGTH boundary)\n",
@@ -389,7 +392,12 @@ public:
                         fprintf(stderr, "[SYNC_LONG_TAG] RESET due to non-wifi_start tag: %s\n", tag_key.c_str());
                     }
                 }
-                d_freq_offset_short = pmt::to_double(d_tags.front().value);
+                // Phase 171: the tag value may be a dict (FS_CORRECT form)
+                // carrying anchor/computed_fs; to_double(dict) throws. Only
+                // read the scalar when it is one.
+                if (pmt::is_number(d_tags.front().value)) {
+                    d_freq_offset_short = pmt::to_double(d_tags.front().value);
+                }
             }
         }
 
@@ -640,11 +648,32 @@ public:
                 if (rel == 0 && !d_wifi_start_added) {
                     // Store d_frame_start in the tag value so downstream knows
                     // that this tag's offset (0) actually corresponds to input d_frame_start
-                    add_item_tag(0,
-                                 nitems_written(0),
-                                 pmt::string_to_symbol("wifi_start"),
-                                 pmt::from_double(d_frame_start),
-                                 pmt::string_to_symbol(name()));
+                    // Phase 171: opt-in dict form also carries computed_fs so the
+                    // splitter can correct its fixed-174 anchor. Default OFF keeps
+                    // the baseline scalar value (backward compatible).
+                    static const bool g_fs_correct =
+                        getenv("IEEE80211_SPLITTER_FS_CORRECT") &&
+                        getenv("IEEE80211_SPLITTER_FS_CORRECT")[0] == '1';
+                    if (g_fs_correct) {
+                        pmt::pmt_t fs_dict = pmt::make_dict();
+                        fs_dict = pmt::dict_add(fs_dict, pmt::intern("anchor"),
+                                                pmt::from_double(d_frame_start));
+                        fs_dict = pmt::dict_add(fs_dict, pmt::intern("computed_fs"),
+                                                pmt::from_double(d_computed_fs_last));
+                        fprintf(stderr, "[SYNC_LONG_P171X] emitting wifi_start dict: %s\n",
+                                pmt::write_string(fs_dict).c_str());
+                        add_item_tag(0,
+                                     nitems_written(0),
+                                     pmt::string_to_symbol("wifi_start"),
+                                     fs_dict,
+                                     pmt::string_to_symbol(name()));
+                    } else {
+                        add_item_tag(0,
+                                     nitems_written(0),
+                                     pmt::string_to_symbol("wifi_start"),
+                                     pmt::from_double(d_frame_start),
+                                     pmt::string_to_symbol(name()));
+                    }
                     d_wifi_start_added = true;
                 }
 
@@ -970,6 +999,9 @@ public:
                     computed_fs, (unsigned long long)d_last_wifi_start_tag_offset,
                     d_tag_align_enabled ? d_tag_rel_in_window : -1,
                     d_tag_align_enabled ? (unsigned long long)d_window_start_abs : 0ULL);
+            // Phase 171: remember the search-found position (pre-force value)
+            // for the splitter anchor correction (carried in the tag).
+            d_computed_fs_last = computed_fs;
             valid = true;
             return valid;
         }
@@ -1117,6 +1149,9 @@ private:
                                   // as tag_abs - window_start_abs, or -1 if N/A)
     int  d_tag_align_threshold;   // |computed - 174| > this → use tag estimate
     int  d_pre_output_samples;    // Phase 167: G_PRE extra samples before d_frame_start
+    int  d_computed_fs_last;      // Phase 171: computed_fs of the current frame's
+                                  // search (carried in wifi_start tag for splitter
+                                  // anchor correction)
     static constexpr int L_STF_END_TO_L_LTF_T1 = 32; // L-LTF GI duration (samples)
 
     gr_complex* d_correlation;

@@ -263,8 +263,51 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     // Unified wifi_start handler: every wifi_start starts a new frame.
     for (const auto& tag : tags) {
         if (pmt::symbol_to_string(tag.key) == "wifi_start") {
-            uint64_t d_frame_start = (uint64_t)pmt::to_double(tag.value);
+            fprintf(stderr, "[SPLITTER_P171X] wifi_start tag offset=%llu is_dict=%d value=%s\n",
+                    (unsigned long long)tag.offset, pmt::is_dict(tag.value) ? 1 : 0,
+                    pmt::write_string(tag.value).c_str());
             uint64_t tag_abs_pos = (uint64_t)tag.offset;
+            fprintf(stderr, "[SPLITTER_P171S1] tag_abs_pos=%llu\n",
+                    (unsigned long long)tag_abs_pos);
+
+            // Phase 171: tag value may be a dict carrying (anchor, computed_fs).
+            // Correct the frame-start anchor by (computed_fs - FRAME_START_BASE)
+            // when the correction is physically plausible (±32 samples).
+            // Opt-in via IEEE80211_SPLITTER_FS_CORRECT=1 (must match sync_long side).
+            // Default OFF keeps the baseline scalar behavior.
+            static const bool g_fs_correct =
+                getenv("IEEE80211_SPLITTER_FS_CORRECT") &&
+                getenv("IEEE80211_SPLITTER_FS_CORRECT")[0] == '1';
+            // Phase 171: tag value may be a dict carrying (anchor, computed_fs);
+            // to_double(dict) throws. Guard the scalar read.
+            uint64_t d_frame_start = 0;
+            if (pmt::is_number(tag.value)) {
+                d_frame_start = (uint64_t)pmt::to_double(tag.value);
+            }
+            // Phase 171: FS_CORRECT correction (corr = computed_fs - 174,
+            // clamped to ±32). Applied to the frame start below; d_frame_start
+            // stays the raw tag value for the diagnostic log.
+            int64_t fs_corr = 0;
+            if (g_fs_correct && pmt::is_dict(tag.value)) {
+                try {
+                    pmt::pmt_t cfs = pmt::dict_ref(tag.value, pmt::intern("computed_fs"),
+                                                   pmt::from_long(174));
+                    if (pmt::is_number(cfs)) {
+                        // to_double handles both from_double and from_long
+                        // (pmt::to_long throws wrong_type on doubles).
+                        int64_t computed = (int64_t)pmt::to_double(cfs);
+                        fs_corr = computed - 174;   // FRAME_START_BASE constant
+                        if (fs_corr > 32 || fs_corr < -32) {
+                            fs_corr = 0;  // search peak unreliable outside ±32
+                        }
+                        fprintf(stderr, "[SPLITTER_P171] dict tag: computed=%lld corr=%lld\n",
+                                (long long)computed, (long long)fs_corr);
+                    }
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "[SPLITTER_P171] dict_ref exception: %s\n", e.what());
+                    fs_corr = 0;
+                }
+            }
 
             int64_t sync_for_this_wifi_start = -1;
             auto it = sync_offset_by_pos.find(tag_abs_pos);
@@ -282,7 +325,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
 
             // sync_long's wifi_start is at L-LTF0 DATA start (rel=0), NOT CP start.
             // Do NOT add cp_length - the tag already marks the DATA boundary.
-            int64_t new_frame_start_abs = (int64_t)tag_abs_pos;
+            // Phase 171: apply the FS_CORRECT correction so all FFT windows
+            // shift together by (computed_fs - 174), clamped to ±32.
+            int64_t new_frame_start_abs = (int64_t)tag_abs_pos + fs_corr;
 
             fprintf(stderr,
                     "[SPLITTER_FRAME_START] seq=%d d_frame_start=%llu "
