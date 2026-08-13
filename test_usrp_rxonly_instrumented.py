@@ -153,8 +153,35 @@ class InstrumentedRxOnly(gr.top_block):
         # untouched. Default 1.0 (no change); env/arg override e.g. 0.1 (-20dB).
         self.tx_scale = getattr(a, 'tx_scale', 1.0)
         self.tx_att = blocks.multiply_const_cc(self.tx_scale)
-        self.connect((self.wifi_phy_tx, 0), (self.tx_att, 0))
-        self.connect((self.tx_att, 0), (self.uhd_sink, 0))
+
+        # Phase 170: file-based TX (steady-rate, eliminates USRP underflow stalls).
+        # Root cause found in P170 dissection: the live msg_strobe->mac->hier TX
+        # chain delivers packets with scheduler jitter; the continuously-clocked
+        # uhd_sink underflows mid-burst ~1x/frame, and ~0.5% of the time the
+        # underflow lands mid-packet -> silence hole tears the L-SIG -> RX chain
+        # loss. Feeding a pre-computed steady-rate waveform removes all jitter.
+        # The waveform file already has tx_scale baked in, so connect directly
+        # to uhd_sink (skip tx_att).
+        self.tx_file = getattr(a, 'tx_file', '')
+        if self.tx_file:
+            self.tx_file_source = blocks.file_source(gr.sizeof_gr_complex, self.tx_file, True)
+            self.connect((self.tx_file_source, 0), (self.uhd_sink, 0))
+            # live TX hier output must still be connected (GR port requirement);
+            # route it to a null sink so it doesn't reach the USRP.
+            self.tx_null_sink = blocks.null_sink(gr.sizeof_gr_complex)
+            self.connect((self.wifi_phy_tx, 0), (self.tx_null_sink, 0))
+            sys.stderr.write("[P170] file-based TX ENABLED: %s (steady-rate, live chain -> null_sink)\n"
+                             % self.tx_file)
+        else:
+            self.connect((self.wifi_phy_tx, 0), (self.tx_att, 0))
+            self.connect((self.tx_att, 0), (self.uhd_sink, 0))
+
+        # Phase 170: optional TX-chain capture to localize mid-preamble stalls.
+        # If the silence hole (found in RX captures of lost frames) appears in
+        # this TX-side file, the GR TX chain produced it; if not, it's UHD/USRP.
+        if getattr(a, 'tx_capture', ''):
+            self.tx_file_sink = blocks.file_sink(gr.sizeof_gr_complex, a.tx_capture, False)
+            self.connect((self.tx_att, 0), (self.tx_file_sink, 0))
 
         # ---- RX source ----
         self.uhd_src = uhd.usrp_source(
@@ -253,6 +280,8 @@ def main():
     p.add_argument('--warmup', type=float, default=20)
     p.add_argument('--run', type=float, default=10)
     p.add_argument('--capture', type=str, default='')
+    p.add_argument('--tx-capture', type=str, default='', help='capture TX chain output to file (localize TX stalls)')
+    p.add_argument('--tx-file', type=str, default='', help='file-based TX waveform (steady-rate, eliminates underflow stalls)')
     p.add_argument('--scales', type=str, default='40', help='comma list of rx_scale to sweep')
     p.add_argument('--ldpc', action='store_true', help='Enable LDPC encoding (default: BCC)')
     args = p.parse_args()
