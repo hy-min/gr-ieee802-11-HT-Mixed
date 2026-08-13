@@ -262,6 +262,11 @@ class InstrumentedRxOnly(gr.top_block):
             self.rx_file_source = blocks.file_source(gr.sizeof_gr_complex, self.rx_file, False)
             sys.stderr.write("[P170] RX file replay: %s\n" % self.rx_file)
             rx_source_out = self.rx_file_source
+            # P171: offline replay has no TX purpose. Stop the msg strobe so the
+            # mac/mapper/TX hier stays idle (it otherwise burns a core spinning
+            # null_source into the TX chain and spews TX debug logs).
+            self.msg_disconnect((self.msg_strobe, 'strobe'), (self.mac, 'app in'))
+            sys.stderr.write("[P170] RX file replay: msg_strobe DISCONNECTED\n")
         else:
             self.uhd_src = uhd.usrp_source(
                 "addr=192.168.10.2",
@@ -280,6 +285,18 @@ class InstrumentedRxOnly(gr.top_block):
 
         # FIXED digital scale (no AGC; sweep externally)
         self.gain = blocks.multiply_const_cc(a.rx_scale)
+        if self.rx_file:
+            # P171: offline replay must mimic USRP chunk granularity. The
+            # realtime uhd_source delivers 59-2000-sample chunks; file_source
+            # delivers ~400k-sample chunks. sync_short's adaptive threshold
+            # (p90 over a 4096-sample trailing window, recomputed once per
+            # call) and the sync state machines are chunk-partition-dependent
+            # (P148/P151c): with huge chunks the threshold goes stale ->
+            # false-detection storm (~10 starts per frame period vs 1
+            # realtime) -> equalizer churns garbage -> chain CPU-saturated at
+            # ~0.22x realtime -> ~4/800 decodes. Bound the chunk size at the
+            # first RX-chain buffer (gain's output feeds sync_short_fused).
+            self.gain.set_min_output_buffer(4096)
 
         # ---- RX-ONLY decode chain ----
         self.sync_short_fused = ieee802_11.sync_short_fused(0.01, 3.0, 1024)

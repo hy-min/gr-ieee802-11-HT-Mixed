@@ -382,7 +382,9 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
                     label, (unsigned long long)last_rel_idx, expected_rel,
                     g_lltf_offset_correct, (long long)((long long)last_rel_idx - (long long)expected_rel));
         }
-        if (at_boundary) {
+        // P171: also bound the carryover emit (defensive; produced==0 here so
+        // it only matters if noutput_items < fft_size).
+        if (at_boundary && produced + d_fft_size <= noutput_items) {
             memcpy(&out[produced], d_buffer.data(), d_fft_size * sizeof(gr_complex));
             produced += d_fft_size;
             d_buffer_count = 0;
@@ -416,6 +418,17 @@ int ht_symbol_splitter_impl::general_work(int noutput_items,
     }
 
     while (i < ninput_items[0]) {
+        // P171 OUTPUT-CAPACITY GUARD: never emit past noutput_items. Offline
+        // replay (--rx-file) feeds the splitter huge chunks (ninput ~380k-424k)
+        // while noutput_items is capped by the output buffer (~138k). The
+        // HT-DATA emit path (64 out per 80 in) then drives produced past
+        // noutput_items and memcpy(&out[produced],...) writes out of bounds ->
+        // SIGSEGV (P171, realtime USRP chunks are small so this never fired).
+        // Stop consuming here; the scheduler re-calls general_work with the
+        // remaining input and a fresh output budget.
+        if (produced + d_fft_size > noutput_items) {
+            break;
+        }
         // PROBE: Debug while loop
         if (i % 100 == 0 && i > 0) {
             fprintf(stderr, "[SPLITTER_LOOP] i=%d ninput=%d produced=%d\n", i, ninput_items[0], produced);
