@@ -16,3 +16,7 @@ docs/superpowers/plans/
 .claude/*
 !.claude/rules/
 batch_results/
+
+# 工具目录（codegraph 索引 / superpowers 插件）——不提交
+.codegraph/
+.superpowers/
