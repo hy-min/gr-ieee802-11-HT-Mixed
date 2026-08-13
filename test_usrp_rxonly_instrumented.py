@@ -96,6 +96,52 @@ class EncodingStripper(gr.basic_block):
         self.message_port_pub(pmt.intern('pdu'), pmt.cons(meta, data))
 
 
+class BurstTagger(gr.basic_block):
+    """Phase 170 option A: convert packet_len tags into UHD timed-burst tags
+    (tx_sob / tx_eob / tx_time). The USRP then buffers each whole packet in the
+    FPGA and transmits it atomically at tx_time, eliminating the mid-packet
+    underflow that tears ~0.5% of frames' preambles into silence holes.
+
+    tx_time is scheduled with a fixed lead so the host always finishes
+    delivering the packet before transmission starts.
+    """
+    def __init__(self, samp_rate=20e6, lead_s=0.005, period_s=0.1015):
+        gr.basic_block.__init__(self, name='burst_tagger',
+                                in_sig=[np.complex64], out_sig=[np.complex64])
+        self.samp_rate = samp_rate
+        self.lead_s = lead_s
+        self.period_s = period_s
+        self.next_tx = 0.05  # first burst at 50 ms (USRP time reset to 0 at start)
+
+    def general_work(self, input_items, output_items):
+        inp = input_items[0]
+        out = output_items[0]
+        n = min(len(inp), len(out))
+        if n <= 0:
+            return 0
+        nread = self.nitems_read(0)
+        nwritten = self.nitems_written(0)
+        out[:n] = inp[:n]
+
+        tags = self.get_tags_in_window(0, 0, n, pmt.intern("packet_len"))
+        for t in tags:
+            rel = int(t.offset) - nread
+            if rel < 0 or rel >= n:
+                continue
+            plen = pmt.to_long(t.value)
+            abs_start = nwritten + rel
+            sec = int(self.next_tx)
+            frac = self.next_tx - sec
+            self.add_item_tag(0, abs_start, pmt.intern("tx_sob"), pmt.PMT_T)
+            self.add_item_tag(0, abs_start, pmt.intern("tx_time"),
+                              pmt.make_tuple(pmt.from_uint64(sec), pmt.from_double(frac)))
+            self.add_item_tag(0, abs_start + plen - 1, pmt.intern("tx_eob"), pmt.PMT_T)
+            self.next_tx += self.period_s
+
+        self.consume(0, n)
+        return n
+
+
 class FcsLogger(gr.basic_block):
     def __init__(self):
         gr.basic_block.__init__(self, name="fcs", in_sig=None, out_sig=None)
@@ -130,9 +176,21 @@ class InstrumentedRxOnly(gr.top_block):
             encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.01,
             use_ldpc=a.ldpc)
         self.null_src = blocks.null_source(gr.sizeof_gr_complex)
+        # Phase 170 option A: UHD tagged-stream burst mode. The hier already emits
+        # packet_len length tags (used by ofdm_cyclic_prefixer). Passing
+        # tsb_tag_name="packet_len" makes the USRP sink treat the input as a bursty
+        # tagged stream, so UHD knows each packet's boundary and does NOT terminate
+        # the burst early on a host scheduler gap (the mechanism that tore ~0.5% of
+        # frames' preambles into silence holes). RX operating point unchanged.
+        # Opt-in via IEEE80211_TX_BURST_TSB=1 for A/B.
+        import os as _os
+        _tsb = "packet_len" if _os.environ.get('IEEE80211_TX_BURST_TSB') == '1' else ""
         self.uhd_sink = uhd.usrp_sink(
             "addr=192.168.10.2,send_buff_size=1048576",
-            uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)))
+            uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
+            _tsb)
+        if _tsb:
+            sys.stderr.write("[P170] UHD burst mode ENABLED (tsb_tag_name=packet_len)\n")
         self.uhd_sink.set_samp_rate(a.rate * 1e6)
         self.uhd_sink.set_center_freq(a.freq * 1e6, 0)
         self.uhd_sink.set_gain(a.tx_gain, 0)
