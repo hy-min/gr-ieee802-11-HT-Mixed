@@ -73,6 +73,7 @@
 | `IEEE80211_HTSIG_FINE_ROT=1` | HT-SIG 8×45° | P95：PARTIAL，未破墙 |
 | `IEEE80211_LSIG_TIME_OFFSET_SEARCH=1` | 频域 τ 相位斜坡搜索 | P166b：边际（18.7% 帧选非零 τ，无 DS 改善）|
 | `IEEE80211_LSIG_HSRC_CANDIDATE=1` | H 源多样性候选（L-LTF0/1 独立噪声）| P168 NOT CONFIRMED（DS -1.0, p=0.25）|
+| `IEEE80211_TX_PREEMPHASIS=1` + `_GAIN`（wifi_phy_hier.py，TX 侧）| 边缘 SC ±26..±28 预加重 | P169 REFUTED（终败 +2.75, p=0.035——相位噪声∝幅度，功率族关闭）|
 | `IEEE80211_HTSIG_BPSK_FALLBACK=1` | HT-SIG BPSK 回退（TX/RX 协调）| P143：0 FCS_OK |
 | `IEEE80211_FORCE_HTSIG=1` | L-SIG 非 0xD 时仍试 HT-SIG | 诊断用 |
 | `IEEE80211_USE_LDPC=1` / `--ldpc` | TX LDPC 编码 | P166d NOT CONFIRMED（限制在 H 质量，非码强度）|

@@ -81,6 +81,7 @@ MIN_PLATEAU=24  TRIGGER_MARGIN=2.5  DATA_SOFT_VITERBI=1  LSIG_VITERBI_CANDIDATE=
 | 频域时移搜索 τ | P166b/167b：只修 CP 内移位，不修 ISI |
 | 用 computed_fs 替代强制 d_frame_start=174 | P167：DS 646→464，强制才是对的 |
 | H 源多样性候选（L-LTF0/L-LTF1）| P168：机制触发但无端到端收益 |
+| TX 频带边缘预加重 / 功率分配族 | P169：终败 +2.75（p=0.035）显著有害——边缘噪声是相位噪声（∝信号幅度），非热噪声 |
 | boxcar 窗口 >16 | P158-W32 |
 
 判定原文：`docs/superpowers/notes/YYYY-MM-DD-phase*.md`。
