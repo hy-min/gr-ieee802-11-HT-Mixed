@@ -15,6 +15,7 @@ test_output*.txt
 docs/superpowers/plans/
 .claude/*
 !.claude/rules/
+!.claude/skills/
 !.claude/hookify.*.local.md
 batch_results/
 
