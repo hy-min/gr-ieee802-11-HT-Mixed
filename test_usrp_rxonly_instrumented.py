@@ -70,6 +70,7 @@ os.environ.setdefault('IEEE80211_LSIG_VITERBI_CANDIDATE', '1')
 
 from gnuradio import gr, blocks, uhd, fft
 from gnuradio.fft import window
+import numpy as np
 import pmt
 import ieee802_11
 
@@ -97,21 +98,30 @@ class EncodingStripper(gr.basic_block):
 
 
 class BurstTagger(gr.basic_block):
-    """Phase 170 option A: convert packet_len tags into UHD timed-burst tags
-    (tx_sob / tx_eob / tx_time). The USRP then buffers each whole packet in the
-    FPGA and transmits it atomically at tx_time, eliminating the mid-packet
-    underflow that tears ~0.5% of frames' preambles into silence holes.
+    """Phase 172 H4: convert packet_len tags into UHD timed-burst tags
+    (tx_sob / tx_eob / tx_time). The USRP buffers each whole packet in the
+    FPGA and transmits it atomically at tx_time, so the burst start is no
+    longer a cold start after the 100 ms inter-frame idle (the H4' mechanism:
+    fixed-drain-depth start stall tears L-SIG at a locked sample offset).
 
-    tx_time is scheduled with a fixed lead so the host always finishes
-    delivering the packet before transmission starts.
+    tx_time is WALL-CLOCK anchored (NOT stream-position anchored — the hier is
+    a bursty source: stream position advances only ~124 us of samples per
+    101.5 ms of wall time, so position-based times fall into the past and
+    every burst is dropped as late; Phase 172 d1 arm: 8 bursts/80s on air).
+    tx_time = t0_dev + (host_now - h0_host) + lead_s: 50 ms in the future at
+    the moment the tag is processed. No grid assumption, no accumulation.
     """
-    def __init__(self, samp_rate=20e6, lead_s=0.005, period_s=0.1015):
+    def __init__(self, samp_rate=20e6, lead_s=0.050):
         gr.basic_block.__init__(self, name='burst_tagger',
                                 in_sig=[np.complex64], out_sig=[np.complex64])
-        self.samp_rate = samp_rate
-        self.lead_s = lead_s
-        self.period_s = period_s
-        self.next_tx = 0.05  # first burst at 50 ms (USRP time reset to 0 at start)
+        self.samp_rate = float(samp_rate)
+        self.lead_s = float(lead_s)
+        self.t0 = None   # device time (s) at anchor moment
+        self.h0 = None   # host monotonic (s) at anchor moment
+
+    def set_time_ref(self, t0):
+        self.t0 = float(t0)
+        self.h0 = time.monotonic()
 
     def general_work(self, input_items, output_items):
         inp = input_items[0]
@@ -119,24 +129,26 @@ class BurstTagger(gr.basic_block):
         n = min(len(inp), len(out))
         if n <= 0:
             return 0
-        nread = self.nitems_read(0)
-        nwritten = self.nitems_written(0)
         out[:n] = inp[:n]
 
-        tags = self.get_tags_in_window(0, 0, n, pmt.intern("packet_len"))
-        for t in tags:
-            rel = int(t.offset) - nread
-            if rel < 0 or rel >= n:
-                continue
-            plen = pmt.to_long(t.value)
-            abs_start = nwritten + rel
-            sec = int(self.next_tx)
-            frac = self.next_tx - sec
-            self.add_item_tag(0, abs_start, pmt.intern("tx_sob"), pmt.PMT_T)
-            self.add_item_tag(0, abs_start, pmt.intern("tx_time"),
-                              pmt.make_tuple(pmt.from_uint64(sec), pmt.from_double(frac)))
-            self.add_item_tag(0, abs_start + plen - 1, pmt.intern("tx_eob"), pmt.PMT_T)
-            self.next_tx += self.period_s
+        if self.t0 is not None:
+            nread = self.nitems_read(0)
+            nwritten = self.nitems_written(0)
+            dev_now = self.t0 + (time.monotonic() - self.h0)
+            tags = self.get_tags_in_window(0, 0, n, pmt.intern("packet_len"))
+            for t in tags:
+                rel = int(t.offset) - nread
+                if rel < 0 or rel >= n:
+                    continue
+                plen = pmt.to_long(t.value)
+                abs_start = nwritten + rel
+                tx = dev_now + self.lead_s
+                sec = int(tx)
+                frac = tx - sec
+                self.add_item_tag(0, abs_start, pmt.intern("tx_sob"), pmt.PMT_T)
+                self.add_item_tag(0, abs_start, pmt.intern("tx_time"),
+                                  pmt.make_tuple(pmt.from_uint64(sec), pmt.from_double(frac)))
+                self.add_item_tag(0, abs_start + plen - 1, pmt.intern("tx_eob"), pmt.PMT_T)
 
         self.consume(0, n)
         return n
@@ -242,7 +254,16 @@ class InstrumentedRxOnly(gr.top_block):
             sys.stderr.write("[P170] file-based TX ENABLED: %s (steady-rate, live chain -> null_sink)\n"
                              % self.tx_file)
         else:
-            self.connect((self.tx_att, 0), (self.uhd_sink, 0))
+            # Phase 172 H4: opt-in timed-burst TX (BurstTagger between tx_att
+            # and uhd_sink). FPGA pre-fills each whole packet during the idle
+            # period and transmits atomically at tx_time. Default OFF.
+            if _os.environ.get('IEEE80211_TX_TIMED_BURST') == '1':
+                self.burst_tagger = BurstTagger(samp_rate=a.rate * 1e6, lead_s=0.050)
+                self.connect((self.tx_att, 0), (self.burst_tagger, 0), (self.uhd_sink, 0))
+                sys.stderr.write("[P172] timed-burst TX ENABLED (tx_sob/eob/time, lead=50ms)\n")
+            else:
+                self.burst_tagger = None
+                self.connect((self.tx_att, 0), (self.uhd_sink, 0))
 
         # Phase 170: optional TX-chain capture to localize mid-preamble stalls.
         # If the silence hole (found in RX captures of lost frames) appears in
@@ -390,6 +411,11 @@ def main():
     # re-init segfault / RFNoC graph corruption from repeated construct+destroy).
     tb = InstrumentedRxOnly(args)
     tb.start()
+    # Phase 172: anchor the timed-burst scheduler to the live device clock.
+    # Sampled right after start(); tags arriving before this get no timed
+    # tags (untimed burst = baseline behavior, warmup only).
+    if getattr(tb, 'burst_tagger', None) is not None:
+        tb.burst_tagger.set_time_ref(tb.uhd_sink.get_time_now().get_real_secs())
     time.sleep(args.warmup)
     print(f"[P147-T6] warmup {args.warmup}s done, starting sweep", flush=True)
     summary = []
