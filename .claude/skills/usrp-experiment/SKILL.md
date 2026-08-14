@@ -58,15 +58,9 @@ python3 p158_abab_batch.py --pairs 4 --tag <name> --exp-env NAME=VALUE
 
 ### 5. 归档链（全部做完才算完成）
 
-1. `docs/superpowers/notes/YYYY-MM-DD-phase<N>-<slug>.md` — verdict 原文，
-   **逐字贴 ABAB 的 VERDICT 段或 validate 的 RESULT 段**，写清分子分母各自窗口
-2. `.claude/rules/env-vars.md` — 新 env var 登记一行（名称/默认/作用/判定）；
-   已有 var 更新判定列
-3. 若翻转 harness 默认值：更新 CLAUDE.md「Harness 默认环境」表
-4. 若整个方向关闭：更新 CLAUDE.md「禁止方向」表 + hookify 规则
-   `.claude/hookify.warn-refuted-direction.local.md` 的 pattern
-5. Memory：写/更新 `project_p<N>_*.md` 并在 MEMORY.md 加一行索引
-6. Commit（verdict 文件 + 代码 + env-vars.md 一起）
+**REQUIRED SUB-SKILL:** 用 `phase-verdict` skill 执行归档——verdict 文件骨架、
+env-vars.md 行格式、memory frontmatter、三分支（CONFIRMED / NOT CONFIRMED /
+REFUTED）的差异化动作（含禁止方向表 + hookify pattern 同步）、commit 分组。
 
 ## Verdict 模板（逐字结构）
 
