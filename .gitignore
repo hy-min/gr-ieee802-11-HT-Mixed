@@ -16,6 +16,7 @@ docs/superpowers/plans/
 .claude/*
 !.claude/rules/
 !.claude/skills/
+!.claude/agents/
 !.claude/hookify.*.local.md
 batch_results/
 
