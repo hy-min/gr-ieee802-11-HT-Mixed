@@ -15,6 +15,7 @@ test_output*.txt
 docs/superpowers/plans/
 .claude/*
 !.claude/rules/
+!.claude/hookify.*.local.md
 batch_results/
 
 # 工具目录（codegraph 索引 / superpowers 插件）——不提交
