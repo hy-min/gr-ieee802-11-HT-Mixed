@@ -1,6 +1,6 @@
 ---
 name: phase-verdict
-description: Use when an experiment phase concludes in gr-ieee802-11 and results need archiving — writing verdict documents to docs/superpowers/notes/, updating env-vars.md / CLAUDE.md tables / hookify patterns, creating memory entries, or after any ABAB batch produces a VERDICT line (CONFIRMED / NOT CONFIRMED / REFUTED).
+description: Use when an experiment phase concludes in gr-ieee802-11 and results need archiving — writing verdict documents to docs/superpowers/notes/, updating env-vars.md / CLAUDE.md tables / the forbidden-directions warning hook (hookify pattern), creating memory entries, or after any ABAB batch produces a VERDICT line (CONFIRMED / NOT CONFIRMED / REFUTED).
 ---
 
 # Phase Verdict 归档（gr-ieee802-11）
@@ -16,7 +16,8 @@ NOT CONFIRMED / REFUTED）的归档动作**不同**，按分支执行，缺一�
 ### 1. Verdict 文件
 
 路径：`docs/superpowers/notes/YYYY-MM-DD-phase<N>-<slug>.md`
-（slug 用判定词结尾，如 `-refuted` / `-not-confirmed`；CONFIRMED 可带 `-verdict`）
+（slug 强制以判定词结尾：`-confirmed` / `-not-confirmed` / `-refuted`，便于 lint；
+历史文件的 `-verdict` 等旧命名不回溯改）
 
 骨架：
 ```markdown
@@ -57,6 +58,17 @@ NOT CONFIRMED / REFUTED）的归档动作**不同**，按分支执行，缺一�
 verdict 文件 + env-vars.md +（未提交的）实验代码同一 commit；
 message 遵循 repo 风格 `docs(p<N>): ...` 或 `feat(p<N>): ...`，含判定词与关键数字。
 memory 文件在仓库外，不进此 commit。
+
+### 5. 机器验收门（归档完成的定义）
+
+```bash
+python3 .claude/skills/phase-verdict/lint_verdict.py \
+    <verdict 文件> --env <IEEE80211_XXX> --phase <N>
+```
+
+`PASS: 0 fail(s)` 才算归档完成。FAIL 项 = verdict 缺逐字 VERDICT 行 / 缺分子分母
+窗口声明 / env-vars.md 未登记 / REFUTED 未同步禁止方向表或 hookify pattern /
+memory 缺失。
 
 ## 分支专属动作
 

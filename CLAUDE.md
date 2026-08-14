@@ -53,8 +53,8 @@ USRP realtime FCS_OK（X310 + UBX-160 端到端）。
 - **rx-gain 勿 < 20**（boxcar 贴地板伪影，P165）。
 - 批次前查 governor：`cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`
   须为 `performance`（P158：powersave 会伪装成设备漂移）。
-- 挂死恢复：`pkill -9 -f 'python.*usrp'` 后 `uhd_usrp_probe` nudge；
-  ping 通但 probe 空 = 设备被占用，不是离线。
+- 挂死恢复：ping 通但 probe 空 = 设备被占用，不是离线（永不 reflash）；
+  完整升级序列唯一源 = `usrp-recovery` skill。
 
 ## Harness 默认环境（setdefault，env 可覆盖）
 

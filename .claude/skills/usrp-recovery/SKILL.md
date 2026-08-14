@@ -32,8 +32,8 @@ pgrep -af 'usrp|gnuradio|ieee802' || echo "clean"
 # 3. probe nudge —— 看到 X300 设备信息即恢复
 uhd_usrp_probe --args addr=192.168.10.2
 
-# 4. 仍失败：查 stray UHD 进程，杀干净后重复 3。
-#    两轮完整清理仍失败 → 升级电源重启（power-cycle）。
+# 4. 仍失败：查 stray UHD 进程（含非 python 的 uhd 进程），杀干净后重复 3。
+#    两轮完整清理（= 步骤 1-3 完整执行两次）仍失败 → 升级电源重启（power-cycle）。
 #    本症状永远不要 reflash FPGA。
 ```
 
@@ -59,4 +59,5 @@ uhd_usrp_probe --args addr=192.168.10.2
 - 恢复后跳过 smoke 验证直接上 ABAB 批次
 - 在 `run_XX.err` 里数触发次数下结论
 
-详细背景：`.claude/rules/usrp-operations.md`。
+详细背景：`.claude/rules/usrp-operations.md`（其中挂死恢复节已降级为指针，
+本 skill 是恢复序列的唯一源）。

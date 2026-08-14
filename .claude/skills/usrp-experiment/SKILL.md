@@ -1,6 +1,6 @@
 ---
 name: usrp-experiment
-description: Use when testing any env var, code change, or hypothesis against USRP realtime FCS_OK in gr-ieee802-11 — running loopback regression gates, p158_abab_batch.py paired ABAB experiments, usrp_realtime_validate.sh baselines, or writing experiment verdicts (CONFIRMED / NOT CONFIRMED / REFUTED) and archiving phase results.
+description: Use when testing any env var, code change, or hypothesis against USRP realtime FCS_OK in gr-ieee802-11 — running loopback regression gates, p158_abab_batch.py paired ABAB experiments, usrp_realtime_validate.sh baselines, or reaching experiment verdicts (CONFIRMED / NOT CONFIRMED / REFUTED). Archiving of finished verdicts is handled by the phase-verdict skill.
 ---
 
 # USRP 实验执行序列（gr-ieee802-11）
@@ -52,9 +52,8 @@ python3 p158_abab_batch.py --pairs 4 --tag <name> --exp-env NAME=VALUE
 
 ### 4. 判定（只用三档）
 
-- **CONFIRMED**：配对 t p<0.05 且方向为正（主终点）
-- **NOT CONFIRMED**：p≥0.05 或方向不定
-- **REFUTED**：方向为负且显著，或机制级证伪
+CONFIRMED / NOT CONFIRMED / REFUTED，定义唯一源 = `.claude/rules/methodology.md` §7。
+速记：CONFIRMED = 配对 t p<0.05 且方向为正（预注册主终点）。
 
 ### 5. 归档链（全部做完才算完成）
 
@@ -62,17 +61,9 @@ python3 p158_abab_batch.py --pairs 4 --tag <name> --exp-env NAME=VALUE
 env-vars.md 行格式、memory frontmatter、三分支（CONFIRMED / NOT CONFIRMED /
 REFUTED）的差异化动作（含禁止方向表 + hookify pattern 同步）、commit 分组。
 
-## Verdict 模板（逐字结构）
+## Verdict 模板
 
-```
-VERDICT 行（逐字粘贴）: [p158_abab_batch.py 输出的 VERDICT: ... 原文]
-
-<env var / 改动>: <CONFIRMED | NOT CONFIRMED | REFUTED>
-- N=<n> 配对交错 ABAB，新鲜背靠背对照，governor=performance，电缆 --tx-scale 0.1
-- 主终点 <终败|DS>：mean diff <x>（paired t p=<y>）；次终点 <z>
-- Loopback 门：OFF/ON 双臂 Final: OK=1 FAIL=0
-- 分子分母窗口：<说明真值计数与 est_sent 覆盖同一时间窗>
-```
+唯一源 = `phase-verdict` skill「通用产物 1」。此处不再留存副本（防漂移）。
 
 ## Red Flags — 出现即违规
 

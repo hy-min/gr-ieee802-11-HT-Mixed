@@ -15,13 +15,9 @@ ping -c1 192.168.10.2                                       # 须通
 ## 挂死恢复
 
 症状：`uhd_usrp_probe` 报 "No devices found" 但 ping 通 = 设备被占用
-或坏状态，**不是离线**。恢复顺序：
-
-```bash
-pkill -9 -f 'python.*usrp|python.*gnuradio|python.*ieee802'
-sleep 3
-uhd_usrp_probe --args addr=192.168.10.2    # nudge，看到 X300 即恢复
-```
+或坏状态，**不是离线**（也**不是固件问题——本症状永不 reflash**）。
+完整恢复序列（pkill → probe nudge → 两轮清理 → power-cycle 升级阶梯 +
+恢复验证门）唯一源 = `usrp-recovery` skill。
 批次中途被 kill 后必做（P158 教训 #3）。
 
 ## RF 配置
