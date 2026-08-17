@@ -42,6 +42,22 @@ static inline uint8_t hard_bpsk_bit(const gr_complex& x)
     return (x.real() >= 0.0f) ? 1 : 0;
 }
 
+// Phase 174: MAC-ownership flag for decode accounting. Harness frames have
+// addr1 = 0x42*6 (test harness mac([0x23]*6,[0x42]*6,[0xff]*6) -> addr1=dst).
+// Foreign 802.11 frames (external WiFi on the RX path, P174 CFO forensics)
+// can reach decode_mac and pollute the DECODE_FAIL budget; flag every outcome
+// line so ground-truth accounting can split ours vs foreign. Log-only change.
+static inline int our_mac_flag(const uint8_t* psdu, int len)
+{
+    if (len < 10)
+        return 0;
+    for (int i = 4; i < 10; i++) { // addr1 at PSDU bytes 4..9
+        if (psdu[i] != 0x42)
+            return 0;
+    }
+    return 1;
+}
+
 static int ht_n_bpsc_from_mcs(int mcs)
 {
     switch (mcs) {
@@ -977,12 +993,16 @@ private:
                 }
             }
 
+            // psdu was loop-scoped; recompute for the ownership flag (log-only).
+            const uint8_t* psdu_final = d_out_bytes.data() + 2;
             if (!fcs_ok) {
-                USRP_LOG( "[DECODE_FAIL] LDPC FCS error after seed search len=%d\n", d_ht_len);
+                USRP_LOG( "[DECODE_FAIL] LDPC FCS error after seed search len=%d ourmac=%d\n",
+                        d_ht_len, our_mac_flag(psdu_final, d_ht_len));
                 return;
             }
 
-            USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK seed=%d len=%d\n", best_seed, d_ht_len);
+            USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK seed=%d len=%d ourmac=%d\n",
+                    best_seed, d_ht_len, our_mac_flag(psdu_final, d_ht_len));
             pmt::pmt_t blob = pmt::make_blob(d_out_bytes.data() + 2, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(105));
             d_meta = pmt::dict_add(d_meta, pmt::mp("crc"), pmt::from_long(1));
@@ -1290,7 +1310,8 @@ private:
                      << " rx=0x"   << rx_fcs
                      << std::dec << std::endl;
             }
-            USRP_LOG( "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d\n", d_ht_len);
+            USRP_LOG( "[DECODE_SUCCESS] Conv FCS OK, publishing message len=%d ourmac=%d\n",
+                    d_ht_len, our_mac_flag(psdu, d_ht_len));
             // Phase 163b: per-frame MAC sequence-number log (opt-in) for
             // per-frame fate forensics — missing seqs = lost frames, joinable
             // to the 100ms TX lattice to see exactly what the chain was doing
@@ -1330,8 +1351,8 @@ private:
             }
         }
 
-        USRP_LOG( "[DECODE_FAIL] Conv FCS error calc=0x%x rx=0x%x len=%d, trying LDPC fallback\n",
-                calc_fcs, rx_fcs, d_ht_len);
+        USRP_LOG( "[DECODE_FAIL] Conv FCS error calc=0x%x rx=0x%x len=%d ourmac=%d, trying LDPC fallback\n",
+                calc_fcs, rx_fcs, d_ht_len, our_mac_flag(psdu, d_ht_len));
 
         // ============================================================
         // LDPC fallback
@@ -1390,12 +1411,14 @@ private:
             const uint32_t calc_fcs_ldpc = crc_ldpc.checksum();
 
             if (calc_fcs_ldpc != rx_fcs_ldpc) {
-                USRP_LOG( "[DECODE_FAIL] LDPC FCS error calc=0x%x rx=0x%x len=%d\n",
-                        calc_fcs_ldpc, rx_fcs_ldpc, d_ht_len);
+                USRP_LOG( "[DECODE_FAIL] LDPC FCS error calc=0x%x rx=0x%x len=%d ourmac=%d\n",
+                        calc_fcs_ldpc, rx_fcs_ldpc, d_ht_len,
+                        our_mac_flag(psdu_ldpc, d_ht_len));
                 return;
             }
 
-            USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK (fallback), publishing message len=%d\n", d_ht_len);
+            USRP_LOG( "[DECODE_SUCCESS] LDPC FCS OK (fallback), publishing message len=%d ourmac=%d\n",
+                    d_ht_len, our_mac_flag(psdu_ldpc, d_ht_len));
             pmt::pmt_t blob = pmt::make_blob(psdu_ldpc, d_ht_len);
             d_meta = pmt::dict_add(d_meta, pmt::mp("dlt"), pmt::from_long(LINKTYPE_IEEE802_11));
             d_meta = pmt::dict_add(d_meta, pmt::mp("crc"), pmt::from_long(1));
