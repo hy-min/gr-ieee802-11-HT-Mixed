@@ -83,7 +83,7 @@ MIN_PLATEAU=24  TRIGGER_MARGIN=2.5  DATA_SOFT_VITERBI=1  LSIG_VITERBI_CANDIDATE=
 | H 源多样性候选（L-LTF0/L-LTF1）| P168：机制触发但无端到端收益 |
 | TX 频带边缘预加重 / 功率分配族 | P169：终败 +2.75（p=0.035）显著有害——边缘噪声是相位噪声（∝信号幅度），非热噪声 |
 | TX 缓冲/MTU/jumbo/tsb 包装族 | P172：A 族洞位锁定 ~345 与 MTU 无关（jumbo 不移不消）、率不降；tsb 只压 U 虚报不改物理 |
-| B/C episode 主机软件修复 | P173：同跑 TX 数字链 695/695 帧全干净而空口弱幅碎裂 → 设备模拟域，软件无杠杆 |
+| B/C episode 当我方帧修复 | P174 更正 P173：episode 帧=外部 WiFi 异帧（CFO 指纹 −68/−89kHz vs 我方 +75kHz），非我方帧退化——修复对象不存在；真实代价=链占用+计数污染 |
 | boxcar 窗口 >16 | P158-W32 |
 
 判定原文：`docs/superpowers/notes/YYYY-MM-DD-phase*.md`。
