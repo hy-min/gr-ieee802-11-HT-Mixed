@@ -204,7 +204,7 @@ class InstrumentedRxOnly(gr.top_block):
             self.tx_null_sink0 = blocks.null_sink(gr.sizeof_gr_complex)
         else:
             self.uhd_sink = uhd.usrp_sink(
-                "addr=192.168.10.2,send_buff_size=1048576",
+                f"addr={a.tx_addr},send_buff_size=1048576",
                 uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)),
                 _tsb)
             if _tsb:
@@ -290,7 +290,7 @@ class InstrumentedRxOnly(gr.top_block):
             sys.stderr.write("[P170] RX file replay: msg_strobe DISCONNECTED\n")
         else:
             self.uhd_src = uhd.usrp_source(
-                "addr=192.168.10.2",
+                f"addr={a.rx_addr}",
                 uhd.stream_args(cpu_format="fc32", otw_format="sc16",
                                 args=uhd.device_addr("recv_buff_size=16777216,num_recv_frames=256"),
                                 channels=[0]))
@@ -387,6 +387,10 @@ def measure_window(tb, scale, a):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--freq', type=float, default=5250)
+    p.add_argument('--tx-addr', default='192.168.10.2',
+                   help='TX USRP address (cross-device TX device = 192.168.20.3)')
+    p.add_argument('--rx-addr', default='192.168.10.2',
+                   help='RX USRP address (single-device default unchanged)')
     p.add_argument('--rate', type=float, default=20)
     p.add_argument('--tx-gain', type=float, default=0)
     p.add_argument('--tx-scale', type=float, default=1.0, help='TX digital attenuation (1.0 = none; 0.1 = -20dB)')
