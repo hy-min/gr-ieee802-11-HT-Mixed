@@ -51,9 +51,18 @@ MAX_ATTEMPTS = 3
 
 
 def uhd_nudge():
-    subprocess.run(['uhd_usrp_probe', '--args', 'addr=192.168.10.2'],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                   timeout=60)
+    addrs = ['192.168.10.2']
+    if getattr(main_args, 'tx_addr', ''):
+        addrs.append(main_args.tx_addr)
+    if getattr(main_args, 'rx_addr', ''):
+        addrs.append(main_args.rx_addr)
+    for a in dict.fromkeys(addrs):
+        subprocess.run(['uhd_usrp_probe', '--args', f'addr={a}'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=60)
+
+
+main_args = None
 
 
 def count_arrivals(rt_err_copy):
@@ -83,8 +92,15 @@ def run_once(tag, outdir, exp_name, exp_value):
     uhd_init_fail = False
     out = err = ''
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        cmd = [str(SCRIPT), '--threshold', '15', '--windows', '3', '--run', '15']
+        if args.tx_addr:
+            cmd += ['--tx-addr', args.tx_addr]
+        if args.rx_addr:
+            cmd += ['--rx-addr', args.rx_addr]
+        if args.freq:
+            cmd += ['--freq', str(args.freq)]
         proc = subprocess.Popen(
-            [str(SCRIPT), '--threshold', '15', '--windows', '3', '--run', '15'],
+            cmd,
             cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True, env=env)
         try:
@@ -166,7 +182,12 @@ def main():
     ap.add_argument('--exp-env',
                     default='IEEE80211_SYNC_SHORT_COPY_REDETECT=1',
                     help='NAME=VALUE for the experiment arm (control unsets NAME)')
+    ap.add_argument('--tx-addr', default='', help='TX USRP addr (cross-device; empty=default)')
+    ap.add_argument('--rx-addr', default='', help='RX USRP addr (cross-device; empty=default)')
+    ap.add_argument('--freq', type=int, default=0, help='freq MHz (0=harness default 5250)')
     args = ap.parse_args()
+    global main_args
+    main_args = args
     exp_name, _, exp_value = args.exp_env.partition('=')
     if not exp_name:
         print('[ABAB] FATAL: --exp-env must be NAME=VALUE', flush=True)
