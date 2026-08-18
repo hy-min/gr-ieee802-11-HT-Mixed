@@ -413,6 +413,9 @@ private:
     bool  d_phase_diff_valid;       // true after L-LTF1 arrives
     float d_sfo_per_sc_est = 0.0f;  // raw SFO estimate (rad/subcarrier) for logging
     bool  d_enable_cfo_comp;        // enable CFO/SFO compensation on HT-DATA
+    float d_cfo_ema = 0.0f;         // Phase 176: cross-frame EMA of CFO (rad/symbol)
+    float d_sfo_ema = 0.0f;         // Phase 176: cross-frame EMA of SFO (rad/SC/symbol)
+    bool  d_ema_valid = false;      // Phase 176: EMA primed after first frame
 
     // Phase 34: per-frame sub-sample timing offset (δ) estimation+correction.
     // Discovered via Phase 33b USRP validation: argH[b] = -2π·kScIndex52[b]·δ/64

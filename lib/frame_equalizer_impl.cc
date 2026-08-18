@@ -1037,6 +1037,14 @@ static const bool g_hdr_comp_disable_data = [] {
     return (e != nullptr) && e[0] == '1';
 }();
 
+// Phase 176: cross-frame CFO/SFO EMA — opt-in via IEEE80211_CFO_EMA=1
+// (default OFF). ABAB N=4: NOT CONFIRMED (DS -42.2, p=0.021; 300s +12pp was
+// a time-window confound). Kept as opt-in for diagnostics.
+static const bool g_cfo_ema_enabled = [] {
+    const char* e = std::getenv("IEEE80211_CFO_EMA");
+    return (e != nullptr) && e[0] == '1';
+}();
+
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
                                               const gr_complex* H52_tx_order,
@@ -6744,6 +6752,32 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 // Save full linear fit: CFO + SFO*SC for each subcarrier
                 for (int i = 0; i < 52; i++) {
                     d_phase_diff_per_sc[i] = cfo_est + sfo_est * kScIndex52[i];
+                }
+                // Phase 176 (cross-device): cross-frame EMA on CFO/SFO.
+                // Per-frame L-LTF fits have ~23% outlier frames (noise
+                // events) whose estimates are 10-40x the true slow crystal
+                // drift; compensation with them explodes data symbols
+                // (phase ∝ counter). Drift timescale is minutes ≫ 100ms
+                // frame interval → EMA is safe. Same gate as the data-path
+                // compensation (HDR_COMP_DISABLE=0).
+                if (!g_hdr_comp_disable_data && g_cfo_ema_enabled) {
+                    const float alpha = 0.25f;
+                    if (!d_ema_valid) {
+                        d_cfo_ema = cfo_est;
+                        d_sfo_ema = sfo_est;
+                        d_ema_valid = true;
+                    } else {
+                        d_cfo_ema = alpha * cfo_est + (1.0f - alpha) * d_cfo_ema;
+                        d_sfo_ema = alpha * sfo_est + (1.0f - alpha) * d_sfo_ema;
+                    }
+                    for (int i = 0; i < 52; i++) {
+                        d_phase_diff_per_sc[i] = d_cfo_ema + d_sfo_ema * kScIndex52[i];
+                    }
+                    char ema_buf[160];
+                    snprintf(ema_buf, sizeof(ema_buf),
+                             "[CFO_EMA] cfo=%.4f sfo=%.6f (raw %.4f/%.6f)\n",
+                             d_cfo_ema, d_sfo_ema, cfo_est, sfo_est);
+                    USRP_LOG("%s", ema_buf);
                 }
                 d_phase_diff_valid = true;
                 USRP_LOG("[SFO_EST] cfo=%.4f sfo=%.6f rad/SC d_cfo=%.4f\n",
