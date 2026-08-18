@@ -66,6 +66,7 @@
 | env var | 作用 | 判定 |
 |---------|------|------|
 | `IEEE80211_DATA_SOFT_VITERBI=1` | 数据路径软判决（harness 默认 ON）| P162 CONFIRMED |
+| `IEEE80211_DATA_CPE_MPOWER=1` | 数据符号 M-power 每符号 CPE（P176 升级为公共+SC斜坡两参数拟合）| 单板 P161 REFUTED（p=0.005 有害）；跨设备实验 C/E：单独叠加远逊于确定性补偿（HDR_COMP=0），保持 opt-in OFF |
 | `IEEE80211_SOFT_LLR_VITERBI=1` + `IEEE80211_HTSIG_SOFT_LLR_V2=1` | HT-SIG 软 LLR | P44/P129 REFUTED |
 | `IEEE80211_HTSIG_SOFT_*`（P164 系列）| HT-SIG 软判决 σ²-free 标定 | P164 NOT CONFIRMED（方向分裂）|
 | `IEEE80211_HTSIG_LIST_VITERBI=1..64` | 列表 viterbi | P111 T6a REFUTED（路径共享噪声轨迹）|

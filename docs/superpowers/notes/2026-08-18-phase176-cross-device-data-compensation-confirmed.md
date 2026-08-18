@@ -62,6 +62,22 @@ counter<8(L-LTF0/1, L-SIG, HT-SIG0/1);同板 CFO≈0 掩盖(99.55% 不需要);
   错过 WiFi 突发),下一步候选:换 5220 频点 / CFO 估计精化 / 帧级残余分析。
 - 单板 USRP 基线复测待做(需设备1 自回环接线),确认门控下单板行为不变。
 
+## 单板基线复测(2026-08-18,补录)
+
+改动后默认参数复测(设备1 自回环,HDR_COMP_DISABLE=1 默认门控):
+
+```
+[RTV] config: freq=5250 tx-addr=192.168.10.2 rx-addr=192.168.10.2
+[RTV] FCS_OK (PDU msg-queue)      = 425
+[RTV] DECODE_SUCCESS (ground truth) = 611
+[RTV] DECODE_FAIL (LDPC terminal)   = 28
+[RTV] PASS: DECODE_SUCCESS=611 >= 15
+```
+
+vs 改动前复测(DS=644, PDU=446, 终败 2):同量级 PASS——门控关闭时数据路径
+逐比特不变(identity rotation),单板 99.55% 路径未破坏。PDU 425 vs 446 属
+设备时间漂移范围。
+
 ## 诚实清单(故意未动)
 
 - 未翻 CLAUDE.md「Harness 默认环境」表(HDR_COMP_DISABLE 默认 1 保持)
