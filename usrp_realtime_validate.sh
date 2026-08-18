@@ -16,6 +16,8 @@ THRESHOLD=15          # ground-truth DECODE_SUCCESS across all windows (PASS flo
 WINDOWS=3             # measurement windows
 RUN=15                # seconds per window (3x15 = 45s total, matches Phase 147 baseline)
 FREQ=5250             # antenna (air path), quietest 5 GHz band
+TXADDR=192.168.10.2   # TX USRP address (cross-device: 192.168.20.3)
+RXADDR=192.168.10.2   # RX USRP address
 TXGAIN=0              # Phase 147 config (rx_gain 31.5 gives ~26% ADC, no clipping)
 TXSCALE=1.0           # Phase 165: TX digital attenuation (1.0=none; 0.1=-20dB).
                       # Cable-direct at tx-gain 0 sends ~+5dBm into RX2 (20dB
@@ -33,6 +35,9 @@ while [ $# -gt 0 ]; do
     --run)       RUN="$2"; shift 2;;
     --tx-scale)  TXSCALE="$2"; shift 2;;
     --ldpc)      LDPC_FLAG="--ldpc"; shift;;
+    --freq)      FREQ="$2"; shift 2;;
+    --tx-addr)   TXADDR="$2"; shift 2;;
+    --rx-addr)   RXADDR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -49,7 +54,7 @@ ERR=/tmp/rt_validate.err
 
 echo "==================================================================="
 echo "[RTV] realtime USRP FCS_OK validation"
-echo "[RTV] config: freq=$FREQ tx-gain=$TXGAIN rx-gain=$RXGAIN rx-scale=$RXSCALE interval=${INTERVAL}ms"
+echo "[RTV] config: freq=$FREQ tx-addr=$TXADDR rx-addr=$RXADDR tx-gain=$TXGAIN rx-gain=$RXGAIN rx-scale=$RXSCALE interval=${INTERVAL}ms"
 echo "[RTV] windows=$WINDOWS x ${RUN}s (est_sent~$EST_SENT frames)  threshold(DECODE_SUCCESS)>=$THRESHOLD"
 echo "[RTV] system: governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null) wmem_max=$(sysctl -n net.core.wmem_max 2>/dev/null)"
 if [ "$(sysctl -n net.core.wmem_max 2>/dev/null)" != "2453333" ]; then
@@ -63,7 +68,8 @@ echo "==================================================================="
 unset LD_LIBRARY_PATH
 LD_PRELOAD=./wrap_rpc2.so PYTHONPATH=build/python/bindings:python:examples \
   /home/hy/conda/envs/gnuradio/bin/python test_usrp_rxonly_instrumented.py \
-    --freq "$FREQ" --tx-gain "$TXGAIN" --tx-scale "$TXSCALE" --rx-gain "$RXGAIN" --rx-scale "$RXSCALE" \
+    --freq "$FREQ" --tx-addr "$TXADDR" --rx-addr "$RXADDR" \
+    --tx-gain "$TXGAIN" --tx-scale "$TXSCALE" --rx-gain "$RXGAIN" --rx-scale "$RXSCALE" \
     $LDPC_FLAG \
     --interval "$INTERVAL" --warmup 20 --run "$RUN" --scales "$SCALES" \
     >"$OUT" 2>"$ERR"
