@@ -93,12 +93,12 @@ def run_once(tag, outdir, exp_name, exp_value):
     out = err = ''
     for attempt in range(1, MAX_ATTEMPTS + 1):
         cmd = [str(SCRIPT), '--threshold', '15', '--windows', '3', '--run', '15']
-        if args.tx_addr:
-            cmd += ['--tx-addr', args.tx_addr]
-        if args.rx_addr:
-            cmd += ['--rx-addr', args.rx_addr]
-        if args.freq:
-            cmd += ['--freq', str(args.freq)]
+        if main_args.tx_addr:
+            cmd += ['--tx-addr', main_args.tx_addr]
+        if main_args.rx_addr:
+            cmd += ['--rx-addr', main_args.rx_addr]
+        if main_args.freq:
+            cmd += ['--freq', str(main_args.freq)]
         proc = subprocess.Popen(
             cmd,
             cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
