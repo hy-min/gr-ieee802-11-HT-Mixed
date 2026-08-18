@@ -329,7 +329,8 @@ static inline gr_complex ht_expected_pilot(int data_sym_idx, int pilot_idx)
 
 static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
                                                  int data_sym_idx,
-                                                 const gr_complex* H52_tx_order)
+                                                 const gr_complex* H52_tx_order,
+                                                 float* slope_out = nullptr)
 {
     // Phase 161: M-power (squaring) CPE estimator over the 52 data SCs.
     // Opt-in via IEEE80211_DATA_CPE_MPOWER=1 (default OFF).
@@ -343,6 +344,10 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
     // made the pilot path fragile). |eq|^2 weighting favours strong SCs.
     static const char* env_mpower = std::getenv("IEEE80211_DATA_CPE_MPOWER");
     if (env_mpower && env_mpower[0] == '1') {
+        if (slope_out) *slope_out = 0.0f;
+        // Two-parameter per-symbol phase tracking (cross-device regime):
+        // common phase (CFO residual) + SC slope (timing/SFO residual).
+        // Phase 1: coarse common estimate arg(sum eq^2)/2 (as before).
         gr_complex acc2(0.0f, 0.0f);
         for (int j = 0; j < 52; j++) {
             const int bin = sc_to_fft_bin(kTxOrder52[j]);
@@ -352,7 +357,42 @@ static float estimate_ht_data_cpe_rad_from_sym64(const gr_complex* sym64,
             acc2 += eq0 * eq0;
         }
         if (std::abs(acc2) < 1e-9f) return 0.0f;
-        return std::arg(acc2) * 0.5f;
+        const float cpe0 = std::arg(acc2) * 0.5f;
+        // Phase 2: weighted linear fit of residual phase vs SC index.
+        // resid_j = arg(eq_j^2 * exp(-2j*cpe0)) ~ 2*(dcpe + slope*sc_j).
+        // Weight w = |eq|^4 (phase estimate variance ~ 1/|eq|^2 for the
+        // squared symbol, so optimal OLS weight ~ 1/var ~ |eq|^4).
+        double wsum = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+        for (int j = 0; j < 52; j++) {
+            const int bin = sc_to_fft_bin(kTxOrder52[j]);
+            const float h_mag = std::abs(H52_tx_order[j]);
+            if (h_mag < 0.001f) continue;
+            const gr_complex eq0 = sym64[bin] / H52_tx_order[j];
+            const gr_complex sq = eq0 * eq0 *
+                std::exp(gr_complex(0.0f, -2.0f * cpe0));
+            const double w = (double)std::norm(eq0) * (double)std::norm(eq0);
+            const double x = (double)kTxOrder52[j];
+            const double y = (double)std::arg(sq); // small angle after coarse rot
+            wsum += w; sx += w * x; sy += w * y;
+            sxx += w * x * x; sxy += w * x * y;
+        }
+        float cpe = cpe0;
+        float slope = 0.0f;
+        if (wsum > 0.0) {
+            const double denom = sxx - sx * sx / wsum;
+            if (denom > 1e-12) {
+                slope = (float)((sxy - sx * sy / wsum) / denom) * 0.5f;
+                // Guard against wrap-around divergence: |slope| <= 0.03 rad/SC
+                if (slope > 0.03f) slope = 0.03f;
+                else if (slope < -0.03f) slope = -0.03f;
+                const double dcpe = (sy - sx * (double)slope) / wsum;
+                cpe = cpe0 + (float)dcpe * 0.5f;
+            } else {
+                cpe = cpe0 + (float)(sy / wsum) * 0.5f;
+            }
+        }
+        if (slope_out) *slope_out = slope;
+        return cpe;
     }
 
     gr_complex acc(0.0f, 0.0f);
@@ -988,16 +1028,27 @@ extern bool ltf0_ever_saved;
 extern bool g_log_ltf0_fft;
 
 
+// File-scope HDR_COMP gate for the DATA symbol path (the header-path copy is
+// function-scope inside general_work and not visible here). Same env var,
+// same semantics: 1 (harness default) = skip compensation (single-board
+// baseline), 0 = apply per-symbol CFO/SFO (cross-device regime).
+static const bool g_hdr_comp_disable_data = [] {
+    const char* e = std::getenv("IEEE80211_HDR_COMP_DISABLE");
+    return (e != nullptr) && e[0] == '1';
+}();
+
 static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
                                               int data_sym_idx,
                                               const gr_complex* H52_tx_order,
-                                              gr_complex* out52)
+                                              gr_complex* out52,
+                                              const gr_complex* phase_rot = nullptr)
 {
-    const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx, H52_tx_order);
+    float cpe_slope = 0.0f;
+    const float cpe = estimate_ht_data_cpe_rad_from_sym64(sym64, data_sym_idx, H52_tx_order, &cpe_slope);
     const gr_complex rot = std::exp(gr_complex(0.0f, -cpe));
 
-    USRP_LOG( "[EQ_HTDATA] sym=%d cpe_deg=%.1f rot=%.4f%+.4fi H[0]=%.4f%+.4fi sym64[%d]=%.4f%+.4fi eq[0]=...\n",
-            data_sym_idx, cpe * 180.0f / M_PI, rot.real(), rot.imag(),
+    USRP_LOG( "[EQ_HTDATA] sym=%d cpe_deg=%.1f slope=%.5f rot=%.4f%+.4fi H[0]=%.4f%+.4fi sym64[%d]=%.4f%+.4fi eq[0]=...\n",
+            data_sym_idx, cpe * 180.0f / M_PI, cpe_slope, rot.real(), rot.imag(),
             H52_tx_order[0].real(), H52_tx_order[0].imag(),
             sc_to_fft_bin(kTxOrder52[0]), sym64[sc_to_fft_bin(kTxOrder52[0])].real(), sym64[sc_to_fft_bin(kTxOrder52[0])].imag());
 
@@ -1005,7 +1056,14 @@ static void extract_ht_data52_direct_tx_order(const gr_complex* sym64,
         const int bin = sc_to_fft_bin(kTxOrder52[i]);
         const float h_mag = std::abs(H52_tx_order[i]);
         if (h_mag > 0.001f) {
-            out52[i] = sym64[bin] / H52_tx_order[i] * rot;
+            const gr_complex rot_i =
+                std::exp(gr_complex(0.0f, -(cpe + cpe_slope * kTxOrder52[i])));
+            // Cross-device: per-symbol CFO/SFO phase compensation. The header
+            // path (counter<8) applies d_phase_diff_per_sc*counter; the data
+            // path never did (same-board CFO~0 hid it). phase_rot is computed
+            // at the call site, gated by the same HDR_COMP_DISABLE flag.
+            const gr_complex pr = (phase_rot != nullptr) ? phase_rot[i] : gr_complex(1.0f, 0.0f);
+            out52[i] = sym64[bin] / H52_tx_order[i] * rot_i * pr;
         } else {
             out52[i] = gr_complex(0.0f, 0.0f);
         }
@@ -9465,7 +9523,21 @@ int frame_equalizer_impl::general_work(int noutput_items,
 
                     d_H52_tx_order_valid = true;
                 }
-                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52);
+                // Cross-device: per-symbol CFO/SFO compensation for data
+                // symbols. Same gate as the header path (HDR_COMP_DISABLE=0
+                // enables; harness default 1 keeps single-board behavior).
+                gr_complex data_phase_rot[52];
+                gr_complex* data_phase_rot_ptr = nullptr;
+                if (!g_hdr_comp_disable_data && d_phase_diff_valid) {
+                    for (int i = 0; i < 52; i++) {
+                        const float total_phase =
+                            d_phase_diff_per_sc[i] * (float)(kDataStartRel + data_sym_idx);
+                        data_phase_rot[i] = std::exp(gr_complex(0.0f, -total_phase));
+                    }
+                    data_phase_rot_ptr = data_phase_rot;
+                }
+                extract_ht_data52_direct_tx_order(sym64, data_sym_idx, d_H52_tx_order, out52,
+                                                  data_phase_rot_ptr);
             } else {
                 if (!reorder_eq_52_mode(raw_eq52, out52, d_hdr_reorder_mode)) {
                     std::memcpy(out52, raw_eq52, 52 * sizeof(gr_complex));
