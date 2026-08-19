@@ -170,6 +170,7 @@ public:
           d_chunk_invariant(false),
           d_stash_len(0),
           d_tag_align_enabled(false),
+          d_xcorr_fs_enabled(false),
           d_window_start_abs(0),
           d_tag_rel_in_window(-1),
           d_tag_align_threshold(30),
@@ -196,6 +197,15 @@ public:
         if (d_tag_align_enabled) {
             fprintf(stderr, "[SYNC_LONG_P166] tag-aligned d_frame_start ENABLED "
                     "(threshold=%d)\n", d_tag_align_threshold);
+        }
+
+        // Phase 176: cross-correlation frame-start refinement (opt-in, default OFF).
+        // Cross-device frames land at arbitrary d_frame_start positions (observed
+        // 0-248); the forced 174 is wrong for ~23% of them. XCorr the two L-LTF
+        // halves to find the physical start.
+        d_xcorr_fs_enabled = (getenv("IEEE80211_SYNC_LONG_XCORR_FS") != nullptr);
+        if (d_xcorr_fs_enabled) {
+            fprintf(stderr, "[SYNC_LONG_P176] xcorr frame-start refinement ENABLED\n");
         }
 
         // Phase 167: pre-output extra samples before d_frame_start in COPY state.
@@ -457,6 +467,57 @@ public:
                         if (d_offset == SYNC_LENGTH) {
                             bool detected = search_frame_start();
                             d_tag_rel_in_window = -1; // Phase 166: consumed
+                            // Phase 176 (cross-device): cross-correlation frame-start
+                            // refinement. search_frame_start's FIR plateau + forced
+                            // d_frame_start=174 misplaces the true L-LTF start by
+                            // 16+ samples on ~23% of frames (outlier frames — ISI
+                            // destroys the whole payload). Refine: correlate the
+                            // two L-LTF halves in the raw input around d_frame_start
+                            // and snap to the correlation peak. Opt-in via
+                            // IEEE80211_SYNC_LONG_XCORR_FS=1 (default OFF).
+                            if (d_xcorr_fs_enabled) {
+                                // d_frame_start is the estimated L-LTF0 data start.
+                                // Phase 176: refine d_frame_start by cross-correlating
+                                // the two L-LTF halves, regardless of search_frame_start's
+                                // detected flag. Cross-device frames land at arbitrary
+                                // positions (observed 0-248), and the forced 174 is wrong
+                                // for ~23% of them (ISI on outlier frames). The xcorr
+                                // peak is the physical ground truth for L-LTF0 start.
+                                // NOTE: use ninput_items[0] (total available samples),
+                                // not the consumed `ninput` counter.
+                                const int avail = ninput_items[0];
+                                int center = d_frame_start - 16;
+                                if (center < 0) center = 0;
+                                double best_cor = 0.0;
+                                int best_off = -16;
+                                for (int off = -32; off <= 32; off += 2) {
+                                    int pos = center + off;
+                                    if (pos < 0 || pos + 144 >= avail) continue;
+                                    const gr_complex* a = in + pos;
+                                    const gr_complex* b = a + 80;
+                                    gr_complex acc(0.0f, 0.0f);
+                                    float pw = 0.0f;
+                                    for (int k = 0; k < 64; k++) {
+                                        acc += a[k] * std::conj(b[k]);
+                                        pw += std::norm(b[k]);
+                                    }
+                                    double m = std::abs(acc) / (std::sqrt((double)pw) + 1e-9);
+                                    if (m > best_cor) { best_cor = m; best_off = off; }
+                                }
+                                if (best_cor > 0.0) {
+                                    int refined = center + best_off + 16;
+                                    if (refined >= 0 && refined + 144 < avail && refined != d_frame_start) {
+                                        fprintf(stderr, "[SYNC_LONG_XCORR_FS] d_frame_start %d → %d "
+                                                "(off=%+d cor=%.4f)\n",
+                                                d_frame_start, refined, best_off, best_cor);
+                                        d_frame_start = refined;
+                                    }
+                                } else {
+                                    fprintf(stderr, "[SYNC_LONG_XCORR_FS] no peak: d_frame_start=%d "
+                                            "best_cor=%.4f avail=%d center=%d\n",
+                                            d_frame_start, best_cor, avail, center);
+                                }
+                            }
                             mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                             d_offset = 0;
                             d_window_start_abs = nitems_read(0); // Phase 166
@@ -581,6 +642,38 @@ public:
 
                 if (d_offset == SYNC_LENGTH) {
                     bool detected = search_frame_start();
+                    // Phase 176: xcorr frame-start refinement (same logic as
+                    // the chunk_invariant branch at ~line 478).
+                    if (d_xcorr_fs_enabled) {
+                        const int avail = ninput_items[0];
+                        int center = d_frame_start - 16;
+                        if (center < 0) center = 0;
+                        double best_cor = 0.0;
+                        int best_off = -16;
+                        for (int off = -32; off <= 32; off += 2) {
+                            int pos = center + off;
+                            if (pos < 0 || pos + 144 >= avail) continue;
+                            const gr_complex* a = in + pos;
+                            const gr_complex* b = a + 80;
+                            gr_complex acc(0.0f, 0.0f);
+                            float pw = 0.0f;
+                            for (int k = 0; k < 64; k++) {
+                                acc += a[k] * std::conj(b[k]);
+                                pw += std::norm(b[k]);
+                            }
+                            double m = std::abs(acc) / (std::sqrt((double)pw) + 1e-9);
+                            if (m > best_cor) { best_cor = m; best_off = off; }
+                        }
+                        if (best_cor > 0.0) {
+                            int refined = center + best_off + 16;
+                            if (refined >= 0 && refined + 144 < avail && refined != d_frame_start) {
+                                fprintf(stderr, "[SYNC_LONG_XCORR_FS] d_frame_start %d → %d "
+                                        "(off=%+d cor=%.4f)\n",
+                                        d_frame_start, refined, best_off, best_cor);
+                                d_frame_start = refined;
+                            }
+                        }
+                    }
                     mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                     d_offset = 0;
                     d_count = 0;
@@ -1144,6 +1237,7 @@ private:
     // position due to stream-compression jitter. Opt-in via env var
     // IEEE80211_SYNC_LONG_TAG_ALIGNED=1 (default OFF).
     bool d_tag_align_enabled;
+    bool d_xcorr_fs_enabled;      // Phase 176: cross-correlation frame-start refinement
     uint64_t d_window_start_abs;  // absolute stream offset when SYNC window started
     int  d_tag_rel_in_window;     // tag position relative to window start (computed
                                   // as tag_abs - window_start_abs, or -1 if N/A)
