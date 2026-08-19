@@ -37,6 +37,7 @@
 | `IEEE80211_SYNC_LONG_EARLYOUT=0` | 关闭 P146 噪声早退（默认 ON）| 性能优化，行为一致 |
 | `IEEE80211_SYNC_LONG_INPUT_DUMP=1` | 输入样本诊断 dump | P31b 诊断用 |
 | `IEEE80211_SYNC_LONG_TAG_ALIGNED=1` | 标签驱动 d_frame_start | P166a：根本限制（标签恒在窗口位置 0），无害空操作 |
+| `IEEE80211_SYNC_LONG_XCORR_FS=1` | sync_long 互相关峰帧起点精定位(替代强制 d_frame_start=174)| P176b CONFIRMED(跨设备 66%→93.7%, DS +19.5/45s p=0.0298, ARRIVAL +131.5 p=0.0027);单板默认 OFF |
 | `IEEE80211_SYNC_LONG_PRE_OUTPUT=N` | d_frame_start 前多输出 N 样本 | P167 实验；与 splitter 边界耦合，loopback 破 |
 | `IEEE80211_SYNC_LONG_USE_COMPUTED_FS=1` | 用 computed_fs 替代强制 174 | P167 REFUTED：DS 646→464 |
 | `IEEE80211_FRAME_START_OFFSET=N` | d_frame_start 微调 | P167：-16 灾难（DS 646→398）|
