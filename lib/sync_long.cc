@@ -146,6 +146,41 @@ bool compare_abs(const std::pair<gr_complex, int>& first,
     return abs(get<0>(first)) > abs(get<0>(second));
 }
 
+// Phase 176b refinement: cross-correlation frame-start snap.
+// Search L-LTF0 data start over a wide window (±96 samples, step 1) around
+// (fs - 16), correlating 64-sample halves at lag 80 (receiver symbol grid).
+// The metric is |Σ a·conj(b)| / sqrt(Σ|b|²) — same as the CONFIRMED coarse
+// version (commit 957f15f); only granularity and range are refined here.
+// Returns the refined frame start, or fs unchanged if no peak / out of range.
+static int xcorr_refine_fs(const gr_complex* in, int avail, int fs)
+{
+    int center = fs - 16;
+    if (center < 0) center = 0;
+    double best_cor = 0.0;
+    int best_off = -16;
+    for (int off = -96; off <= 96; off++) {
+        int pos = center + off;
+        if (pos < 0 || pos + 144 >= avail) continue;
+        const gr_complex* a = in + pos;
+        const gr_complex* b = a + 80;
+        gr_complex acc(0.0f, 0.0f);
+        float pw = 0.0f;
+        for (int k = 0; k < 64; k++) {
+            acc += a[k] * std::conj(b[k]);
+            pw += std::norm(b[k]);
+        }
+        double m = std::abs(acc) / (std::sqrt((double)pw) + 1e-9);
+        if (m > best_cor) { best_cor = m; best_off = off; }
+    }
+    int refined = center + best_off + 16;
+    if (best_cor > 0.0 && refined >= 0 && refined + 144 < avail && refined != fs) {
+        fprintf(stderr, "[SYNC_LONG_XCORR_FS] d_frame_start %d → %d (off=%+d cor=%.4f)\n",
+                fs, refined, best_off, best_cor);
+        return refined;
+    }
+    return fs;
+}
+
 class sync_long_impl : public sync_long
 {
 
@@ -476,47 +511,7 @@ public:
                             // and snap to the correlation peak. Opt-in via
                             // IEEE80211_SYNC_LONG_XCORR_FS=1 (default OFF).
                             if (d_xcorr_fs_enabled) {
-                                // d_frame_start is the estimated L-LTF0 data start.
-                                // Phase 176: refine d_frame_start by cross-correlating
-                                // the two L-LTF halves, regardless of search_frame_start's
-                                // detected flag. Cross-device frames land at arbitrary
-                                // positions (observed 0-248), and the forced 174 is wrong
-                                // for ~23% of them (ISI on outlier frames). The xcorr
-                                // peak is the physical ground truth for L-LTF0 start.
-                                // NOTE: use ninput_items[0] (total available samples),
-                                // not the consumed `ninput` counter.
-                                const int avail = ninput_items[0];
-                                int center = d_frame_start - 16;
-                                if (center < 0) center = 0;
-                                double best_cor = 0.0;
-                                int best_off = -16;
-                                for (int off = -32; off <= 32; off += 2) {
-                                    int pos = center + off;
-                                    if (pos < 0 || pos + 144 >= avail) continue;
-                                    const gr_complex* a = in + pos;
-                                    const gr_complex* b = a + 80;
-                                    gr_complex acc(0.0f, 0.0f);
-                                    float pw = 0.0f;
-                                    for (int k = 0; k < 64; k++) {
-                                        acc += a[k] * std::conj(b[k]);
-                                        pw += std::norm(b[k]);
-                                    }
-                                    double m = std::abs(acc) / (std::sqrt((double)pw) + 1e-9);
-                                    if (m > best_cor) { best_cor = m; best_off = off; }
-                                }
-                                if (best_cor > 0.0) {
-                                    int refined = center + best_off + 16;
-                                    if (refined >= 0 && refined + 144 < avail && refined != d_frame_start) {
-                                        fprintf(stderr, "[SYNC_LONG_XCORR_FS] d_frame_start %d → %d "
-                                                "(off=%+d cor=%.4f)\n",
-                                                d_frame_start, refined, best_off, best_cor);
-                                        d_frame_start = refined;
-                                    }
-                                } else {
-                                    fprintf(stderr, "[SYNC_LONG_XCORR_FS] no peak: d_frame_start=%d "
-                                            "best_cor=%.4f avail=%d center=%d\n",
-                                            d_frame_start, best_cor, avail, center);
-                                }
+                                d_frame_start = xcorr_refine_fs(d_eff0, eff_len, d_frame_start);
                             }
                             mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                             d_offset = 0;
@@ -642,37 +637,8 @@ public:
 
                 if (d_offset == SYNC_LENGTH) {
                     bool detected = search_frame_start();
-                    // Phase 176: xcorr frame-start refinement (same logic as
-                    // the chunk_invariant branch at ~line 478).
                     if (d_xcorr_fs_enabled) {
-                        const int avail = ninput_items[0];
-                        int center = d_frame_start - 16;
-                        if (center < 0) center = 0;
-                        double best_cor = 0.0;
-                        int best_off = -16;
-                        for (int off = -32; off <= 32; off += 2) {
-                            int pos = center + off;
-                            if (pos < 0 || pos + 144 >= avail) continue;
-                            const gr_complex* a = in + pos;
-                            const gr_complex* b = a + 80;
-                            gr_complex acc(0.0f, 0.0f);
-                            float pw = 0.0f;
-                            for (int k = 0; k < 64; k++) {
-                                acc += a[k] * std::conj(b[k]);
-                                pw += std::norm(b[k]);
-                            }
-                            double m = std::abs(acc) / (std::sqrt((double)pw) + 1e-9);
-                            if (m > best_cor) { best_cor = m; best_off = off; }
-                        }
-                        if (best_cor > 0.0) {
-                            int refined = center + best_off + 16;
-                            if (refined >= 0 && refined + 144 < avail && refined != d_frame_start) {
-                                fprintf(stderr, "[SYNC_LONG_XCORR_FS] d_frame_start %d → %d "
-                                        "(off=%+d cor=%.4f)\n",
-                                        d_frame_start, refined, best_off, best_cor);
-                                d_frame_start = refined;
-                            }
-                        }
+                        d_frame_start = xcorr_refine_fs(in, ninput_items[0], d_frame_start);
                     }
                     mylog("LONG: frame start at {} (d_offset was {})", d_frame_start, d_offset);
                     d_offset = 0;

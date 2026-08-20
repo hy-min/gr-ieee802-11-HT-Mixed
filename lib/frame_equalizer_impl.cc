@@ -6728,6 +6728,27 @@ int frame_equalizer_impl::general_work(int noutput_items,
                 USRP_LOG("[CFO_EST] phase_per_symbol=%.4f rad (52-sc mean, was 64-bin)\n",
                          d_cfo_phase_per_symbol);
 
+                // Phase 176 diagnostic: per-frame L-LTF fit residual RMS.
+                // Frames arrive at 100ms intervals ≫ pipeline latency, so the
+                // LLTF_RESID line immediately preceding a DECODE_* line in
+                // stderr belongs to the same frame — enables per-frame
+                // success/failure correlation without cross-block plumbing.
+                // Opt-in via IEEE80211_LLTF_RESID_DUMP=1.
+                static const bool g_lltf_resid_dump = [] {
+                    const char* e = std::getenv("IEEE80211_LLTF_RESID_DUMP");
+                    return (e != nullptr) && e[0] == '1';
+                }();
+                if (g_lltf_resid_dump) {
+                    double resid_sum2 = 0.0;
+                    for (int i = 0; i < 52; i++) {
+                        const double r = (double)d_phase_diff_per_sc[i] -
+                            ((double)cfo_est + (double)sfo_est * kScIndex52[i]);
+                        resid_sum2 += r * r;
+                    }
+                    USRP_LOG("[LLTF_RESID] rms=%.4f cfo=%.4f sfo=%.6f\n",
+                             (float)std::sqrt(resid_sum2 / 52.0), cfo_est, sfo_est);
+                }
+
                 USRP_LOG("[SFO_RAW] cfo=%.6f sfo_raw=%.6f abs=%.6f soft_clamp_knee=1e-2\n",
                          cfo_est, sfo_est, std::abs(sfo_est));
                 // Soft-clamp SFO: clip the magnitude at 1e-2 rad/SC instead of
