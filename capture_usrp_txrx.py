@@ -51,7 +51,7 @@ class TxRxCapture(gr.top_block):
             encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.01)
         self.null_src = blocks.null_source(gr.sizeof_gr_complex)
         self.uhd_sink = uhd.usrp_sink(
-            "addr=192.168.10.2,send_buff_size=1048576",
+            f"addr={args.tx_addr},send_buff_size=1048576",
             uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=range(1)))
         self.uhd_sink.set_samp_rate(args.rate * 1e6)
         self.uhd_sink.set_center_freq(args.freq * 1e6, 0)
@@ -65,11 +65,15 @@ class TxRxCapture(gr.top_block):
         self.msg_connect((self.mac, 'phy out'), (self.encoding_stripper, 'pdu'))
         self.msg_connect((self.encoding_stripper, 'pdu'), (self.wifi_phy_tx, 'mac_in'))
         self.connect((self.null_src, 0), (self.wifi_phy_tx, 0))
-        self.connect((self.wifi_phy_tx, 0), (self.uhd_sink, 0))
+        # P176: TX digital attenuation — same as usrp_realtime_validate.sh --tx-scale
+        # (bare cable at tx-gain 0 overdrives RX2 by 20dB; 0.1 = -20dBFS into linear region)
+        self.tx_att = blocks.multiply_const_cc(args.tx_scale)
+        self.connect((self.wifi_phy_tx, 0), (self.tx_att, 0))
+        self.connect((self.tx_att, 0), (self.uhd_sink, 0))
 
         # ===== RX (capture only, no wifi_phy_rx) =====
         self.uhd_src = uhd.usrp_source(
-            "addr=192.168.10.2,recv_buff_size=1048576",
+            f"addr={args.rx_addr},recv_buff_size=1048576",
             uhd.stream_args(cpu_format="fc32", channels=[0]))
         self.uhd_src.set_subdev_spec(args.rx_subdev, 0)
         self.uhd_src.set_antenna("RX2", 0)
@@ -99,6 +103,9 @@ def main():
     p.add_argument('--len', type=int, default=38)
     p.add_argument('--duration', type=float, default=10)
     p.add_argument('--capture', type=str, required=True)
+    p.add_argument('--tx-addr', default='192.168.10.2', help='TX USRP addr (cross-device: 192.168.20.3)')
+    p.add_argument('--rx-addr', default='192.168.10.2', help='RX USRP addr')
+    p.add_argument('--tx-scale', type=float, default=1.0, help='TX digital attenuation (0.1=-20dB, cable overdrive fix)')
     args = p.parse_args()
 
     tb = TxRxCapture(args)
