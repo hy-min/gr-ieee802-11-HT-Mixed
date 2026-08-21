@@ -10,7 +10,7 @@
 |---------|------|------|
 | `IEEE80211_LSIG_RATE_FORCE=0xD` | 强制 L-SIG rate=BPSK 1/2 | P18，首个 e2e PASS |
 | `IEEE80211_TIMING_OFFSET_APPLY=0` | 关闭 P34 retroactive δ 修正 | P159b CONFIRMED（δ 是 L-SIG 抽签根因）|
-| `IEEE80211_HDR_COMP_DISABLE=1` | 跳过头部+数据 CFO/SFO 补偿。单板 regime：噪声主导（P145c）；**跨设备 regime：=0 启用数据符号每符号补偿，0%→65% FCS_OK**（数据路径原缺此补偿，P176 CONFIRMED N=4 终败 -437 p=0.0000；harness 默认仍 1 保单板）| P145c / P176 |
+| `IEEE80211_HDR_COMP_DISABLE=1` | 跳过头部+数据 CFO/SFO 补偿。单板 regime：噪声主导（P145c）；**跨设备 regime：=0 启用数据符号每符号补偿，0%→65% FCS_OK**（数据路径原缺此补偿，P176 CONFIRMED N=4 终败 -437 p=0.0000；harness 默认仍 1 保单板）| P145c / P176 / P177（单板 =0 全 0%——d_phase_diff 无信噪比门控，噪声外推放大；跨设备 =0 才有真 CFO 生效）|
 | `IEEE80211_H52_2WAY_DEFAULT=0` | 关闭 P139 两路 H52 平均（电缆基线下 L-LTF0/1 相位独立，平均有害）| P145c |
 | `IEEE80211_SYNC_SHORT_FUSED_USE_BOXCAR=1` | 16 样本 boxcar 原始周期-16 自相关检测器 | P89 SUCCESS |
 | `IEEE80211_SYNC_SHORT_USE_ADAPTIVE_THRESH=1` | 阈值=max(p90×1.5, 0.2)，尾随窗口 | P89+P160 |
