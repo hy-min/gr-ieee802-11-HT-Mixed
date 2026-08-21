@@ -79,6 +79,7 @@
 | `IEEE80211_TX_PREEMPHASIS=1` + `_GAIN`（wifi_phy_hier.py，TX 侧）| 边缘 SC ±26..±28 预加重 | P169 REFUTED（终败 +2.75, p=0.035——相位噪声∝幅度，功率族关闭）|
 | `IEEE80211_TX_BURST_TSB=1`（test harness，TX 侧）| UHD tsb 包装（告知 burst 边界）| P170/P172 REFUTED 作杠杆：U 报告 801→4 但洞仍在（只抑制 burst 末尾虚报）|
 | `IEEE80211_TX_TIMED_BURST=1`（test harness，TX 侧）| 定时突发 tx_sob/eob/time，空闲期 FPGA 预填整帧 | P172b NOT CONFIRMED（A 族率塌缩 ~0.1% 不可分辨；ON 无副作用 DS 683/700 vs 616/577）；opt-in OFF |
+| `IEEE80211_TX_PAD_ALIGN=N`（test harness，TX 侧）| TX 自动扩展 payload 使末符号真实比特 ≤N（帧尾相位损伤×pad 几何——MCS1 异常根因）| P177 CONFIRMED（N=4 配对 ABAB 跨设备 MCS1/len38 +67.4pp, p=0.0000, 17.2%→84.6%）；opt-in 默认 OFF |
 | `IEEE80211_HTSIG_BPSK_FALLBACK=1` | HT-SIG BPSK 回退（TX/RX 协调）| P143：0 FCS_OK |
 | `IEEE80211_FORCE_HTSIG=1` | L-SIG 非 0xD 时仍试 HT-SIG | 诊断用 |
 | `IEEE80211_USE_LDPC=1` / `--ldpc` | TX LDPC 编码 | P166d NOT CONFIRMED（限制在 H 质量，非码强度）|

@@ -511,6 +511,14 @@ void viterbi_decoder::reset()
         d_k = 3;
         break;
 
+    case QAM64_5_6:
+        // HT MCS 7. d_ntraceback only gates the depuncture dispatch in this
+        // implementation (per-bit trellis, no chunking); any value != 5 works.
+        d_ntraceback = 15;
+        d_depuncture_pattern = PUNCTURE_5_6;
+        d_k = 5;
+        break;
+
     default:
         std::cerr << "Warning: puncturing not supported!" << std::endl;
         d_ntraceback = 5;

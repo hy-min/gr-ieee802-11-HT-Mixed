@@ -417,6 +417,12 @@ void viterbi_decoder::reset()
         d_depuncture_pattern = PUNCTURE_3_4;
         d_k = 3;
         break;
+    case QAM64_5_6:
+        // HT MCS 7 (64QAM 5/6).
+        d_ntraceback = 15;
+        d_depuncture_pattern = PUNCTURE_5_6;
+        d_k = 5;
+        break;
     }
 }
 

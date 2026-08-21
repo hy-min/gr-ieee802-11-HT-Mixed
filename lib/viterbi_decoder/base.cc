@@ -77,3 +77,6 @@ const unsigned char base::PARTAB[256] = {
 const unsigned char base::PUNCTURE_1_2[2] = { 1, 1 };
 const unsigned char base::PUNCTURE_2_3[4] = { 1, 1, 1, 0 };
 const unsigned char base::PUNCTURE_3_4[6] = { 1, 1, 1, 0, 0, 1 };
+// 802.11n HT MCS 7 (64QAM 5/6): keep positions {0,1,2,5,6,9} of each 10-bit
+// group — mirrors the TX puncturing in lib/utils.cc (drops i%10 in {3,4,7,8}).
+const unsigned char base::PUNCTURE_5_6[10] = { 1, 1, 1, 0, 0, 1, 1, 0, 0, 1 };

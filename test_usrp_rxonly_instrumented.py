@@ -82,6 +82,24 @@ MAX_SYMBOLS = int(5 + 1 + ((16 + 800 * 8 + 6) * 2) / 24)
 BUF = 1000000
 
 
+def compute_padded_payload_len(mcs, payload_len, max_real):
+    """Pad-align TX payload: return the smallest payload length >= payload_len
+    whose last OFDM symbol carries <= max_real real data bits (the rest is
+    tail/pad that FCS never touches). n_dbps per HT MCS 0-7 from
+    lib/mapper_impl.cc ht_n_dbps_from_mcs. PSDU = payload + 28 (MAC 24 + FCS 4).
+    """
+    ndbps = {0: 26, 1: 52, 2: 78, 3: 104, 4: 156, 5: 208, 6: 234, 7: 260}[mcs]
+    psdu = payload_len + 28
+    for delta in range(0, 65):
+        p = psdu + delta
+        r = 16 + 8 * p + 6                       # SERVICE + DATA + TAIL
+        n_sym = (r + ndbps - 1) // ndbps
+        real_in_last = r - (n_sym - 1) * ndbps
+        if real_in_last <= max_real:
+            return p - 28
+    return payload_len  # safety fallback: unchanged
+
+
 class EncodingStripper(gr.basic_block):
     def __init__(self):
         gr.basic_block.__init__(self, name='encoding_stripper', in_sig=None, out_sig=None)
@@ -180,12 +198,39 @@ class InstrumentedRxOnly(gr.top_block):
         gr.top_block.__init__(self, "Instrumented RX-only")
 
         # ---- TX (wifi_phy_hier; idle RX path has no ofdm_cyclic_prefixer) ----
-        self.msg_strobe = blocks.message_strobe(pmt.intern('x' * a.len), int(a.interval))
+        import os as _os
+        _mcs = getattr(a, 'mcs', None)
+        _pad_max = _os.environ.get('IEEE80211_TX_PAD_ALIGN')
+        _tx_len = a.len
+        if _pad_max:
+            # Pad-align TX payload: extend PSDU so only <=max_real real bits
+            # land in the last OFDM symbol (which carries accumulated residual
+            # CFO/SFO phase damage). MCS1 investigation 2026-08-21: len38->41
+            # raised cross-device FCS_OK 16%->88%. Opt-in (default OFF).
+            _tx_len = compute_padded_payload_len(
+                _mcs if _mcs is not None else 0, a.len, int(_pad_max))
+            sys.stderr.write(f"[PAD_ALIGN] mcs={_mcs or 0} payload "
+                             f"{a.len}->{_tx_len} max_real<={_pad_max}\n")
+        self.msg_strobe = blocks.message_strobe(pmt.intern('x' * _tx_len), int(a.interval))
         self.mac = ieee802_11.mac([0x23]*6, [0x42]*6, [0xff]*6)
         self.enc_strip = EncodingStripper()
+        # MCS sweep (2026-08-20): --mcs N selects the HT MCS via the encoding
+        # enum. Mapping follows lib/mapper_impl.cc mcs_to_encoding (HT MCS 0-7,
+        # NOT the legacy-rate enum index). ht_header_tagged converts it back
+        # through encoding_to_ht_mcs for the HT-SIG MCS field, so the air
+        # interface carries a coherent MCS. Default None = BPSK_1_2 (MCS 0),
+        # identical to the pre-sweep baseline.
+        _MCS_TO_ENC = {0: ieee802_11.BPSK_1_2, 1: ieee802_11.QPSK_1_2,
+                       2: ieee802_11.QPSK_3_4, 3: ieee802_11.QAM16_1_2,
+                       4: ieee802_11.QAM16_3_4, 5: ieee802_11.QAM64_2_3,
+                       6: ieee802_11.QAM64_3_4, 7: ieee802_11.QAM64_5_6}
+        tx_encoding = _MCS_TO_ENC[_mcs] if _mcs is not None else ieee802_11.BPSK_1_2
+        if _mcs is not None:
+            sys.stderr.write(f"[MCS_SWEEP] TX encoding = HT MCS {_mcs} "
+                             f"(enum {int(tx_encoding)})\n")
         self.wifi_phy_tx = wifi_phy_hier(
             bandwidth=10e6, chan_est=ieee802_11.LS,
-            encoding=ieee802_11.BPSK_1_2, frequency=5.89e9, sensitivity=0.01,
+            encoding=tx_encoding, frequency=5.89e9, sensitivity=0.01,
             use_ldpc=a.ldpc)
         self.null_src = blocks.null_source(gr.sizeof_gr_complex)
         # Phase 170 option A: UHD tagged-stream burst mode. The hier already emits
@@ -407,9 +452,12 @@ def main():
     p.add_argument('--rx-file', type=str, default='', help='RX replay from IQ file through realtime decode chain (offline)')
     p.add_argument('--scales', type=str, default='40', help='comma list of rx_scale to sweep')
     p.add_argument('--ldpc', action='store_true', help='Enable LDPC encoding (default: BCC)')
+    p.add_argument('--mcs', type=int, default=None, choices=range(0, 8),
+                   help='HT MCS 0-7 for TX (default: None = MCS 0 / BPSK_1_2, baseline unchanged)')
     args = p.parse_args()
     scales = [float(x) for x in args.scales.split(',')]
     print(f"[P147-T6] scales={scales} capture={'ON:'+args.capture if args.capture else 'off'} "
+          f"mcs={args.mcs if args.mcs is not None else 0} "
           f"(build-once + set_k sweep)", flush=True)
     # Build the flowgraph ONCE; sweep rx_scale via gain.set_k() (avoids USRP
     # re-init segfault / RFNoC graph corruption from repeated construct+destroy).
