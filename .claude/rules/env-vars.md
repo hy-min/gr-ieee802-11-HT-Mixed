@@ -47,7 +47,7 @@
 
 | env var | 作用 | 判定 |
 |---------|------|------|
-| `IEEE80211_H52_2WAY_DEFAULT=1` | P139 两路 H52 平均（L-SIG 墙首破）| CONFIRMED on air；电缆基线设 0 |
+| `IEEE80211_H52_2WAY_DEFAULT=1` | P139 两路 H52 平均（L-SIG 墙首破）| CONFIRMED on air；电缆基线设 0；跨设备 MCS1(pad 对齐基础上) NOT CONFIRMED（P177 N=4 ABAB p=0.7566——数据符号相位噪声为符号维独立源，H 层无效）|
 | `IEEE80211_HT_SIG_PILOT_REFINE=N` | 3-way/4-way 导频精化 | P139：PARTIAL |
 | `IEEE80211_HTLTF_AVG=1` | 3-way（2 LTS + HT-LTF）| P122 REFUTED（跨板破 L-SIG）|
 | `IEEE80211_H52_CROSS_FRAME_TRACK=N` | 跨帧 H52 FIFO 平均 | P123 INCONCLUSIVE / P140 file-replay PASS |

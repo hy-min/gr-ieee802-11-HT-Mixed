@@ -83,6 +83,29 @@ Phase 1 根因调查（systematic-debugging）补三个证据，确认损伤**�
 物理唯一出路 = 外部 10 MHz 参考/GPSDO（与 CLAUDE.md 当前状态一致）。
 工具：`mcs1_phase_traj.py`（逐符号相位轨迹 + 确定性检验，本 commit 提交）。
 
+### H52_2WAY 跨设备 MCS 1 追加检验（2026-08-21，NOT CONFIRMED）
+
+**假说**：2-way L-LTF0/1 平均（P139 σ 1.77→1.25 rad）降低 H 估计噪声 → MCS 1
+再上探。**结果：NOT CONFIRMED**。
+
+配对 ABAB（跨设备，MCS1 len38，臂 A=PAD_ALIGN=8 / 臂 B=PAD_ALIGN=8+H52_2WAY=1，
+4 对交错，新鲜背靠背）：
+```
+A(pad)   = [84.2, 79.8, 81.8, 86.4]  mean=83.05%
+B(pad+2w)= [83.8, 87.8, 81.3, 82.7]  mean=83.90%
+per-pair B-A diff: -0.4, +8.0, -0.5, -3.7
+mean diff=+0.85pp  sd=5.01  t=0.340  p=0.7566  -> NOT CONFIRMED
+```
+Loopback 门（pad+2way 组合）Final: OK=1 FAIL=0。
+
+**机制解释（自洽）**：2-way 降的是 L-LTF 估计噪声（H 估计误差）；但 MCS 1 杀手是
+**数据符号自身的逐符号独立相位噪声**（Δφ 白噪声 6°/符号，P177 机制深化）——符号维
+独立的独立源，H 层面对其无解。该 NOT CONFIRMED **再次印证**机制定论：所有 H 估计/
+统计平滑方向（2-way / Wiener / EMA）对数据符号相位噪声均无效。
+
+**决策**：跨设备 MCS 1 场景 H52_2WAY 方向关闭；MCS 1 实际能力 ≈ 85%（pad 对齐后），
+剩余 15% = 前段符号 per-SC 相位噪声，软件路径穷尽，物理唯一出路 = 外部参考钟。
+
 ## 附带成果（本 phase 非假设检验，但交付）
 
 ### MCS 0-7 FCS_OK 表征（每档 450 帧，单板 + 跨设备）

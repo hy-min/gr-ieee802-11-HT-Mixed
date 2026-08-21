@@ -137,8 +137,9 @@ def main():
         length = int(parts[1]) if len(parts) > 1 and parts[1] else args.len
         env_extra = {}
         if len(parts) > 2 and parts[2]:
-            k, _, v = parts[2].partition('=')
-            env_extra = {k: v}
+            for kv in parts[2].split(';'):   # 'A=1;B=2' -> multiple env
+                k, _, v = kv.partition('=')
+                env_extra[k] = v
         order.append((mcs, length, env_extra))
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     tag = f'_{args.tag}' if args.tag else ''
