@@ -1,14 +1,14 @@
 # gr-ieee802-11 Project Instructions
 
-> **当前状态（2026-08-12）：USRP realtime FCS_OK 稳定 99.55%（电缆，无风暴轮）。**
-> 软件攻击面已穷尽（Phase 166–168 全部封闭）。残留 0.47% = 随机 LO 相位噪声
-> 尾部事件（直接测量：每帧每 SC 独立实现 ~1.8 rad/SC，帧间相关 |r|≈0.17，
-> 帧内无结构）。**突破 99.9% 唯一原理路径 = 外部 10 MHz 参考/GPSDO。**
+> **当前状态（2026-08-25）：单板电缆 FCS_OK 99.55%（无风暴轮）；两台 X310 跨设备
+> （独立时钟）解码链路打通——MCS0 97.1%、MCS2 76.2%（反超单板 50.7%）、MCS1 pad 对齐后
+> 84.6%（+67.44pp p=0.0000）；16QAM/64QAM 双板崩零 = LO 相位噪声墙（P177）。**
+> 突破 99.9% 唯一原理路径 = 外部 10 MHz 参考/GPSDO。
 >
-> 一键复现最优配置：
-> ```bash
-> IEEE80211_LSIG_VITERBI_CANDIDATE=1 ./usrp_realtime_validate.sh --tx-scale 0.1
-> ```
+> 一键复现：
+> - 单板：`IEEE80211_LSIG_VITERBI_CANDIDATE=1 ./usrp_realtime_validate.sh --tx-scale 0.1`
+> - 跨设备：`--tx-addr/--rx-addr` 显式进入 + `HDR_COMP_DISABLE=0 SYNC_LONG_XCORR_FS=1`
+>   （MCS 扫描 `mcs_sweep.py`；MCS1 加 `IEEE80211_TX_PAD_ALIGN=8`；harness 默认仍单板工作点，P176 决策）
 > 收官报告：`docs/superpowers/notes/2026-08-11-project-synthesis-report.md`
 
 ## 项目目标
