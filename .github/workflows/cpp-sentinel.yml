@@ -1,0 +1,53 @@
+name: cpp-sentinel 增量审查
+on:
+  pull_request:
+    paths: ["lib/**", "include/**"]
+  push:
+    branches: [main, TEST2]
+    paths: ["lib/**", "include/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: cpp-review
+          python-version: "3.11"
+
+      - name: 装 clang-tools 与 GNU Radio（cmake configure 需要头文件）
+        run: conda install -n cpp-review clang-tools=22.1.8 clang=22.1.8 clangxx=22.1.8 gnuradio uhd -c conda-forge -y
+
+      - name: 装 gr-foo（上游依赖）
+        run: |
+          git clone --depth 1 https://github.com/bastibl/gr-foo /tmp/gr-foo
+          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX"
+          cmake --build /tmp/gr-foo/build -j"$(nproc)"
+          cmake --install /tmp/gr-foo/build
+
+      - name: 生成编译数据库（仅 configure，不构建）
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+
+      - name: 取 cpp-sentinel
+        run: git clone --depth 1 https://github.com/hy-min/cpp-sentinel /tmp/cpp-sentinel
+
+      - name: 增量审查（建议模式；加 --gate 则高置信 real 挂 PR）
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          PYTHONPATH: /tmp/cpp-sentinel
+        run: |
+          set -e
+          if [ -z "$DEEPSEEK_API_KEY" ]; then
+            echo "⚠️ 未配置 DEEPSEEK_API_KEY secret，跳过审查（配置后自动生效）"
+            exit 0
+          fi
+          pip install -r /tmp/cpp-sentinel/requirements.txt
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          DOTS=3; [ "${{ github.event_name }}" = "push" ] && DOTS=2
+          python -m cpp_sentinel.ci --repo . --base "$BASE" --dots "$DOTS" --workers 8
