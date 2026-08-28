@@ -4,7 +4,7 @@
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue) ![GNU Radio](https://img.shields.io/badge/GNU%20Radio-3.10-green) ![Platform](https://img.shields.io/badge/platform-USRP%20X310%20%2B%20UBX--160-orange)
 
-> **English**: A fork of [bastibl/gr-ieee802-11](https://github.com/bastibl/gr-ieee802-11) (IEEE 802.11a/g/p) upgraded to **802.11n HT (HT-Mixed mode)** with **realtime USRP X310** operation — built and operated entirely through a **human–agent R&D workflow** (Claude Code): mechanical guardrail hooks, a three-tier verdict vocabulary (CONFIRMED / NOT CONFIRMED / REFUTED), paired ABAB experiments, and an autonomous experiment agent. **99.55%** realtime FCS on single-board cable; cross-device link (two X310s, independent clocks) brought from **0% → 97.1%** (MCS0). All **146 experiment verdicts** ship with raw outputs and reproduction commands under `docs/superpowers/notes/`.
+> **English**: Based on [bastibl/gr-ieee802-11](https://github.com/bastibl/gr-ieee802-11) (an IEEE 802.11 a/g/p transceiver; this fork works on the 802.11g path), upgraded to **802.11n HT (HT-Mixed mode)** with **realtime USRP X310** operation — built and operated entirely through a **human–agent R&D workflow** (Claude Code): mechanical guardrail hooks, a three-tier verdict vocabulary (CONFIRMED / NOT CONFIRMED / REFUTED), paired ABAB experiments, and an autonomous experiment agent. **99.55%** realtime FCS on single-board cable; cross-device link (two X310s, independent clocks) brought from **0% → 97.1%** (MCS0). All **146 experiment verdicts** ship with raw outputs and reproduction commands under `docs/superpowers/notes/`.
 
 ## 成果头条（2026-08-25，全部附可复现依据）
 
