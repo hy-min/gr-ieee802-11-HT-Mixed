@@ -13,6 +13,9 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l -eo pipefail {0}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -33,7 +36,9 @@ jobs:
           cmake --install /tmp/gr-foo/build
 
       - name: 生成编译数据库(仅 configure,不构建)
-        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+        run: |
+          echo "CONDA_PREFIX=$CONDA_PREFIX; which clang-tidy: $(which clang-tidy)"
+          cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
 
       - name: 取 cpp-sentinel
         run: git clone --depth 1 https://github.com/hy-min/cpp-sentinel /tmp/cpp-sentinel
