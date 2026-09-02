@@ -45,12 +45,14 @@ jobs:
 
       - name: "增量审查(门控模式: 高置信 real 挂 PR)"
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CPP_SENTINEL_API_KEY: ${{ secrets.CPP_SENTINEL_API_KEY }}
+          CPP_SENTINEL_BASE_URL: https://open.bigmodel.cn/api/paas/v4/
+          CPP_SENTINEL_MODEL: glm-5.3-flash
           PYTHONPATH: /tmp/cpp-sentinel
         run: |
           set -e
-          if [ -z "$DEEPSEEK_API_KEY" ]; then
-            echo "⚠️ 未配置 DEEPSEEK_API_KEY secret,跳过审查(配置后自动生效)"
+          if [ -z "$CPP_SENTINEL_API_KEY" ]; then
+            echo "⚠️ 未配置 CPP_SENTINEL_API_KEY secret,跳过审查(配置后自动生效)"
             exit 0
           fi
           pip install -r /tmp/cpp-sentinel/requirements.txt
