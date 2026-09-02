@@ -28,7 +28,7 @@ jobs:
       - name: 装 gr-foo(gr-ieee802-11 上游依赖)
         run: |
           git clone --depth 1 https://github.com/bastibl/gr-foo /tmp/gr-foo
-          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX"
+          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
           cmake --build /tmp/gr-foo/build -j"$(nproc)"
           cmake --install /tmp/gr-foo/build
 
