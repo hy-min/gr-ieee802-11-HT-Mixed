@@ -8,7 +8,8 @@ on:
 
 permissions:
   contents: read
-  issues: write     # PR 评论走 issues API
+  issues: write           # issue 评论读写
+  pull-requests: write    # 在 PR 上发评论查的是这个(实跑 403 教训)
 
 jobs:
   review:
