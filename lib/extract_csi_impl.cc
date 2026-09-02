@@ -83,11 +83,8 @@ int extract_csi_impl::work(int noutput_items,
 
 /* cpp-sentinel dogfood 演示(勿合并): 故意的条件空指针解引用,
    预期: clang-analyzer-core.NullDereference → LLM 判 real(置信≥0.8) → 门控挂红。 */
-static int sentinel_demo_null_deref(int x)
+static int sentinel_demo_null_deref()
 {
     int* p = nullptr;
-    if (x > 0) {
-        p = &x;
-    }
-    return *p;   // x <= 0 路径: p 为空,解引用即 UB
+    return *p;   // 无条件空指针解引用(CWE-476)
 }
