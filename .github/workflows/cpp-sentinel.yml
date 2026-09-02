@@ -3,15 +3,20 @@ on:
   pull_request:
     paths: ["lib/**", "include/**"]
   push:
-    branches: [main, TEST2]
+    branches: [main]
     paths: ["lib/**", "include/**"]
 
 permissions:
   contents: read
+  issues: write           # issue 评论读写
+  pull-requests: write    # 在 PR 上发评论查的是这个(实跑 403 教训)
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l -eo pipefail {0}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -21,33 +26,49 @@ jobs:
           activate-environment: cpp-review
           python-version: "3.11"
 
-      - name: 装 clang-tools 与 GNU Radio（cmake configure 需要头文件）
-        run: conda install -n cpp-review clang-tools=22.1.8 clang=22.1.8 clangxx=22.1.8 gnuradio uhd -c conda-forge -y
+      - name: 装 clang-tools 与 GNU Radio(cmake configure 需要头文件)
+        run: conda install -n cpp-review clang-tools=22.1.8 clang=22.1.8 clangxx=22.1.8 gnuradio uhd libboost-devel pybind11 -c conda-forge -y
 
-      - name: 装 gr-foo（上游依赖）
+      - name: 装 gr-foo(gr-ieee802-11 上游依赖)
         run: |
           git clone --depth 1 https://github.com/bastibl/gr-foo /tmp/gr-foo
-          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX"
+          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
           cmake --build /tmp/gr-foo/build -j"$(nproc)"
           cmake --install /tmp/gr-foo/build
 
-      - name: 生成编译数据库（仅 configure，不构建）
-        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+      - name: 生成编译数据库(仅 configure,不构建)
+        run: |
+          echo "CONDA_PREFIX=$CONDA_PREFIX; which clang-tidy: $(which clang-tidy)"
+          cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
 
       - name: 取 cpp-sentinel
         run: git clone --depth 1 https://github.com/hy-min/cpp-sentinel /tmp/cpp-sentinel
 
-      - name: 增量审查（建议模式；加 --gate 则高置信 real 挂 PR）
+      - name: "增量审查(门控模式: 高置信 real 挂 PR)"
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CPP_SENTINEL_API_KEY: ${{ secrets.CPP_SENTINEL_API_KEY }}
+          CPP_SENTINEL_BASE_URL: https://open.bigmodel.cn/api/paas/v4/
+          CPP_SENTINEL_MODEL: glm-5.3-flash
           PYTHONPATH: /tmp/cpp-sentinel
         run: |
           set -e
-          if [ -z "$DEEPSEEK_API_KEY" ]; then
-            echo "⚠️ 未配置 DEEPSEEK_API_KEY secret，跳过审查（配置后自动生效）"
+          if [ -z "$CPP_SENTINEL_API_KEY" ]; then
+            echo "⚠️ 未配置 CPP_SENTINEL_API_KEY secret,跳过审查(配置后自动生效)"
             exit 0
           fi
           pip install -r /tmp/cpp-sentinel/requirements.txt
           BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
           DOTS=3; [ "${{ github.event_name }}" = "push" ] && DOTS=2
-          python -m cpp_sentinel.ci --repo . --base "$BASE" --dots "$DOTS" --workers 8
+          python -m cpp_sentinel.ci --repo . --base "$BASE" --dots "$DOTS" --workers 8 \
+            --out-md /tmp/review.md --gate
+
+      - name: "PR 评论(sticky: 同一条评论持续更新;gate 挂红时也照常评论)"
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: /tmp/cpp-sentinel
+        run: |
+          if [ -f /tmp/review.md ]; then
+            python -m cpp_sentinel.prbot --repo ${{ github.repository }} \
+              --pr ${{ github.event.pull_request.number }} --body-file /tmp/review.md
+          fi
