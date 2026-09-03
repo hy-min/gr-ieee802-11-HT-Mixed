@@ -1,5 +1,9 @@
 # Phase 178 verdict: Co-SR PHY 层可行性——捕获效应与可行域存在 CONFIRMED（2026-09-03）
 
+VERDICT: Co-SR PHY 可行性 CONFIRMED（有条件）——捕获效应存在（强≥3dB 可解），
+可行域=受害链路 SINR≥+3dB（MCS0）/+8-10dB（MCS1/2），单接收机无双解（架构限制），
+Co-SR 必须同时开始（时序硬约束）。
+
 ## VERDICT（逐字粘贴批次输出原文）
 
 阶段 0 离线混合可解码性地图（A=受害链路 MCS0/len38→PSDU 66，B=干扰链路
@@ -88,7 +92,7 @@ SIR(A:B)  A     B
 ## 诚实清单（故意不动）
 
 - 无新 env var（lint 的 env 注册项对表征 phase 结构性 N/A）
-- 未动禁止方向表（无 REFUTED 方向；--rx-file 证伪是 P171 旧事重申）
+- 未动禁止方向表（本 phase 无否决结论；--rx-file 证伪是 P171 旧事重申）
 - 未翻任何默认值
 
 ## 日志
