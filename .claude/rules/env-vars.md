@@ -82,7 +82,7 @@
 | `IEEE80211_TX_PAD_ALIGN=N`（test harness，TX 侧）| TX 自动扩展 payload 使末符号真实比特 ≤N（帧尾相位损伤×pad 几何——MCS1 异常根因）| P177 CONFIRMED（N=4 配对 ABAB 跨设备 MCS1/len38 +67.4pp, p=0.0000, 17.2%→84.6%）；opt-in 默认 OFF |
 | `IEEE80211_HTSIG_BPSK_FALLBACK=1` | HT-SIG BPSK 回退（TX/RX 协调）| P143：0 FCS_OK |
 | `IEEE80211_FORCE_HTSIG=1` | L-SIG 非 0xD 时仍试 HT-SIG | 诊断用 |
-| `IEEE80211_USE_LDPC=1` / `--ldpc` | TX LDPC 编码 | P166d NOT CONFIRMED（限制在 H 质量，非码强度）|
+| `IEEE80211_USE_LDPC=1` / `--ldpc` | TX LDPC 编码 | P166d NOT CONFIRMED（限制在 H 质量，非码强度）；P177 NOT CONFIRMED（MCS1 pad 对齐 regime，跨设备 N=4 ABAB -1.73pp p=0.2764——LDPC 校验尾≈内置 pad 对齐 88% vs BCC+pad 90%，剩余前段相位噪声码强无解）。**轴双场景封闭** |
 
 ## 诊断仪表（opt-in，不影响解码）
 

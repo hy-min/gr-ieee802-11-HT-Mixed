@@ -455,9 +455,13 @@ def main():
     p.add_argument('--mcs', type=int, default=None, choices=range(0, 8),
                    help='HT MCS 0-7 for TX (default: None = MCS 0 / BPSK_1_2, baseline unchanged)')
     args = p.parse_args()
+    # IEEE80211_USE_LDPC=1 env (documented opt-in) is equivalent to --ldpc;
+    # lets mcs_sweep.py's per-run env injection select the coding per arm.
+    if not args.ldpc and os.environ.get('IEEE80211_USE_LDPC') == '1':
+        args.ldpc = True
     scales = [float(x) for x in args.scales.split(',')]
     print(f"[P147-T6] scales={scales} capture={'ON:'+args.capture if args.capture else 'off'} "
-          f"mcs={args.mcs if args.mcs is not None else 0} "
+          f"mcs={args.mcs if args.mcs is not None else 0} ldpc={args.ldpc} "
           f"(build-once + set_k sweep)", flush=True)
     # Build the flowgraph ONCE; sweep rx_scale via gain.set_k() (avoids USRP
     # re-init segfault / RFNoC graph corruption from repeated construct+destroy).

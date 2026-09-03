@@ -135,6 +135,33 @@ Loopback 门（pad+2way 组合）Final: OK=1 FAIL=0。
 噪声物理墙）+ P176 EMA（同意图时间平滑）已 NOT CONFIRMED 甚至有害的回归先例 →
 改动风险>收益。MCS 2 能力 ≈76%（跨设备）/51%（单板）定论。
 
+### LDPC @ MCS 1 pad 对齐 regime（2026-08-27，NOT CONFIRMED，LDPC 轴双场景封闭）
+
+**动机**：P166d 在 MCS 0 判 LDPC NOT CONFIRMED 的适用范围是"H 质量限制"旧 regime；
+pad 对齐后 MCS 1 残余 15% 失败 = 前段 per-SC 分布式错误（~2-3.5/104）——理论上是
+LDPC 的主场（BCC K=7 卷积纠分布式错误弱于 LDPC 1296 块），且 LDPC 系统位恰好排满
+前 11 符号、末符号几乎全校验位（天然等效 pad 对齐）。值得一次预注册复测。
+
+配对 ABAB（跨设备，MCS1 len38，臂 A=BCC+PAD_ALIGN=8 / 臂 B=IEEE80211_USE_LDPC=1，
+4 对交错，governor=performance，电缆 --tx-scale 0.1，两臂 HDR_COMP_DISABLE=0 +
+SYNC_LONG_XCORR_FS=1）：
+```
+A(BCC+pad) = [88.2, 92.4, 89.1, 89.3]  mean=89.75%
+B(LDPC)    = [85.6, 87.8, 90.7, 88.0]  mean=88.03%
+per-pair B-A diff: -2.6, -4.6, +1.6, -1.3
+mean diff=-1.73pp  sd=2.60  paired t p=0.2764  -> NOT CONFIRMED
+```
+两臂重复漂移对照均过（1.11pp / 2.44pp）。Loopback 门：LDPC MCS0/MCS1 均
+Final: OK=1 FAIL=0（QPSK LDPC 链路首次端到端实测通过）。
+
+**机制解释**：LDPC 校验尾 ≈ 内置 pad 对齐（88% 无 pad 即达 BCC+pad 的 ~90%）——
+两者解决同一问题（帧尾几何）；剩余 ~10% 失败 = 前段 per-SC 相位噪声，码强无解。
+**LDPC 轴双场景封闭（MCS 0 P166d + MCS 1 本次），定论：当前相位噪声主导 regime
+下 LDPC 对 FCS_OK 无提升。**
+
+附带改动（本 commit）：harness `IEEE80211_USE_LDPC=1` env 直读（与 --ldpc 等价，
+使 mcs_sweep.py 的 per-run env 注入可选编码）；loopback `--ldpc` 参数。
+
 ## 附带成果（本 phase 非假设检验，但交付）
 
 ### MCS 0-7 FCS_OK 表征（每档 450 帧，单板 + 跨设备）

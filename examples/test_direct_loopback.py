@@ -30,6 +30,8 @@ _ap.add_argument('--noise', type=float, default=0.0,
                 help='AWGN noise voltage via channel_model; 0=off')
 _ap.add_argument('--len', type=int, default=None,
                 help="payload bytes (default None = 'test'*5, regression unchanged)")
+_ap.add_argument('--ldpc', action='store_true',
+                help='LDPC coding on both sides (default: BCC)')
 _args = _ap.parse_args()
 _enc = _MCS_TO_ENC[_args.mcs]
 print(f"[LOOPBACK] mcs={_args.mcs} encoding_enum={int(_enc)} "
@@ -89,9 +91,11 @@ class Stripper(gr.basic_block):
 tb = gr.top_block("direct_loopback")
 
 phy_tx = wifi_phy_hier(bandwidth=10e6, chan_est=ieee802_11.LS,
-                       encoding=_enc, frequency=5.89e9, sensitivity=0.01)
+                       encoding=_enc, frequency=5.89e9, sensitivity=0.01,
+                       use_ldpc=_args.ldpc)
 phy_rx = wifi_phy_hier(bandwidth=10e6, chan_est=ieee802_11.LS,
-                       encoding=_enc, frequency=5.89e9, sensitivity=0.01)
+                       encoding=_enc, frequency=5.89e9, sensitivity=0.01,
+                       use_ldpc=_args.ldpc)
 
 strobe = blocks.message_strobe(pmt.intern("test" * 5 if _args.len is None else "x" * _args.len), 500)
 mac = ieee802_11.mac([0x23]*6, [0x42]*6, [0xff]*6)
