@@ -89,6 +89,34 @@ SIR(A:B)  A     B
 **构建教训（P178b）**：帧提取不能用能量前沿——MCS1 pad 帧 L-STF 幅度低于数据段
 峰值会切到帧中（`extract_frame` 已改为 lag-16 L-STF 周期相关定位）。
 
+### 阶段 1 空口链路改进（2026-09-09）：H52_2WAY 跨设备空口 MCS 0 CONFIRMED +8.7pp
+
+**背景**：跨设备空口链路（box2→box1，5890，A槽 TX/RX 发 + B槽 RX2 收，1m）
+基线 61-74%（高时变）。曾误判"衰落主导、软件无解"——本 ABAB 证伪该论断。
+
+配对 ABAB（跨设备空口 MCS 0 len38，臂 A=现状 / 臂 B=+IEEE80211_H52_2WAY_DEFAULT=1，
+4 对交错，governor=performance，freq 5890，tx/rx-gain 31.5，tx-scale 1.0，
+两臂 HDR_COMP_DISABLE=0 + SYNC_LONG_XCORR_FS=1）：
+```
+A(对照)   = [9.33, 10.0, 8.4, 32.9]  mean=15.16%
+B(2way)   = [14.2, 16.2, 22.7, 42.4] mean=23.88%
+per-pair B-A diff: +4.9, +6.2, +14.3, +9.5
+mean diff=+8.72pp  sd=4.20  paired t p=0.0254  4/4 全正  -> CONFIRMED
+```
+**信道剧烈漂移**（两臂首轮 ~9% → 末轮 ~40%，摆动 23-28pp，漂移告警触发）；
+配对交错设计保护了对照（每对相邻同测），效应量 +8.7pp 可信；绝对电平仅本批次有效。
+
+**机制统一（与 P177 MCS1 NOT CONFIRMED 互补，非矛盾）**：
+
+| Regime | 瓶颈 | H52_2WAY |
+|--------|------|----------|
+| MCS 1 pad 对齐（P177 跨设备电缆）| 数据符号逐符号相位噪声（随机游走）| NOT CONFIRMED（H 层触及不到符号维噪声）|
+| MCS 0 空口（本次）| 衰落期 L-LTF H 估计噪声（BPSK 抗相位噪声，但衰落压 SNR → H 差 → 均衡差 → 比特错）| **CONFIRMED +8.7pp** |
+
+**结论**：2way 只在"H 估计质量是瓶颈"时有效（衰落/边际 SNR），对"数据符号
+自身相位噪声"（MCS 1 pad 场景）无效——作用域划分由此精确化。空口链路有软件
+headroom，非死墙。
+
 ## 诚实清单（故意不动）
 
 - 无新 env var（lint 的 env 注册项对表征 phase 结构性 N/A）
