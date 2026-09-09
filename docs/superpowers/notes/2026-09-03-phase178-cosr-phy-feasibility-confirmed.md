@@ -117,6 +117,20 @@ mean diff=+8.72pp  sd=4.20  paired t p=0.0254  4/4 全正  -> CONFIRMED
 自身相位噪声"（MCS 1 pad 场景）无效——作用域划分由此精确化。空口链路有软件
 headroom，非死墙。
 
+**增量杠杆 HTSIG_H_AVERAGE（2026-09-09，NOT CONFIRMED）**：在 2way 已 CONFIRMED
+的新基线上叠加 HT-SIG 导频增强 H 平均（臂 A=+2way / 臂 B=+2way+HTSIG_H_AVERAGE=1，
+跨设备空口 MCS 0，4 对交错）：
+```
+A(+2way)      = [18.89, 29.1, 35.8, 74.4]  mean=39.55%
+B(+2way+havg) = [31.6, 26.4, 77.8, 76.2]   mean=53.00%
+per-pair B-A: +12.7, -2.7, +42.0, +1.8
+mean diff=+13.45pp  sd=20.10  paired t p=0.2731  -> NOT CONFIRMED
+```
+**本批漂移更剧烈（臂 A 首→末 +55.6pp，臂 B +44.7pp）**；第 3 对相邻两臂差 42pp
+系信道两分钟内转好（非杠杆效应），方向分裂。**P158 教训实证：信道变化快于臂
+切换时，配对 ABAB 也无法分离小效应。** 按方法论不追加重跑刷显著性（p-hacking），
+本批即终判。好信道时段两臂均达 ~74-76%（可用的空口工作点）。
+
 ## 诚实清单（故意不动）
 
 - 无新 env var（lint 的 env 注册项对表征 phase 结构性 N/A）

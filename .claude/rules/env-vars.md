@@ -54,7 +54,7 @@
 | `IEEE80211_PHASE140_ON=N` | P127 L-SIG 跨帧 FIFO 叠加在 2-way 上 | P140 file-replay PASS，USRP 未验 |
 | `IEEE80211_WIENER_H52=1` 系列 | Wiener MMSE 收缩 | P141 PARTIAL；P166c δ-OFF 重测 REFUTED |
 | `IEEE80211_H52_FREQ_LOWPASS=1` + `_K` | H52 频域低通 | P138/P166c REFUTED（PDU 150→37 灾难）|
-| `IEEE80211_HTSIG_H_AVERAGE=1` | HT-SIG 导频增强 H 平均 | P118b：metric 13→12（最佳均衡器结果）|
+| `IEEE80211_HTSIG_H_AVERAGE=1` | HT-SIG 导频增强 H 平均 | P118b：metric 13→12（最佳均衡器结果）；**跨设备空口 MCS 0（2way 基线上增量）NOT CONFIRMED（P178 N=4 ABAB p=0.2731——信道漂移 ~50pp 淹没，方向分裂）** |
 | `IEEE80211_DDE_HT_SIG=1` / `_PER_SC=1` | 判决导向均衡 | P120a/P121 REFUTED |
 | `IEEE80211_HTSIG_PER_SYMBOL_DELTA=1` | 逐符号 δ 跟踪 | P79 REFUTED |
 | `IEEE80211_HTSIG_PER_SC_LUT=path` | 每 SC 相位校准 LUT | P80b REFUTED |

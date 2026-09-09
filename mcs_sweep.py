@@ -70,6 +70,7 @@ def run_mcs(mcs, idx, a, outdir, length=None, env_extra=None):
            '--rate', '20',
            '--tx-gain', str(a.tx_gain), '--tx-scale', str(a.tx_scale),
            '--rx-gain', str(a.rx_gain), '--rx-scale', str(a.rx_scale),
+           '--rx-subdev', a.rx_subdev,
            '--interval', str(a.interval), '--len', str(length),
            '--warmup', str(a.warmup), '--run', str(a.run),
            '--scales', ','.join([str(a.rx_scale)] * a.windows)]
@@ -118,6 +119,7 @@ def main():
     p.add_argument('--tx-gain', type=float, default=0)
     p.add_argument('--tx-scale', type=float, default=0.1)
     p.add_argument('--rx-gain', type=float, default=31.5)
+    p.add_argument('--rx-subdev', default='A:0', help='RX daughterboard (A:0 or B:0)')
     p.add_argument('--rx-scale', type=float, default=40)
     p.add_argument('--interval', type=float, default=100)
     p.add_argument('--len', type=int, default=38, help='TX payload bytes (PSDU = len + 28)')
