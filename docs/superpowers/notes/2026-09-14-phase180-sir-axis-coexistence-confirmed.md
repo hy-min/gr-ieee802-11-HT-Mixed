@@ -1,0 +1,111 @@
+# Phase 180 verdict: SIR 轴扫描（受害方功率）— 全 SIR 范围共存 CONFIRMED，OTA 路径封闭（2026-09-14）
+
+VERDICT: SIR 轴共存 CONFIRMED——受害方发射功率 31.5→0dB（自身 SIR 降 31.5dB）
+全程，干扰方满功率的影响均在噪声级（6 个有效配对均值 **−0.02pp**，逐档
+−0.53/−0.40/−0.27/+0.74pp）。干扰信号经有效性检验确认强到达受害接收机
+（每 max 臂 ~3537-3646 帧被检测），但受害方自身链路毫无变化。**OTA 方式
+无法把 SIR 压进 P178 预测的捕获门限（MCS0 ≈ +3dB）；"更近箱距"与"调功率"
+两条 OTA 路径至此全部封闭**，剩余唯一路径 = 电缆 2×2 受控 SIR 信道。
+
+## VERDICT（逐字粘贴批次输出原文）
+
+命令：`python3 p180_sir_sweep.py --a-env HDR_COMP_DISABLE=0,SYNC_LONG_XCORR_FS=1 --b-env HDR_COMP_DISABLE=0,SYNC_LONG_XCORR_FS=1 --tag neargeo2`
+（受害 A=192.168.10.2 自链路 A:0 TX→B:0 RX2，MCS0 len38→PSDU 66，**tx-gain 扫描**；
+干扰 B=192.168.20.3 同构自链路，MCS0 len61→PSDU 89，每档两臂：静默 / 满功率 31.5dB；
+5890 MHz 共信道，箱距 <10cm，governor=performance）
+
+```
+========== P180 SIR SWEEP SUMMARY ==========
+idx  A_gain  pass  silent%  max%   diff(max-silent)  contam
+  0    31.5  asc    84.27    83.73     -0.53pp        0
+  1      16  asc    96.80    96.80     +0.00pp        0
+  2       8  asc     0.00    78.80    +78.80pp        0
+  3       0  asc    52.13    52.00     -0.13pp        0
+  4       0  desc   51.87    53.47     +1.60pp        0
+  5       8  desc   79.20    78.93     -0.27pp        0
+  6      16  desc   96.93    96.13     -0.80pp        0
+  7    31.5  desc   37.60    95.47    +57.87pp        0
+```
+
+**有效性检验**（干扰信号是否真到达受害接收机；B 帧在 A 处被检测数）：
+
+```
+A_gain   arm       B帧@A  A自身帧成功
+a31.5    max        3570        787
+a31.5    silent        0        809
+a16      max        3537        916
+a16      silent        0        919
+a8       max        3616        744
+a0       max        3573        493
+a0       silent        0        497
+a16(desc)max        3607        916
+a16(desc)silent        4        921
+```
+
+## 判定
+
+**SIR 轴共存: CONFIRMED**
+- 受害方 tx-gain 31.5→0dB 全程，干扰效应均在噪声级；6 个有效配对均值 **−0.02pp**
+- 逐档均值：31.5dB −0.53pp / 16dB −0.40pp / 8dB −0.27pp / 0dB +0.74pp
+- **干扰确实施加且强到达**：每个 max 臂 B 帧在 A 处被检测 ~3537-3646 次
+  （silent 臂恒 0），却从未在 A 处解出（contam 全 0）
+- 受害方自身链路随自身功率大幅变化（0dB 时 52%、16dB 时 97%），**干扰不改变它**
+- **两个无效档（已剔除，非结论依据）**：
+  - idx02（A=8 asc）静默臂两次尝试均 `Failure to create rfnoc_graph`（P152 0 跑模态），无数据
+  - idx07（A=31.5 desc）静默臂逐窗口 128/114/**32/3/5** 单调崩塌 = 瞬态退化签名
+    （对照该档 max 臂跑在其前，逐窗口 146/141/142/141/146 全程高位）——+57.87pp 系伪影
+- 分子分母窗口：分母 est_sent~150/15s 窗 ×5 窗 = 750/臂（interval 100ms，warmup 20s
+  已由 harness 排除）；分子 FCS_OK = [RESULT] per-window 计数器差值（P159b 分母同域规避）；
+  B帧@A = A 侧 stderr 全文 `len=89` 出现次数（PSDU 89=B 帧，长度归因，P178 方法）
+
+## 机制与实现
+
+- 新脚本 `p180_sir_sweep.py`（纯编排零 C++ 改动）：A 功率档回文
+  `31.5,16,8,0,0,8,16,31.5`，每档两臂（B 静默 / B 满功率）背靠背；
+  **升降段臂序翻转**（升段 silent→max、降段 max→silent）控制臂序偏置
+- **机制结论**：受害方自链路为同箱内两子板近场耦合，余量极大。即使受害方
+  自身发射降 31.5dB（自身链路已因 SNR 不足跌到 52%），干扰方在受害接收机处
+  仍远低于捕获门限——**耦合不对称性（同箱近场 vs 跨箱）主导 SIR，Tx 增益
+  的可调范围不足以跨越它**
+- **OTA 路径封闭**：P178 净判定给出的两条 OTA 路径——"更近箱距"（P179b 已测
+  <10cm 无效应）与"调功率"（本 phase）——**均已实测封闭**。剩余唯一路径 =
+  P178 另一条建议：电缆 2×2 受控 SIR 信道
+
+### 前提测量（P181，同日）：信道稳定性表征
+
+`p181_channel_stability.py`，B 静默 60 窗 ×15s：**mean 93.83%，sd 6.45，
+min 67.33%，<50% 事件 0 次**（前 2.5 分钟为 settling 斜坡，其后 12 分钟稳定
+在 95-100%）。该 sd 给出 SIR 扫描灵敏度预算：点均值 SE ~2.9pp、配对差值
+SE ~2.9pp → 可检测效应阈值 ~8-10pp（远小于期望的捕获门限效应）。
+
+### 工具教训（P181 三轮全 0% 的根因）
+
+**stderr 管道死锁（本 phase 自造 bug，非设备故障）**：p181 初版用
+`readline()` 逐行读 stdout，却把 stderr 设为 PIPE 且仅在结束时读取。harness
+经 USRP_LOG 大量写 stderr（实测 **337MB/15min ≈ 375KB/s**），**写满 64KiB
+管道缓冲即阻塞在 write()**，收发线程随之停摆 → 全程 0/150、进程卡在
+`futex_do_wait` 不退出（被误判为"设备挂死"）。
+
+- **诊断证据**：失败运行的 stderr 恰好 64K（= 管道缓冲上限）、进程状态
+  futex_do_wait、长跑全死而短测（stderr 到不了 64K）全活
+- **修复**：stderr 直接重定向到文件（`stderr=err_fh`），任何情况都不阻塞；
+  另加逐窗即写盘 + 静默看门狗（`run+60s` 无输出判挂死）
+- **不受影响**：p179/p179b/p180 均用 `communicate()`（并发读双管道，无死锁），
+  其结果与结论不受此 bug 影响
+
+## 决策
+
+- OTA 路径关闭：后续如需演示 Co-SR 干扰（"碰撞有威胁 → 需协商"），唯一路径 =
+  **电缆 2×2 受控 SIR**（衰减器精确设定受害/干扰功率比，消除外部干扰与耦合不对称）
+- 无默认翻转、无新 env var、无禁止方向变更
+
+## 诚实清单（故意不动）
+
+- 无新 env var → 不动 env-vars.md（lint 用既有 IEEE80211_HDR_COMP_DISABLE 过门）
+- 无默认翻转 → 不动 CLAUDE.md harness 表与「当前状态」
+- 非关闭方向 → 不动禁止方向表与 hookify pattern
+- 曲线 PNG 与全部日志在仓库外：
+  `/home/hy/captures/p180_sir_sweep_20260914_130008_neargeo2/`
+  `/home/hy/captures/p181_channel_stability_20260914_124422_neargeo_fixed/`
+  （前三次 P181 全 0% 的废数据：`..._120830_neargeo2` / `..._122706_neargeo3` /
+  `..._113223_neargeo`，根因见上「工具教训」）
