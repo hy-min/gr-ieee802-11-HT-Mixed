@@ -50,8 +50,11 @@ idx  B_gain  arm    A_FCS_OK/est  rate%  len89_contam  attempts
   negligible，空间复用天然共存」获曲线级证实
 - len89_contam 全 12 点 = 0：B 帧从未通过 A 的 FCS——近场几何捕获效应保护
   受害链路（P178「捕获=天线位置物理必然」的直接证据）
-- idx 9（8dB 降臂 10.9%）= 信道衰落 episode，非干扰：物理上不可能（更高功率
-  16/24/31.5 同期无效应），且相邻 0dB 点 87.8% 完全恢复。读数中已标注剔除
+- idx 9（8dB 降臂 10.9%）= **测量系统瞬态**，非干扰：物理上不可能（更高功率
+  16/24/31.5 同期无效应），且相邻 0dB 点 87.8% 完全恢复。读数中已标注剔除。
+  ⚠️ 原写「信道衰落 episode」，经 2026-09-14 组件级调试更正——机制为 splitter
+  force-transition 循环（见 `2026-09-14-phase180-sir-axis-coexistence-confirmed.md`
+  「工具教训 2」），与环境信道无关
 - DRIFT SUSPECT（预期内）：首尾 OFF 漂移 14.7pp——OTA 信道方差 >
   任何潜在干扰信号，构成该几何下曲线分辨力上限
 - 分子分母窗口：分母 est_sent~150/15s 窗 ×3 窗 = 450/点（interval 100ms，
