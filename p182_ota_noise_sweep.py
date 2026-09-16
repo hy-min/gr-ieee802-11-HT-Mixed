@@ -115,6 +115,24 @@ def noise_cmd(a, wavefile):
             '--tx-file', str(wavefile)]
 
 
+def frame_interferer_cmd(a):
+    """Box B as a REAL 802.11 interferer: normal frame TX, but a long payload
+    and a fast strobe so its frames occupy the channel a large fraction of the
+    time.  This is the configuration Co-SR actually faces -- a competing FRAME
+    that can capture the victim's receiver -- as opposed to noise, which can
+    only raise the noise floor."""
+    return [PY, str(HARNESS),
+            '--mcs', '0', '--len', str(a.b_len),
+            '--freq', str(a.freq),
+            '--tx-addr', a.b_addr, '--rx-addr', a.b_addr,
+            '--rate', '20',
+            '--tx-gain', str(a.b_tx_gain), '--tx-scale', '1.0',
+            '--rx-gain', str(a.rx_gain), '--rx-scale', str(a.rx_scale),
+            '--rx-subdev', a.rx_subdev,
+            '--interval', str(a.b_interval), '--warmup', '5', '--run', '600',
+            '--scales', str(a.rx_scale)]
+
+
 def run_victim(a, tag, outdir):
     """One victim arm. Returns (windows, len89, attempts, infra_ok).
 
@@ -261,6 +279,15 @@ def main():
                         'the waveform. e.g. 0,6,12,18,24,31.5')
     p.add_argument('--noise-sigma', type=float, default=0.32,
                    help='waveform sigma used when --b-gains is given')
+    p.add_argument('--b-frames', action='store_true',
+                   help='TRUE Co-SR mode: B transmits real 802.11 FRAMES (not '
+                        'noise) at --b-len/--b-interval, raising its duty cycle '
+                        'so its frames actually overlap the victim\'s frames. '
+                        'Noise can never CAPTURE a receiver; only frames can.')
+    p.add_argument('--b-interval', type=float, default=5.0,
+                   help='B strobe interval (ms) in --b-frames mode. '
+                        'len1000 + 5ms -> ~1.3ms frame -> 26%% duty '
+                        '(vs 0.12%% at the default len38/100ms)')
     p.add_argument('--freq', type=float, default=5890)
     p.add_argument('--a-addr', default='192.168.10.2')
     p.add_argument('--b-addr', default='192.168.20.3')
@@ -319,8 +346,11 @@ def main():
     elif a.b_gains:
         gs = [float(x) for x in a.b_gains.split(',')]
         seq = gs + gs[::-1]                       # palindrome
+        # In --b-frames mode the sigma field is only an "B is ON" marker (1.0);
+        # the noise waveform is not used.  The swept quantity is b_gain.
+        on_marker = 1.0 if a.b_frames else a.noise_sigma
         plan = [('off', None, a.b_tx_gain)]
-        plan += [(f'{g:g}dB', a.noise_sigma, g) for g in seq]
+        plan += [(f'{g:g}dB', on_marker, g) for g in seq]
         plan += [('off', None, a.b_tx_gain)]
     else:
         lv = [float(x) for x in a.levels.split(',')]
@@ -338,12 +368,32 @@ def main():
     else:
         xlabel = ('Box B noise amplitude $\\sigma$ (per-sample std, log scale)')
 
-    print('=== P182 Co-SR OTA CONTINUOUS-NOISE SWEEP ===', flush=True)
+    if a.b_frames:
+        print('=== OTA INTERFERER SWEEP — B TRANSMITS REAL FRAMES '
+              '(Co-SR mode) ===', flush=True)
+        duty = None
+        try:
+            psdu = (a.b_len + 28) * 8
+            sym = -(-(16 + psdu + 6) // 26)          # MCS0, 26 dbps
+            dur_ms = (sym * 4 + 32) / 1000.0
+            duty = dur_ms / a.b_interval * 100.0
+        except Exception:
+            pass
+        if duty:
+            print(f'[P182] B frame {dur_ms:.2f} ms / interval '
+                  f'{a.b_interval:g} ms -> duty {duty:.1f}%  '
+                  f'(victim frames hit ~{(0.12 + dur_ms) / a.b_interval * 100:.1f}%)',
+                  flush=True)
+    else:
+        print('=== P182 OTA CONTINUOUS-NOISE SWEEP (B transmits noise) ===',
+              flush=True)
     print(f'[P182] plan={[lbl for lbl, _, _ in plan]} ({len(plan)} arms x '
           f'{a.windows} windows x {a.run}s)', flush=True)
+    bdesc = (f'FRAMES len{a.b_len}/interval {a.b_interval:g}ms'
+             if a.b_frames else 'noise via --tx-file')
     print(f'[P182] victim A={a.a_addr} MCS{a.mcs} len{a.len} tx-gain '
-          f'{a.a_tx_gain} | noise B={a.b_addr} tx-gain {a.b_tx_gain} '
-          f'via --tx-file', flush=True)
+          f'{a.a_tx_gain} | interferer B={a.b_addr} tx-gain {a.b_tx_gain} '
+          f'{bdesc}', flush=True)
     gov = Path('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor')
     print(f'[P182] governor={gov.read_text().strip() if gov.exists() else "?"}  '
           f'logs -> {outdir}', flush=True)
@@ -354,14 +404,18 @@ def main():
               flush=True)
         b_proc = b_log = None
         if sigma is not None:
-            wave = NOISE_DIR / f'noise_{sigma:g}.fc32'
-            if not wave.is_file():
-                print(f'[P182] MISSING waveform {wave} — skipping arm',
-                      flush=True)
-                continue
             a.b_tx_gain = b_gain
+            if a.b_frames:
+                bcmd = frame_interferer_cmd(a)
+            else:
+                wave = NOISE_DIR / f'noise_{sigma:g}.fc32'
+                if not wave.is_file():
+                    print(f'[P182] MISSING waveform {wave} — skipping arm',
+                          flush=True)
+                    continue
+                bcmd = noise_cmd(a, wave)
             b_log = open(outdir / f'arm{idx:02d}_b_{label}.out', 'w')
-            b_proc = subprocess.Popen(noise_cmd(a, wave), cwd=str(REPO),
+            b_proc = subprocess.Popen(bcmd, cwd=str(REPO),
                                       stdout=b_log, stderr=subprocess.STDOUT,
                                       text=True, start_new_session=True,
                                       env=base_env(parse_env(a.a_env)))
