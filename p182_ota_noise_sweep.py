@@ -249,7 +249,7 @@ def plot_curve(rows, outpath, title_extra='', xlabel=None, xlog=False):
         for r in lvl[s]:
             ax.scatter([s] * len(r[4]), r[4], color='tab:red', alpha=0.35, s=18)
     ax.plot(xs, means, marker='o', color='tab:red', lw=1.8,
-            label='interferer = continuous noise')
+            label=xlabel and 'victim link under interference' or 'victim link')
 
     if xlog:
         ax.set_xscale('log')
@@ -259,9 +259,9 @@ def plot_curve(rows, outpath, title_extra='', xlabel=None, xlog=False):
     ax.set_ylim(0, 105)
     ax.grid(alpha=0.3, which='both')
     ax.legend()
-    ax.set_title('P182 Co-SR: interferer transmits CONTINUOUS in-band noise\n'
-                 '(victim MCS0 len38, B tx-gain 31.5, 5890 MHz, <10 cm, '
-                 'duty cycle 100% vs 0.12% for frames)' + title_extra)
+    ax.set_title(title_extra or (
+        'Interferer power sweep — victim MCS0 len38, 5890 MHz, <10 cm, '
+        '<10cm box spacing'))
     fig.tight_layout()
     fig.savefig(outpath, dpi=150)
     print(f'[P182] curve: {outpath}', flush=True)
@@ -332,7 +332,11 @@ def main():
         xl = ('Box B (interferer) TX gain (dB) — same axis as P179'
               if gain_mode else
               'Box B noise amplitude $\\sigma$ (per-sample std, log scale)')
-        plot_curve(rows, out, xlabel=xl, xlog=not gain_mode)
+        ttl = ('Co-SR frame validation — B transmits REAL frames, '
+               'duty 13% (len1000/10ms)'
+               if gain_mode else
+               'Interferer = CONTINUOUS noise (duty 100%)')
+        plot_curve(rows, out, xlabel=xl, xlog=not gain_mode, title_extra=ttl)
         for idx, label, sig, rate, perw in rows:
             pw = '/'.join(f'{x:.0f}' for x in perw)
             print(f'  arm{idx:02d} noise={label:6s} {rate:6.2f}%  [{pw}]')
@@ -432,12 +436,29 @@ def main():
                 os.killpg(b_proc.pid, signal.SIGKILL)
             b_proc.wait()
             b_log.close()
-            # B's log is its own RX flooded by its own TX (~1.3 GB/arm) and
-            # carries nothing we measure.  It is kept until the arm ends so
-            # the in-arm host I/O profile matches the sigma sweep, then
-            # dropped to keep the disk from filling.
+            # B's log is its own RX flooded by its own TX (~1.3 GB/arm).  Before
+            # dropping it (disk), extract the handful of counters that answer
+            # "did B actually transmit?" -- the VICTIM's len=1028 count cannot
+            # answer that, because a collapsed victim receiver stops decoding
+            # B's frames for its own reasons.  B's own RX hears its own frames
+            # through the near-field self-link, so B's self-reception is the
+            # only measure that is independent of the victim's state.
+            bpath = outdir / f'arm{idx:02d}_b_{label}.out'
             try:
-                (outdir / f'arm{idx:02d}_b_{label}.out').unlink()
+                counts = {}
+                for tag, pat in (('b_self_len1028', r'DECODE_SUCCESS.*len=1028'),
+                                 ('b_self_any_ok', r'DECODE_SUCCESS'),
+                                 ('b_tx_lsig', r'\[TX_LSIG\]'),
+                                 ('b_tx_htsig', r'\[TX_HT_SIG\]')):
+                    r = subprocess.run(['grep', '-c', '-E', pat, str(bpath)],
+                                       capture_output=True, text=True)
+                    counts[tag] = (r.stdout or '0').strip()
+                (outdir / f'arm{idx:02d}_b_{label}.summary.txt').write_text(
+                    ' '.join(f'{k}={v}' for k, v in counts.items()) + '\n')
+                print(f'[P182]   B TX check: ' +
+                      ' '.join(f'{k}={v}' for k, v in counts.items()),
+                      flush=True)
+                bpath.unlink()
             except OSError:
                 pass
             if died:
