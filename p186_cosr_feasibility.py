@@ -80,11 +80,20 @@ def base_env(env_extra=None):
 
 
 def link_cmd(a, addr, tx_gain, tag):
-    """One BSS link: transmit AND receive on the same box (normal config)."""
+    """One BSS link.  Default: self-link (TX and RX on the same box).
+
+    --cross instead points each box's receiver at the OTHER box, so the wanted
+    signal travels the cross-box path while the box's OWN transmitter -- the
+    intra-box path, measured to be >31.5 dB stronger (P180) -- becomes the
+    interferer.  That is a FULL-DUPLEX self-interference configuration, not a
+    Co-SR one; it is run to quantify the intra/cross coupling ratio.
+    """
+    rx_addr = a.b_addr if (a.cross and addr == a.a_addr) else (
+        a.a_addr if (a.cross and addr == a.b_addr) else addr)
     return [PY, str(HARNESS),
             '--mcs', str(a.mcs),
             '--freq', str(a.freq),
-            '--tx-addr', addr, '--rx-addr', addr,
+            '--tx-addr', addr, '--rx-addr', rx_addr,
             '--rate', '20',
             '--tx-gain', str(tx_gain), '--tx-scale', str(a.tx_scale),
             '--rx-gain', str(a.rx_gain), '--rx-scale', str(a.rx_scale),
@@ -145,6 +154,10 @@ def main():
     p.add_argument('--windows', type=int, default=4)
     p.add_argument('--thresh', type=float, default=50.0,
                    help='a grid point is FEASIBLE when both links >= this %%')
+    p.add_argument('--cross', action='store_true',
+                   help='cross-link mode: each box receives the OTHER box '
+                        '(full-duplex self-interference config, for measuring '
+                        'the intra/cross coupling ratio -- NOT a Co-SR config)')
     p.add_argument('--solo', action='store_true', default=True,
                    help='also measure each link alone (other box silent)')
     p.add_argument('--env', default='HDR_COMP_DISABLE=0,SYNC_LONG_XCORR_FS=1')
