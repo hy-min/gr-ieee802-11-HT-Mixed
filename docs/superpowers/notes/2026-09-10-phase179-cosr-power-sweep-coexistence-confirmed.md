@@ -113,3 +113,18 @@ idx  B_gain  arm    A_FCS_OK/est  rate%  len89_contam  attempts
 
 **修正后的表述**：本 phase 的结论应为「**不相遇的两条链路互不干扰**」，
 而非「共存成立」。
+
+---
+
+## 二次勘误（2026-09-17，据 P187 直接测量）
+
+P187 在受害机接收口直接测得 **SIR(A=31.5, B=31.5) = 16.0 dB**，
+旋钮线性 ⇒ `SIR(A_gain) = A_gain − 15.5 dB`
+（`docs/superpowers/notes/2026-09-17-phase187-coupling-sir-measured.md`）。
+
+对本 phase 的意义：扫描到 A 的低增益端时 **SIR 早已跨过 +3 dB 捕获门限
+（A ≤ 18.5 dB 即已跨过，本 phase 扫到 A=0 → SIR = −15.5 dB）**。
+故本 phase 的「无效应」**完全由占空比解释**（0.24% 时间重叠），
+与此前推断的「SIR 余量极大」无关——**该推断（>31.5 dB）低测了 15.5 dB**。
+
+「不相遇的两条链路互不干扰」这一修正表述**仍然成立**。
