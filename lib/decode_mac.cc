@@ -1341,10 +1341,19 @@ private:
         {
             static const char* env_fail_dump = std::getenv("IEEE80211_FAIL_PSDU_DUMP");
             if (env_fail_dump && env_fail_dump[0] == '1') {
-                char fbuf[256];
+                // P193: dump the WHOLE PSDU, not just the first 66 bytes.  That
+                // cap was sized for the len38 frames this was written against
+                // (24 header + 38 payload + 4 FCS = 66), so for the long-frame
+                // defect it hides exactly the region of interest.  The payload
+                // is a known constant here ('x' repeated), so a full dump lets
+                // us compute, per frame, the FIRST BYTE that is wrong -- which
+                // is a far sharper localiser than any statistic.
+                char fbuf[4096];
                 int fn = snprintf(fbuf, sizeof(fbuf), "[FAIL_PSDU] len=%d head=", d_ht_len);
-                for (int i = 0; i < d_ht_len && i < 66 && fn < (int)sizeof(fbuf) - 8; i++) {
-                    fn += snprintf(fbuf + fn, sizeof(fbuf) - fn, "%02x", ((const uint8_t*)psdu)[i]);
+                for (int i = 0; i < d_ht_len &&
+                                fn < (int)sizeof(fbuf) - 8; i++) {
+                    fn += snprintf(fbuf + fn, sizeof(fbuf) - fn, "%02x",
+                                   ((const uint8_t*)psdu)[i]);
                 }
                 snprintf(fbuf + fn, sizeof(fbuf) - fn, "\n");
                 USRP_LOG("%s", fbuf);

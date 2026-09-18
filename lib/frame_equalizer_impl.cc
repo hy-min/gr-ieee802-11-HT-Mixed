@@ -57,7 +57,22 @@ static constexpr int kHtTrain0Rel   = 5;
 static constexpr int kHtTrain1Rel   = 6;
 static constexpr int kDataStartRel  = 7;
 
-static constexpr int kMaxFrameRel = 128;
+// Hard ceiling on a frame's length in symbol slots.  Exceeding it ABORTS THE
+// WHOLE FRAME (see the kMaxFrameRel check further down), so this one constant
+// silently capped the testbed's usable payload size.
+//
+// It was 128, set in an early phase when frames were tiny.  Every experiment
+// since P31 has used --len 38, i.e. 7 + 21 = 28 rel slots -- never within 4x
+// of the limit -- so the cap was never approached, let alone noticed.  P192
+// finally swept frame length and found a clean cliff: len350 passes, len380
+// fails, with "[EQ_FRAME_END] max frame exceeded sym_idx=129" in the log and
+// a frame that never assembles (full_syms stuck at 122 = 128-7+1, the cap).
+//
+// Derived from the design maximum rather than guessed: MAX_PAYLOAD_SIZE 1500
+// -> MAX_PSDU_SIZE 1528 -> ceil((16 + 8*1528 + 6) / 26) = 471 data symbols at
+// MCS0, the densest case (26 data bits/symbol); + kDataStartRel(7) = 478,
+// rounded up to 480.
+static constexpr int kMaxFrameRel = 480;
 
 // FFT bin mapping - CORRECTED: sc + 64 mod 64
 // IEEE 802.11 OFDM 64-point FFT natural memory order:
