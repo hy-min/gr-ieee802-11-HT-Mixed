@@ -60,6 +60,11 @@ def uhd_nudge(addr):
         pass
 
 
+def free_gb(path):
+    st = os.statvfs(str(path))
+    return st.f_bavail * st.f_frsize / 1e9
+
+
 def parse_env(spec):
     out = {}
     for kv in (spec or '').split(','):
@@ -90,6 +95,7 @@ def link_cmd(a, addr, tx_gain, tag):
     """
     rx_addr = a.b_addr if (a.cross and addr == a.a_addr) else (
         a.a_addr if (a.cross and addr == a.b_addr) else addr)
+    interval = a.b_interval if (a.b_interval and addr == a.b_addr) else a.interval
     return [PY, str(HARNESS),
             '--mcs', str(a.mcs),
             '--freq', str(a.freq),
@@ -98,7 +104,7 @@ def link_cmd(a, addr, tx_gain, tag):
             '--tx-gain', str(tx_gain), '--tx-scale', str(a.tx_scale),
             '--rx-gain', str(a.rx_gain), '--rx-scale', str(a.rx_scale),
             '--rx-subdev', a.rx_subdev,
-            '--interval', str(a.interval), '--len', str(a.len),
+            '--interval', str(interval), '--len', str(a.len),
             '--warmup', str(a.warmup), '--run', str(a.run),
             '--scales', ','.join([str(a.rx_scale)] * a.windows)]
 
@@ -116,7 +122,13 @@ def launch(a, addr, tx_gain, tag, outdir):
 
 
 def collect(a, proc, ofh, efh, outpath, errpath):
-    """Wait for one link, retry once on UHD init failure. -> (rate, windows)"""
+    """Wait for one link. -> (rate, n_windows, init_fail, series)
+
+    `series` is the PER-WINDOW rate list.  With an incommensurate B period the
+    two frames' relative phase sweeps, so collisions are confined to a short
+    passage that recurs periodically -- a dip in the series is the direct
+    signature of a collision, and its absence at high power is a real result.
+    """
     timeout = a.warmup + a.run * a.windows + 150
     try:
         proc.wait(timeout=timeout)
@@ -132,7 +144,9 @@ def collect(a, proc, ofh, efh, outpath, errpath):
                  'RfnocError' in out + err)
     ok = sum(int(w[3]) for w in windows)
     est = sum(int(w[1]) for w in windows)
-    return ((ok / est * 100) if est else 0.0), len(windows), init_fail
+    series = [(int(w[3]) / int(w[1]) * 100) if int(w[1]) else 0.0
+              for w in windows]
+    return ((ok / est * 100) if est else 0.0), len(windows), init_fail, series
 
 
 def main():
@@ -147,6 +161,13 @@ def main():
     p.add_argument('--rx-subdev', default='B:0')
     p.add_argument('--rx-scale', type=float, default=40)
     p.add_argument('--interval', type=float, default=100)
+    p.add_argument('--b-interval', type=float, default=None,
+                   help='box B TX period in ms (default: same as --interval). '
+                        'Give B a period differing by 1 ms so the RELATIVE PHASE '
+                        'phi sweeps deterministically instead of freezing (P194). '
+                        'A=100/B=101 => phi advances 1 ms per A frame, so the '
+                        '2.61 ms collision window is crossed in ~0.26 s, once '
+                        'every 10 s.  Integer ms only (message_strobe takes int).')
     p.add_argument('--mcs', type=int, default=0)
     p.add_argument('--len', type=int, default=38)
     p.add_argument('--warmup', type=float, default=20)
@@ -160,12 +181,32 @@ def main():
                         'the intra/cross coupling ratio -- NOT a Co-SR config)')
     p.add_argument('--solo', action='store_true', default=True,
                    help='also measure each link alone (other box silent)')
-    p.add_argument('--env', default='HDR_COMP_DISABLE=0,SYNC_LONG_XCORR_FS=1')
+    p.add_argument('--no-solo', dest='solo', action='store_false',
+                   help='skip the solo baselines (re-runs of already-measured '
+                        'points do not need them)')
+    p.add_argument('--points', default='',
+                   help='run ONLY these cells, "A:B,A:B,..." (e.g. "16:8"), '
+                        'instead of the full --a-gains x --b-gains grid.  Used '
+                        'to re-measure specific cells with more windows.')
+    p.add_argument('--env', default='',
+                   help='extra K=V,K2=V2 injected into the harness env.  Names '
+                        'MUST carry the IEEE80211_ prefix -- the C++ reads only '
+                        'the prefixed form, so a bare name is silently ignored. '
+                        'Default empty = harness setdefaults govern (that is '
+                        'HDR_COMP_DISABLE=1, the only setting that works for '
+                        'long frames).')
     p.add_argument('--tag', default='')
     a = p.parse_args()
 
     a_gains = [float(x) for x in a.a_gains.split(',')]
     b_gains = [float(x) for x in a.b_gains.split(',')]
+    if a.points:
+        point_list = []
+        for tok in a.points.split(','):
+            ga, _, gb = tok.partition(':')
+            point_list.append((float(ga), float(gb)))
+    else:
+        point_list = [(gA, gB) for gA in a_gains for gB in b_gains]
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     tag = f'_{a.tag}' if a.tag else ''
     outdir = CAP_ROOT / f'p186_cosr_region_{ts}{tag}'
@@ -174,18 +215,57 @@ def main():
     est_per_win = int(round(a.run * 1000.0 / a.interval))
     print('=== P186 Co-SR FEASIBILITY REGION ===', flush=True)
     print(f'[P186] grid: A {a_gains} x B {b_gains}  '
-          f'({len(a_gains)*len(b_gains)} points x {a.windows} windows '
+          f'({len(point_list)} points x {a.windows} windows '
           f'x {a.run}s, est_sent~{est_per_win}/win)', flush=True)
     print(f'[P186] BOTH boxes run a real self-link (MCS{a.mcs} len{a.len} '
-          f'{a.interval:g}ms) AND transmit simultaneously; feasible = '
-          f'both >= {a.thresh:g}%', flush=True)
+          f'A={a.interval:g}ms B={a.b_interval or a.interval:g}ms) AND transmit '
+          f'simultaneously; feasible = both >= {a.thresh:g}%', flush=True)
+    if a.b_interval and a.b_interval != a.interval:
+        d = abs(a.b_interval - a.interval)
+        cyc = a.interval * (a.interval / d) / 1000.0
+        print(f'[P186] phi sweeps: B period differs by {d:g}ms => collision '
+              f'passage recurs every {cyc:.1f}s (window = {a.run:g}s windows, '
+              f'so ~1 in {cyc/a.run:.1f} windows should dip)', flush=True)
+    else:
+        print('[P186] WARNING: identical periods freeze phi (P194) -- each '
+              'grid cell draws ONE random phase, cells are not comparable. '
+              'Use --b-interval to sweep phi.', flush=True)
+    env_map = parse_env(a.env)
+    bare = [k for k in env_map if not k.startswith('IEEE80211_')]
+    if bare:
+        print(f'[P186] *** WARNING: --env names without the IEEE80211_ prefix '
+              f'are SILENTLY IGNORED by the C++: {bare}.  The old default was '
+              f'written this way, so it never took effect. ***', flush=True)
+    # Footgun guard.  Measured on box A, len1000 / 100 ms self-link:
+    #   IEEE80211_HDR_COMP_DISABLE=1 -> 246/300 = 82.0%
+    #   IEEE80211_HDR_COMP_DISABLE=0 -> 0/300   =  0.0%   (dead link)
+    # Long frames accumulate the per-symbol phase correction that this switch
+    # turns on (env-vars.md: single-board =0 is 0% -- d_phase_diff has no SNR
+    # gate).  A len>200 grid measured with =0 is all zeros and means nothing.
+    if a.len > 200 and env_map.get('IEEE80211_HDR_COMP_DISABLE') == '0':
+        print('[P186] *** WARNING: len>200 with IEEE80211_HDR_COMP_DISABLE=0 '
+              'measures a DEAD link (0% FCS_OK) -- drop that setting ***',
+              flush=True)
     gov = Path('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor')
     print(f'[P186] governor={gov.read_text().strip() if gov.exists() else "?"}  '
           f'logs -> {outdir}', flush=True)
 
     results = {}
+    series = {}          # (label, box) -> per-window rate list
 
     def run_point(gA, gB, label):
+        # Disk guard.  Each arm dumps ~150-250 MB of stderr, and a FULL DISK
+        # makes the harness's log writes fail (ENOSPC), which kills the flowgraph
+        # threads -- every remaining point then reads 0.0% and looks exactly like
+        # a physical result.  That happened once here: cells (0,8) and (0,16)
+        # both scored 0/0 including box B, whose SIR was 24 dB and which
+        # therefore cannot have been jammed.  Abort loudly instead of lying.
+        free = free_gb(CAP_ROOT)
+        if free < 1.5:
+            raise SystemExit(
+                f'[P186] ABORT: only {free:.2f} GB free on {CAP_ROOT} -- a full '
+                f'disk silently fakes 0% for every remaining point. Free space '
+                f'and re-run; do not trust results past this point.')
         a_proc = a_h = a_e = a_out = a_err = None
         b_proc = b_h = b_e = b_out = b_err = None
         if gA is not None:
@@ -195,17 +275,24 @@ def main():
             b_proc, b_h, b_e, b_out, b_err = launch(
                 a, a.b_addr, gB, f'{label}_B', outdir)
         ra = rb = None
+        ser_a = ser_b = []
         if a_proc is not None:
-            ra, wa, ifa = collect(a, a_proc, a_h, a_e, a_out, a_err)
+            ra, wa, ifa, ser_a = collect(a, a_proc, a_h, a_e, a_out, a_err)
+            series[(label, 'A')] = ser_a
             if ifa or wa < a.windows:
                 uhd_nudge(a.a_addr)
                 print(f'[P186] {label}: A init/underrun (win={wa})', flush=True)
         if b_proc is not None:
-            rb, wb, ifb = collect(a, b_proc, b_h, b_e, b_out, b_err)
+            rb, wb, ifb, ser_b = collect(a, b_proc, b_h, b_e, b_out, b_err)
+            series[(label, 'B')] = ser_b
             if ifb or wb < a.windows:
                 uhd_nudge(a.b_addr)
                 print(f'[P186] {label}: B init/underrun (win={wb})', flush=True)
         results[(gA, gB)] = (ra, rb)
+        for who, s in (('A', ser_a), ('B', ser_b)):
+            if len(s) > 1:
+                print(f'[P186]   {label} {who} windows: '
+                      f'[{",".join(f"{v:.0f}" for v in s)}]', flush=True)
         sa = '--' if ra is None else f'{ra:5.1f}'
         sb = '--' if rb is None else f'{rb:5.1f}'
         if ra is None or rb is None:
@@ -216,18 +303,24 @@ def main():
             verdict = 'not feasible'
         print(f'[P186] A={gA if gA is not None else "silent":>6} '
               f'B={gB if gB is not None else "silent":>6}  '
-              f'A={sa}%  B={sb}%  {verdict}', flush=True)
+              f'A={sa}%  B={sb}%  {verdict}  (disk {free_gb(CAP_ROOT):.1f}G)',
+              flush=True)
         time.sleep(5)
 
     if a.solo:
-        print('[P186] --- solo baselines (other box silent) ---', flush=True)
-        run_point(31.5, None, 'soloA')
-        run_point(None, 31.5, 'soloB')
+        # Baseline at the TOP of the grid's own axis, not a hardcoded 31.5 dB:
+        # at len1000 the 31.5 dB self-link is overdriven and self-collapses
+        # (P191; measured here: [134,44] and [97,149] vs a stable [87,86,85,84]
+        # at 16 dB), so a 31.5 dB baseline would score the broken point.
+        g_ref = max(a_gains)
+        print(f'[P186] --- solo baselines (other box silent, {g_ref:g} dB) ---',
+              flush=True)
+        run_point(g_ref, None, 'soloA')
+        run_point(None, g_ref, 'soloB')
 
     print('[P186] --- grid ---', flush=True)
-    for gA in a_gains:
-        for gB in b_gains:
-            run_point(gA, gB, f'g{ga_name(gA)}_{ga_name(gB)}')
+    for gA, gB in point_list:
+        run_point(gA, gB, f'g{ga_name(gA)}_{ga_name(gB)}')
 
     # ---- summary ----
     print('\n========== P186 FEASIBILITY REGION ==========', flush=True)
@@ -247,8 +340,55 @@ def main():
     feas_pts = [(gA, gB) for (gA, gB), (ra, rb) in results.items()
                 if ra is not None and rb is not None
                 and ra >= a.thresh and rb >= a.thresh]
-    print(f'\nfeasible grid points: {len(feas_pts)} / {len(a_gains)*len(b_gains)}',
+    print(f'\nfeasible grid points: {len(feas_pts)} / {len(point_list)}',
           flush=True)
+
+    # ---- collision analysis ----
+    # A single low window is NOT evidence.  Measured on a clean solo self-link
+    # at a healthy operating point, the per-window counts were
+    #   [9 8 9 8 9 8 8 9 9 8 8 9 7 9 9 9 8 8 8 9 7 8 9 5 8 9 8 9 8 8]
+    # i.e. a dip to 5/10 happens with no interferer at all -- the same size as
+    # the dip a collision would produce.  So per-window min proves nothing.
+    #
+    # What the collision DOES have, and noise does not, is PERIODICITY: phi
+    # advances 1 ms per A frame, so the 2.61 ms collision window is crossed once
+    # every 10 s, forever, at a fixed phase.  Folding the series at that period
+    # averages random dips down as 1/sqrt(n) while leaving the collision dip
+    # standing.  The fold period comes from the physics, not from a search.
+    cyc_s = None
+    if a.b_interval and a.b_interval != a.interval:
+        cyc_s = a.interval * (a.interval / abs(a.b_interval - a.interval)) / 1000.0
+    if cyc_s and any(len(s) > 4 for s in series.values()):
+        P = max(2, int(round(cyc_s / a.run)))
+        print(f'\n--- collision analysis: fold at {cyc_s:.1f}s = {P} windows '
+              f'({cyc_s/a.run:.2f}) ---', flush=True)
+        hdr = f'{"point":>10} {"box":>3} {"n":>4} {"med":>6} {"min":>5} ' \
+              f'{"fold_min":>9} {"fold_max":>9} {"contrast":>9} {"z":>6}'
+        print(hdr, flush=True)
+        for (label, box) in sorted(series):
+            s = series[(label, box)]
+            if len(s) < 2 * P:
+                continue
+            bins = [[] for _ in range(P)]
+            for i, v in enumerate(s):
+                bins[i % P].append(v)
+            f = [sum(b) / len(b) for b in bins if b]
+            nper = len(s) / P
+            fs = sorted(f)
+            contrast = fs[len(fs) // 2] - fs[0]      # median bin - deepest bin
+            # spread expected from pure noise on a bin of nper samples
+            sd = (sum((v - sum(s) / len(s)) ** 2 for v in s) / (len(s) - 1)) ** 0.5
+            se = sd / (nper ** 0.5)
+            z = contrast / se if se > 0 else 0.0
+            ss = sorted(s)
+            flag = '  <== COLLISION DIP' if z >= 3 else ''
+            print(f'{label:>10} {box:>3} {len(s):>4} '
+                  f'{ss[len(ss)//2]:>6.1f} {ss[0]:>5.1f} '
+                  f'{fs[0]:>9.1f} {fs[-1]:>9.1f} {contrast:>9.1f} {z:>6.1f}{flag}',
+                  flush=True)
+        print('(fold_min = deepest phase bin; z = contrast / SE of a bin. '
+              'z>=3 on a periodic fold is the collision signature; a lone low '
+              'window with a flat fold is just noise.)', flush=True)
 
     try:
         import matplotlib

@@ -85,6 +85,9 @@ MIN_PLATEAU=24  TRIGGER_MARGIN=2.5  DATA_SOFT_VITERBI=1  LSIG_VITERBI_CANDIDATE=
 | TX 缓冲/MTU/jumbo/tsb 包装族 | P172：A 族洞位锁定 ~345 与 MTU 无关（jumbo 不移不消）、率不降；tsb 只压 U 虚报不改物理 |
 | B/C episode 当我方帧修复 | P174 更正 P173：episode 帧=外部 WiFi 异帧（CFO 指纹 −68/−89kHz vs 我方 +75kHz），非我方帧退化——修复对象不存在；真实代价=链占用+计数污染 |
 | boxcar 窗口 >16 | P158-W32 |
+| 用检测事件数（`wifi_start`）解释干扰-速率关系 | P195 REFUTED：预注册预测为"随干扰功率单调下降"，实测三行**单调上升**、方向相反；速率凹陷不能由检测事件数解释 |
+| len1000 下 tx-gain ≥ 24 dB | P195：31.5 dB 三次测量 82.0% / `[134,44]` / `[97,149]` 方差极大不可用；24 dB 曾楔死设备（UHD 管理事务超时）。工作点 ≤16 dB |
+| 用单格 z≥3 判碰撞凹陷 | P195：箱 B 无干扰对照即 z=2.7，四个标记全为假阳性；须比对对照周期 + 跨箱对称性 |
 
 判定原文：`docs/superpowers/notes/YYYY-MM-DD-phase*.md`。
 
