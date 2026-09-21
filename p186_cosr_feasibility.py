@@ -205,6 +205,13 @@ def main():
         for tok in a.points.split(','):
             ga, _, gb = tok.partition(':')
             point_list.append((float(ga), float(gb)))
+        # The axis values drive the solo baseline (`max(a_gains)`) and the
+        # summary/plot grid, so derive them from --points instead of trusting
+        # --a-gains: its default is 0,16,31.5, and 31.5 dB self-collapses at
+        # len1000 -- a --points run would silently score the solo at the one
+        # operating point that is known to be broken.
+        a_gains = sorted({g for g, _ in point_list})
+        b_gains = sorted({g for _, g in point_list})
     else:
         point_list = [(gA, gB) for gA in a_gains for gB in b_gains]
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -276,26 +283,43 @@ def main():
                 a, a.b_addr, gB, f'{label}_B', outdir)
         ra = rb = None
         ser_a = ser_b = []
+        bad = []
         if a_proc is not None:
             ra, wa, ifa, ser_a = collect(a, a_proc, a_h, a_e, a_out, a_err)
             series[(label, 'A')] = ser_a
             if ifa or wa < a.windows:
                 uhd_nudge(a.a_addr)
                 print(f'[P186] {label}: A init/underrun (win={wa})', flush=True)
+                if wa == 0:
+                    # P152 zero-run: the whole arm never started (UHD RFNoC init
+                    # crash, ~19%/run).  Scoring it as 0.0% fakes a physical
+                    # result -- and at SIR=0 a genuine mutual-destruction 0% is
+                    # the expected outcome, so the fake is indistinguishable by
+                    # eye.  Mark INVALID instead and re-run the cell.
+                    bad.append('A')
+                    ra = None
         if b_proc is not None:
             rb, wb, ifb, ser_b = collect(a, b_proc, b_h, b_e, b_out, b_err)
             series[(label, 'B')] = ser_b
             if ifb or wb < a.windows:
                 uhd_nudge(a.b_addr)
                 print(f'[P186] {label}: B init/underrun (win={wb})', flush=True)
+                if wb == 0:
+                    bad.append('B')
+                    rb = None
         results[(gA, gB)] = (ra, rb)
+        if bad:
+            print(f'[P186] {label}: INVALID -- zero-run arm(s) {bad}; re-run this '
+                  f'cell, do not read its 0.0% as physics', flush=True)
         for who, s in (('A', ser_a), ('B', ser_b)):
             if len(s) > 1:
                 print(f'[P186]   {label} {who} windows: '
                       f'[{",".join(f"{v:.0f}" for v in s)}]', flush=True)
         sa = '--' if ra is None else f'{ra:5.1f}'
         sb = '--' if rb is None else f'{rb:5.1f}'
-        if ra is None or rb is None:
+        if bad:
+            verdict = 'INVALID (zero-run) -- re-run'
+        elif ra is None or rb is None:
             verdict = 'solo baseline'
         elif ra >= a.thresh and rb >= a.thresh:
             verdict = 'FEASIBLE'
