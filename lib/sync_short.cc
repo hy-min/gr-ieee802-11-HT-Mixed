@@ -656,6 +656,7 @@ public:
                     fprintf(stderr,
                         "[P158-DIAG] episode_end start=%llu len=%d max_cor=%.4f strong=%.4f "
                         "ema=%.4f max_plateau=%d cause=%s\n",
+                        (unsigned long long)d_episode_start,
                         d_episode_len, d_episode_max_cor,
                         std::max(d_adaptive_thresh, static_cast<float>(d_threshold)) *
                             d_copy_redetect_factor,

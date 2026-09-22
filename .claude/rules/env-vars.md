@@ -88,7 +88,9 @@
 
 | env var | 作用 |
 |---------|------|
-| `IEEE80211_DECODE_SEQ=1` | decode_mac 记录 MAC seq（逐帧命运图，P163b）|
+| `IEEE80211_DECODE_SEQ=1` | decode_mac 记录 MAC seq（逐帧命运图，P163b）。**⚠️ 分母是已解出帧的 seq 区间 ⇒ seq 回绕（12 位/4096，10fps 下 409s）时该百分比失效，测量窗须 <400s**（P196）|
+| `IEEE80211_SYNC_SHORT_COPY_REDETECT_DIAG=1` | 发 `[P158-DIAG] trigger` / `episode_end`（含 `max_cor` 强度 ⇒ 可分离真帧 `>500` 与噪声 `≤100`）。**`p163b_fate_analysis.py` 的唯一数据源。P196 前在 `MAX_SAMPLES` 分支必 SIGSEGV，已修**（P196）。**⚠️ 其 `DETECTION/CHAIN loss` 分类在发帧速率≈时隙速率时饱和（恒为 0/200），该行不可用**（P196）|
+| `IEEE80211_HTSIG_VITERBI_DIAG=1` | 每帧一行 `[HTSIG_VITERBI_DIAG]`（`avg_snr_lsig/htsig`、`best_metric`、`is_ht_frame`），并解锁 `[LSIG_PARSE_FAIL] reason=`。**⚠️ `best_fail='none'` 在 `best_metric<0` 时零信息**（仅在 `cand_metric>=0` 时更新）（P196）|
 | `IEEE80211_FAIL_PSDU_DUMP=1` | 失败帧 PSDU dump（P161）|
 | `IEEE80211_SYM52_DUMP=1` | 逐符号 52-SC dump（P161）|
 | `IEEE80211_CPE_DEBUG=1` | CPE 诊断（P161：CPE 跟踪器永久 no-op 证据）|
