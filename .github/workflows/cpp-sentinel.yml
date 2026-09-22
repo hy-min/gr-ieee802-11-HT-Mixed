@@ -5,13 +5,26 @@ on:
   push:
     branches: [main, TEST2]
     paths: ["lib/**", "include/**"]
+  workflow_dispatch:        # 手动重跑：gh workflow run cpp-sentinel.yml --ref TEST2
+    inputs:
+      base:
+        description: "对比基准 ref（默认 HEAD~1）"
+        required: false
+        default: "HEAD~1"
 
 permissions:
   contents: read
+  issues: write             # issue 评论读写
+  pull-requests: write      # PR 上发评论查的是这个！只有 issues:write 会 GET 能列、POST 403
+                            # （"Resource not accessible by integration"，实跑踩过）
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l -eo pipefail {0}   # 关键：login shell 才让 conda activate 生效
+                                          # （否则 CONDA_PREFIX 空、env bin 不在 PATH；实跑踩过）
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -22,12 +35,15 @@ jobs:
           python-version: "3.11"
 
       - name: 装 clang-tools 与 GNU Radio（cmake configure 需要头文件）
-        run: conda install -n cpp-review clang-tools=22.1.8 clang=22.1.8 clangxx=22.1.8 gnuradio uhd -c conda-forge -y
+        run: conda install -n cpp-review clang-tools=22.1.8 clang=22.1.8 clangxx=22.1.8 gnuradio uhd libboost-devel pybind11 -c conda-forge -y
+        # 必须 libboost-devel（含头文件）：libboost 是纯运行时库，gr-foo 的 FindBoost 要 Boost_INCLUDE_DIR；
+        # 必须显式 pybind11：gnuradio 在部分环境只拖进 pybind11-abi（ABI 占位，无 cmake 配置无头文件）
 
       - name: 装 gr-foo（上游依赖）
         run: |
           git clone --depth 1 https://github.com/bastibl/gr-foo /tmp/gr-foo
-          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX"
+          # 两个 PREFIX 都要：INSTALL_PREFIX 定装哪，PREFIX_PATH 让 find_package 找到 conda 里的 Gnuradio
+          cmake -S /tmp/gr-foo -B /tmp/gr-foo/build -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
           cmake --build /tmp/gr-foo/build -j"$(nproc)"
           cmake --install /tmp/gr-foo/build
 
@@ -48,6 +64,18 @@ jobs:
             exit 0
           fi
           pip install -r /tmp/cpp-sentinel/requirements.txt
-          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          BASE="${{ github.event.inputs.base || github.event.pull_request.base.sha || github.event.before }}"
           DOTS=3; [ "${{ github.event_name }}" = "push" ] && DOTS=2
-          python -m cpp_sentinel.ci --repo . --base "$BASE" --dots "$DOTS" --workers 8
+          python -m cpp_sentinel.ci --repo . --base "$BASE" --dots "$DOTS" --workers 8 \
+            --out-md /tmp/review.md
+
+      - name: "PR 评论（sticky：同一条评论持续更新；gate 挂红时也照常评论）"
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: /tmp/cpp-sentinel
+        run: |
+          if [ -f /tmp/review.md ]; then
+            python -m cpp_sentinel.prbot --repo ${{ github.repository }} \
+              --pr ${{ github.event.pull_request.number }} --body-file /tmp/review.md
+          fi
