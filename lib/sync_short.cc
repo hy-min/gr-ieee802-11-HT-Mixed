@@ -653,6 +653,12 @@ public:
 
             if (d_copied == MAX_SAMPLES) {
                 if (d_copy_redetect_diag) {
+                    // P196 教训：变参 fprintf 不做类型/个数检查。本行曾漏传
+                    // d_episode_start（7 个转换符、6 个实参）→ 实参整体错位 →
+                    // %s 解引用垃圾指针 → SIGSEGV。爆炸半径：仅当 COPY episode 跑满
+                    // MAX_SAMPLES 才命中，干净短帧链路永不触发，恰在坏链路上必崩
+                    // （且只在 IEEE80211_SYNC_SHORT_COPY_REDETECT_DIAG 打开时）。
+                    // 改这行务必先数一遍转换符个数。
                     fprintf(stderr,
                         "[P158-DIAG] episode_end start=%llu len=%d max_cor=%.4f strong=%.4f "
                         "ema=%.4f max_plateau=%d cause=%s\n",
