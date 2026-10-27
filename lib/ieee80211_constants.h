@@ -21,7 +21,7 @@ namespace gr {
 namespace ieee802_11 {
 
 //! FFT normalization factor: 64-bin FFT output scaled to 52 used subcarriers
-static constexpr float kFftNormalize = 64.0f / std::sqrt(52.0f);
+static constexpr float kFftNormalize = 0x1.1c01aap+3f; // float32: 64.0f / sqrt(52.0f), valid in C++17.
 
 //! L-LTF TX BPSK ±1 reference in kHeader48Sc order (subcarriers -26..-1, +1..+26)
 //! This is the theoretical TX signal before RF/FFT processing.
