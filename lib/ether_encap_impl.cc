@@ -50,7 +50,16 @@ void ether_encap_impl::from_wifi(pmt::pmt_t msg)
     msg = pmt::cdr(msg);
 
     int data_len = pmt::blob_length(msg);
+    if (data_len < 33) {
+        dout << "Ether Encap: frame too short to parse (<33)" << std::endl;
+        return;
+    }
+
     const mac_header* mhdr = reinterpret_cast<const mac_header*>(pmt::blob_data(msg));
+    if ((((mhdr->frame_control) >> 2) & 63) == 34 && data_len < 34) {
+        dout << "Ether Encap: QoS frame too short to parse (<34)" << std::endl;
+        return;
+    }
 
     if (d_last_seq == mhdr->seq_nr) {
         dout << "Ether Encap: frame already seen -- skipping" << std::endl;
@@ -58,12 +67,6 @@ void ether_encap_impl::from_wifi(pmt::pmt_t msg)
     }
 
     d_last_seq = mhdr->seq_nr;
-
-
-    if (data_len < 33) {
-        dout << "Ether Encap: frame too short to parse (<33)" << std::endl;
-        return;
-    }
 
     // this is more than needed
     char* buf = static_cast<char*>(std::malloc(data_len + sizeof(ethernet_header)));
