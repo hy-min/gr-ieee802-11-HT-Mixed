@@ -30,7 +30,9 @@
 #include "viterbi_decoder_generic.h"
 #include <cstring>
 #include <iostream>
-#error GENERIC_VITERBI_FILE_IS_BEING_COMPILED
+#ifdef IEEE80211_MSSE2
+#error Generic Viterbi decoder must not be compiled in the SSE2 configuration
+#endif
 /* The basic Viterbi decoder operation, called a "butterfly"
  * operation because of the way it looks on a trellis diagram. Each
  * butterfly involves an Add-Compare-Select (ACS) operation on the two nodes
