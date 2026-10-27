@@ -131,6 +131,13 @@ main(int argc, char *argv[])
 	if (optind >= argc)
 		usage();
 
+	if (rate <= 0 || size <= 0 ||
+	    size > (int)(sizeof(buf) - sizeof(radiotap_hdr) + 4)) {
+		fprintf(stderr, "rate must be positive; size must be in 1..%zu\n",
+		        sizeof(buf) - sizeof(radiotap_hdr) + 4);
+		return 1;
+	}
+
 	// open the interface in pcap
 	ppcap = pcap_open_live(argv[optind], 800, 1, 20, szErrbuf);
 	if (ppcap == NULL) {

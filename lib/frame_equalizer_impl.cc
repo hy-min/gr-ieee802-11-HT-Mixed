@@ -6521,7 +6521,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
             break;
         }
 
-        const gr_complex* sym64 = in + consumed * 64;
+        const gr_complex* sym64 = in + static_cast<size_t>(consumed) * 64;
         const uint64_t abs_in_off = abs_in_start + consumed;
 
         const bool wifi_start = (wifi_offsets.count(abs_in_off) != 0);
@@ -8572,7 +8572,7 @@ int frame_equalizer_impl::general_work(int noutput_items,
                   for (int i = 0; i < 52; i++) {
                       float phase = -2.0f * (float)M_PI *
                                     (float)kScIndex52[i] * (float)tau / 64.0f;
-                      H52_tau[i] = Hhdr52_for_lsig[i] *
+                      H52_tau[i] = H_for_search[i] *
                                    std::exp(gr_complex(0.0f, phase));
                   }
                   H_for_search = H52_tau;
